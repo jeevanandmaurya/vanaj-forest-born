@@ -1,5 +1,6 @@
 // VANAJ — main: boot, renderer + post-processing, game loop, interactions, crafting, sleep, save/load, menus.
 import * as THREE from 'three';
+import { PerfOverlay } from './core/perf.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
@@ -84,7 +85,7 @@ class Game {
     this.time = { hour: 7, day: 0, rate: 60 };
     this.season = 'winter'; this.seasonCfg = SEASONS.winter;
     this.camps = []; this.flags = {}; this.npcs = [];
-    this.settings = Object.assign({ quality: 'medium', sens: 1, invert: false, fov: 72, view: 'tpp', master: 0.9, music: 0.7, density: 1 }, store.get('vanaj-settings') || {});
+    this.settings = Object.assign({ quality: 'medium', sens: 1, invert: false, fov: 72, view: 'tpp', master: 0.9, music: 0.7, density: 1, perf: 'off' }, store.get('vanaj-settings') || {});
     const qp = new URLSearchParams(location.search);
     this.q = { ...(QUALITY[qp.get('q') || this.settings.quality] || QUALITY.medium) };
     if (qp.get('pr')) this.q.pr = +qp.get('pr');
@@ -109,6 +110,7 @@ class Game {
     renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.9;
     renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     $('app').prepend(renderer.domElement); renderer.domElement.id = 'gl';
+    this.perf = new PerfOverlay(renderer, { mode: new URLSearchParams(location.search).get('perf') || this.settings.perf, onChange: (m) => { this.settings.perf = m; store.set('vanaj-settings', this.settings); const sel = $('set-perf'); if (sel) sel.value = m; } });
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.FogExp2(0x888888, 0.0001);
     this.camera = new THREE.PerspectiveCamera(this.settings.fov, window.innerWidth / window.innerHeight, 0.1, 4200);
@@ -214,7 +216,7 @@ class Game {
     if (o.village) this.story.spawnVillage();
     if (o.nograss !== undefined) { this.grass.short.visible = !o.nograss; this.grass.tall.visible = !o.nograss; }
     if (o.camDist) this.player.camDist = o.camDist;
-    if (o.stats) { this.renderer.info.autoReset = false; this.renderer.info.reset(); this.renderer.render(this.scene, this.camera); const i = this.renderer.info.render; const r = { calls: i.calls, tris: i.triangles }; this.renderer.info.autoReset = true; return JSON.stringify(r); }
+    if (o.stats) { this.renderer.info.autoReset = false; this.renderer.info.reset(); this.renderer.render(this.scene, this.camera); const i = this.renderer.info.render; const r = { calls: i.calls, tris: i.triangles }; this.renderer.info.autoReset = !this.perf.on; return JSON.stringify(r); }
     this.weather.env = { ...this.weather.target };
     return 'ok';
   }
@@ -254,6 +256,7 @@ class Game {
     const S = g.settings;
     const bindRange = (id, key, fmt) => { const e = $(id); e.value = S[key]; const lab = $(id + '-v'); const upd = () => { S[key] = +e.value; if (lab) lab.textContent = fmt ? fmt(S[key]) : S[key]; g.applySettings(); }; e.oninput = upd; upd(); };
     bindRange('set-sens', 'sens', (v) => v.toFixed(2)); bindRange('set-fov', 'fov'); bindRange('set-master', 'master', (v) => Math.round(v * 100) + '%'); bindRange('set-music', 'music', (v) => Math.round(v * 100) + '%');
+    $('set-perf').value = g.perf.mode; $('set-perf').onchange = (e) => g.perf.setMode(e.target.value);
     $('set-invert').checked = S.invert; $('set-invert').onchange = (e) => { S.invert = e.target.checked; g.applySettings(); };
     $('set-quality').value = S.quality; $('set-quality').onchange = (e) => { S.quality = e.target.value; g.applySettings(); $('set-quality-note').textContent = 'Reload to fully apply view distance and shadow quality.'; };
     $('set-view').value = S.view; $('set-view').onchange = (e) => { S.view = e.target.value; g.player.setView(S.view); g.applySettings(); };
@@ -359,6 +362,7 @@ class Game {
     this.requestLock();
   }
   onKey(e) {
+    if (e.code === 'F3') { e.preventDefault(); this.perf.cycle(); return; }
     if (!this.playing) return;
     const ui = this.ui;
     if (e.code === 'Tab') { e.preventDefault(); if (!this.paused && !this.player.dead) ui.toggle('inv'); return; }
@@ -586,6 +590,7 @@ class Game {
   // -------------------------------------------------------------------------------- frame
   frame(t) {
     requestAnimationFrame((tt) => this.frame(tt));
+    this.perf.frameStart(t - this.last);
     let rdt = Math.min(0.05, (t - this.last) / 1000); this.last = t;
     if (this.hitstopT > 0) { this.hitstopT -= rdt; rdt *= 0.08; }
     if (this.slowT > 0) { this.slowT -= rdt; rdt *= this.slowK; }
@@ -593,6 +598,7 @@ class Game {
     try { this.update(dt, rdt); } catch (e) { console.error(e); }
     this.render(rdt);
     this.input.endFrame();
+    this.perf.frameEnd({ scene: this.scene, composer: this.composer, quality: (this.settings.quality || '').replace(/^./, (c) => c.toUpperCase()), animals: this.eco ? this.eco.animals.length : undefined });
   }
   update(dt, rdt) {
     const P = this.player;
@@ -623,18 +629,22 @@ class Game {
       this.ui.setPrompt(this.currentInteraction ? `<kbd>E</kbd> ${this.currentInteraction.prompt}` : (this.finishPromptFor() || ''));
       this.story.update(dt);
     }
+    const pf = this.perf; pf.mark('player');
     const focus = this.playing ? P.pos : this.camera.position;
     G.uPlayerPos.value.copy(P.pos);
     // world streaming
     this.terrain.update(focus.x, focus.z, 4);
     this.veg.update(this.camera.position); this.grass.update(this.camera.position); this.pickups.update(focus);
+    pf.mark('streaming');
     // sky & weather
     const env = this.weather.env;
     this.sky.update(dt || rdt * 0.2, this.time.hour, this.seasonCfg.decl, env, this.camera, focus);
     this.weather.update(rdt, dt * this.time.rate / 3600, this.time.hour, this.camera.position, this.sky);
     this.water.update(this.sky, env.rain);
+    pf.mark('sky');
     // animals
     if (this.playing && dt > 0) { this.eco.update(dt, this.W); }
+    pf.mark('animals');
     // fires: campfires burn down
     this.nearFire = false;
     let fireLevel = 0;
@@ -643,6 +653,7 @@ class Game {
     if (this.audio.ready) this.audio.fireLevel = Math.max(0, fireLevel);
     this.fx.update(dt, this.camera.position, Math.max(0.12, this.sky.day));
     this.fx.updateAmbient(dt, this.camera.position, this.sky.night, this.season, env.rain > 0.2);
+    pf.mark('effects');
     // audio
     if (this.audio.ready) {
       this.audio.setListener(this.camera);
@@ -661,7 +672,9 @@ class Game {
         this.music.update(rdt, this.time.hour, this.season, { suppress: this.paused });
       }
     }
+    pf.mark('audio');
     this.ui.update(rdt);
+    pf.mark('ui');
   }
   finishPromptFor() {
     const P = this.player;
@@ -688,7 +701,8 @@ class Game {
     gr.uUnder.value = this.playing && waterAt(this.camera.position.x, this.camera.position.z) > this.camera.position.y ? 1 : 0;
     gr.uHeat.value = this.season === 'summer' ? smoothstep(10, 13, this.time.hour) * (1 - smoothstep(16, 18, this.time.hour)) : 0;
     gr.uBlur.value = this.uiBlocking && this.playing ? 1 : (P.drunk > 0.4 ? (P.drunk - 0.4) : 0);
-    if (!this.noRender) this.composer.render(rdt);
+    if (!this.noRender) { this.perf.gpuBegin(); this.composer.render(rdt); this.perf.gpuEnd(); }
+    this.perf.mark('render');
   }
 }
 

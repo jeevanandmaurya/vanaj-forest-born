@@ -136,6 +136,27 @@ button { font-family:var(--sans); cursor:pointer; }
 #ending.show { display:flex; animation:fin 3s; } @keyframes fin { from { opacity:0; } }
 #ending p { font-family:var(--serif); font-style:italic; font-size:27px; line-height:1.6; max-width:780px; color:var(--bone2); margin:8px 0; opacity:0; animation:fin 3s forwards; }
 #ending p:nth-child(2) { animation-delay:4s; } #ending p:nth-child(3) { animation-delay:9s; } #ending h1 { font-family:var(--serif); font-weight:500; font-size:96px; letter-spacing:.3em; margin-top:40px; opacity:0; animation:fin 3s 14s forwards; } #ending h4 { font-size:12px; letter-spacing:.24em; text-transform:uppercase; color:var(--ochre); margin-top:16px; opacity:0; animation:fin 3s 17s forwards; }
+/* performance overlay */
+#perf { position:fixed; right:34px; bottom:128px; z-index:58; pointer-events:none; font-family:ui-monospace, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace; font-size:10.5px; line-height:1.38; color:var(--bone); font-variant-numeric:tabular-nums; white-space:nowrap; }
+#perf.perf-off { display:none; }
+#perf .pf-compact, #perf .pf-full { background:rgba(10,10,8,.74); border:1px solid var(--line); border-radius:4px; padding:5px 9px; box-shadow:0 4px 18px rgba(0,0,0,.35); }
+#perf.perf-compact .pf-full, #perf.perf-full .pf-compact { display:none; }
+#perf .pf-compact b { font-size:13px; }
+#perf .pf-full { width:268px; padding:7px 10px 8px; }
+#perf .pf-head { display:flex; justify-content:space-between; align-items:center; font-family:var(--sans); font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:var(--ochre); margin-bottom:3px; }
+#perf .pf-head kbd { font-size:9px; letter-spacing:0; padding:0 4px; margin:0; }
+#perf .pf-row { display:flex; gap:6px; overflow:hidden; }
+#perf .pf-k { width:38px; flex:none; color:var(--bone2); }
+#perf .pf-sub { color:rgba(235,227,208,.58); font-size:10px; }
+#perf .pf-dim { color:rgba(235,227,208,.58); }
+#perf b { font-weight:700; font-size:12px; }
+#perf .pf-good { color:#a9d08e; } #perf .pf-ok { color:#e3b25f; } #perf .pf-bad { color:#ef7f52; }
+#perf .pf-tag { font-size:10px; margin-left:3px; }
+#perf canvas { display:block; width:248px; height:44px; margin:3px 0 4px; background:rgba(0,0,0,.28); border-radius:2px; }
+#perf .pf-sec { display:grid; grid-template-columns:1fr 1fr; column-gap:12px; margin:1px 0 4px 44px; font-size:9.5px; color:rgba(235,227,208,.7); }
+#perf .pf-secrow { display:grid; grid-template-columns:1fr auto; align-items:end; }
+#perf .pf-secrow i { grid-column:1 / 3; height:2px; background:rgba(235,227,208,.08); margin-bottom:2px; } #perf .pf-secrow u { display:block; height:2px; width:0; background:rgba(120,190,235,.8); }
+@media (max-height: 700px) { #perf { bottom:auto; top:84px; transform:scale(.82); transform-origin:top right; } }
 @media (max-width: 1100px) { #compass { top:84px; } #objective-box { max-width:44vw; } #objective { font-size:19px; } }
 </style>
 </head>
@@ -227,6 +248,7 @@ button { font-family:var(--sans); cursor:pointer; }
     <div class="row"><label>Camera</label><select id="set-view"><option value="tpp">Third person</option><option value="fpp">First person</option></select></div>
     <div class="row"><label>Mouse sensitivity</label><input type="range" id="set-sens" min="0.2" max="3" step="0.05"><span id="set-sens-v"></span></div>
     <div class="row"><label>Field of view</label><input type="range" id="set-fov" min="55" max="100" step="1"><span id="set-fov-v"></span></div>
+    <div class="row"><label>Performance overlay <kbd style="margin-left:6px">F3</kbd></label><select id="set-perf"><option value="off">Off</option><option value="compact">Compact</option><option value="full">Full</option></select></div>
     <div class="row"><label>Invert mouse Y</label><input type="checkbox" id="set-invert"></div>
     <div class="row"><label>Master volume</label><input type="range" id="set-master" min="0" max="1" step="0.01"><span id="set-master-v"></span></div>
     <div class="row"><label>Music volume</label><input type="range" id="set-music" min="0" max="1" step="0.01"><span id="set-music-v"></span></div>
@@ -243,6 +265,7 @@ button { font-family:var(--sans); cursor:pointer; }
       <kbd>1–6</kbd><span>Fists, knife, club, spear, bow, torch</span><kbd>T</kbd><span>Torch on/off</span>
       <kbd>Tab</kbd><span>Pouch &amp; crafting</span><kbd>J</kbd><span>Journal &amp; lore</span>
       <kbd>M</kbd><span>Map</span><kbd>H / B</kbd><span>Bind wound · eat</span>
+      <kbd>F3</kbd><span>Performance overlay</span><kbd>Esc</kbd><span>Pause</span>
     </div>
     <p class="note" style="margin-top:16px">Listen to the forest. Langurs, chital, sambar and peafowl call when a predator is near — their alarms appear on the compass in red.</p>
   </div></div>
@@ -258,6 +281,7 @@ button { font-family:var(--sans); cursor:pointer; }
   <div class="panel" id="choice"><div class="box" style="min-width:460px"><h2></h2><button id="choice-a"></button><button id="choice-b"></button></div></div>
   <div class="panel" id="death"><div class="box" style="min-width:440px"><h2>Dead</h2><p id="death-msg"></p><button id="btn-respawn">Wake at the last fire</button><button id="btn-restart-ch">Restart chapter</button></div></div>
 </div>
+<div id="perf" class="perf-off"></div>
 <script type="module" src="./js/main.js"></script>
 </body>
 </html>

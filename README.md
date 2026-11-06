@@ -21,7 +21,7 @@ python3 -m http.server 8000
 
 Any static host works too (GitHub Pages, Netlify, etc.). Use a recent Chrome, Edge or Firefox with WebGL2. Headphones help: the sound is spatial.
 
-URL options: `?q=low|medium|high|ultra` sets quality, `&pr=1` caps the pixel ratio.
+URL options: `?q=low|medium|high|ultra` sets quality, `&pr=1` caps the pixel ratio, `&perf=compact|full` opens the performance overlay.
 
 ## Controls
 
@@ -44,6 +44,7 @@ URL options: `?q=low|medium|high|ultra` sets quality, `&pr=1` caps the pixel rat
 | M | Map |
 | H / B | Bind a wound / eat |
 | Esc | Pause |
+| F3 | Performance overlay: off → compact → full |
 
 ## The story
 
@@ -67,6 +68,19 @@ The fight with Torn-Ear, the old tiger, ends with a choice to kill him or spare 
 - **Sound**: Web Audio with spatial (HRTF) panning and reverb. Birds, animal calls, footsteps for each surface, impacts and thunder are all synthesised.
 - **Music**: models of real instruments, with no synth pads: bansuri flute, tanpura with its buzzing *jawari* bridge, the Pardhan *bana* fiddle, and the Baiga *mandar* drum, plus timki and manjira. Exploration music follows the raga cycle of the day (Bhairav at dawn through Malkauns past midnight, Megh in the monsoon). Fights switch to a Keherwa drum cycle.
 
+## Performance overlay
+
+Press **F3** (or pick it in Settings) to cycle Off → Compact → Full. The full view shows:
+
+- **FPS and frame time**: current, average, 1% low and worst frame, with a frame-time graph marked at 60 and 30 FPS.
+- **CPU**: main-thread milliseconds per frame, split by system (player, world streaming, sky/weather, animals/AI, effects, audio, HUD, render submission), and the share of each frame the main thread was busy.
+- **GPU**: GPU milliseconds per frame from WebGL timer queries, with a CPU-bound / GPU-bound hint and the GPU's name. Shows n/a where the browser doesn't expose timer queries.
+- **Draws**: draw calls and triangles across every pass (shadows, scene, bloom, grading), plus shader, geometry and texture counts.
+- **RAM**: JavaScript heap used and limit (Chrome and Edge only) and the device memory the browser reports.
+- **VRAM**: an estimate of GPU memory used by meshes, textures and render targets. Browsers don't report real GPU memory, so this is calculated from what the game has uploaded.
+
+Browsers don't let a page read system-wide CPU or RAM usage, so those figures cover the game only.
+
 ## Code layout
 
 About 7,800 lines of JavaScript on top of [three.js](https://threejs.org) r170 (MIT, bundled in `lib/`).
@@ -74,7 +88,7 @@ About 7,800 lines of JavaScript on top of [three.js](https://threejs.org) r170 (
 ```
 index.html            UI: menus, HUD, panels
 js/main.js            boot, render pipeline, game loop, input, interactions, save/load
-js/core/              noise, shared shader code (fog, wind), mesh merging
+js/core/              noise, shared shader code (fog, wind), mesh merging, performance overlay
 js/world/             terrain, flora, sky, weather, water, effects, props, procedural textures
 js/actors/            animals (rigs, coats, AI), humanoid rig and animation, player
 js/audio/             sound engine, music engine
