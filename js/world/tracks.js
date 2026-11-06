@@ -9,11 +9,14 @@ const NAMES = { tiger: 'Tiger', leopard: 'Leopard', dhole: 'Dhole', wolf: 'Wolf'
 // print width in metres for an adult
 const WIDTH = { tiger: 0.15, leopard: 0.09, dhole: 0.065, wolf: 0.085, dog: 0.06, jackal: 0.05, chital: 0.055, sambar: 0.09, gaur: 0.13, boar: 0.06, cow: 0.1, nilgai: 0.08, barking: 0.035, bear: 0.12 };
 
+// Depth atlas: white = deepest part of the print, black = untouched ground. Drawn opaque so the blur leaves a
+// smooth slope from rim to pad floor, which the material reads both as the print's outline and as a bump map.
 function atlas() {
   const S = 128, c = document.createElement('canvas'); c.width = S * 4; c.height = S;
   const x = c.getContext('2d');
   const blob = (cx, cy, rx, ry, rot = 0, a = 1) => { x.save(); x.translate(cx, cy); x.rotate(rot); x.globalAlpha = a; x.beginPath(); x.ellipse(0, 0, rx, ry, 0, 0, 6.283); x.fill(); x.restore(); };
-  x.fillStyle = '#fff'; x.filter = 'blur(2px)';
+  x.fillStyle = '#000'; x.fillRect(0, 0, S * 4, S);
+  x.fillStyle = '#fff'; x.filter = 'blur(3px)';
   // 0: cat pugmark: trilobed heel pad, four round toes, no claws
   { const o = 0; blob(o + 64, 84, 30, 24); blob(o + 46, 98, 13, 10, 0.3); blob(o + 82, 98, 13, 10, -0.3);
     blob(o + 30, 50, 11, 14, -0.35); blob(o + 52, 34, 11, 14, -0.1); blob(o + 77, 34, 11, 14, 0.1); blob(o + 99, 50, 11, 14, 0.35); }
@@ -21,7 +24,7 @@ function atlas() {
   { const o = 128; blob(o + 64, 88, 20, 17); blob(o + 54, 42, 10, 13); blob(o + 74, 42, 10, 13); blob(o + 34, 62, 9, 12, -0.4); blob(o + 94, 62, 9, 12, 0.4);
     for (const [cx, cy] of [[54, 22], [74, 22], [30, 44], [98, 44]]) blob(o + cx, cy, 3, 5); }
   // 2: cloven hoof: two heart-halves
-  { const o = 256; blob(o + 48, 62, 16, 42, 0.12); blob(o + 80, 62, 16, 42, -0.12); x.globalCompositeOperation = 'destination-out'; blob(o + 64, 104, 10, 14); x.globalCompositeOperation = 'source-over'; }
+  { const o = 256; blob(o + 48, 62, 16, 42, 0.12); blob(o + 80, 62, 16, 42, -0.12); x.fillStyle = '#000'; blob(o + 64, 104, 10, 14); x.fillStyle = '#fff'; }
   // 3: bear: wide pad, five toes in an arc, long claw marks
   { const o = 384; blob(o + 64, 82, 38, 22); for (let i = 0; i < 5; i++) { const a = -0.9 + i * 0.45; blob(o + 64 + Math.sin(a) * 40, 58 - Math.cos(a) * 26, 8, 10, a); blob(o + 64 + Math.sin(a) * 48, 40 - Math.cos(a) * 34, 3, 8, a); } }
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.NoColorSpace; t.anisotropy = 4; return t;
@@ -33,13 +36,20 @@ export class Tracks {
     const geo = new THREE.PlaneGeometry(1, 1); geo.rotateX(-Math.PI / 2);
     const uvs = new Float32Array(this.max * 1); this.cell = uvs;
     geo.setAttribute('aCell', new THREE.InstancedBufferAttribute(uvs, 1));
-    const mat = new THREE.MeshStandardMaterial({ color: 0x2e2216, roughness: 0.95, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
-    mat.alphaMap = atlas();
+    // an impression, not a stain: compressed soil a little darker on the pad floor, a faint pushed-up rim,
+    // and a bump map from the same depth atlas so low sun shades one wall of the print and lights the other
+    const tex = atlas();
+    const mat = new THREE.MeshStandardMaterial({ color: 0x5e4a36, roughness: 1, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, alphaMap: tex, bumpMap: tex, bumpScale: -6 });
     mat.onBeforeCompile = (s) => {
-      s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\nattribute float aCell; varying float vCell;')
-        .replace('#include <uv_vertex>', '#include <uv_vertex>\nvCell = aCell;\n#ifdef USE_ALPHAMAP\nvAlphaMapUv = vec2((uv.x + aCell) * 0.25, uv.y);\n#endif');
-      s.fragmentShader = s.fragmentShader.replace('#include <common>', '#include <common>\nvarying float vCell;')
-        .replace('#include <color_fragment>', '#if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )\n diffuseColor.a *= vColor.r;\n#endif');
+      s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\nattribute float aCell;')
+        .replace('#include <uv_vertex>', '#include <uv_vertex>\nvec2 cellUv = vec2((uv.x + aCell) * 0.25, uv.y);\nvAlphaMapUv = cellUv; vBumpMapUv = cellUv;');
+      s.fragmentShader = s.fragmentShader
+        .replace('#include <color_fragment>', '#if defined( USE_COLOR ) || defined( USE_INSTANCING_COLOR )\n diffuseColor.a *= vColor.r;\n#endif')
+        .replace('#include <alphamap_fragment>', `
+          float dep = texture2D(alphaMap, vAlphaMapUv).g;
+          float rim = smoothstep(0.02, 0.12, dep) * (1.0 - smoothstep(0.12, 0.35, dep));
+          diffuseColor.rgb *= mix(1.0, 0.74, smoothstep(0.2, 0.8, dep)) + rim * 0.12;
+          diffuseColor.a *= smoothstep(0.02, 0.25, dep) * 0.8;`);
     };
     this.mesh = new THREE.InstancedMesh(geo, mat, this.max);
     this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(this.max * 3), 3);
@@ -59,6 +69,7 @@ export class Tracks {
     const w = WIDTH[sp] * (an.scale || 1) * (an.male ? 1.08 : 0.94);
     const p = { x, y, z, yaw, w, sp, k, t: this.clock(), male: !!an.male };
     if (this.prints.length < this.max) this.prints.push(p); else { this.prints[this.next] = p; this.next = (this.next + 1) % this.max; }
+    if (this.g.cover) this.g.cover.press(x, z, w * 0.75, p.t);
   }
   update(dt) {
     const g = this.g, P = g.player.pos, now = this.clock();
@@ -81,7 +92,7 @@ export class Tracks {
       if (!p.q) { groundNormal(p.x, p.z, this._n); p.q = new THREE.Quaternion().setFromUnitVectors(this._up, this._n).multiply(this._q2.setFromAxisAngle(this._up, p.yaw)); } this._q.copy(p.q);
       this._m.compose(this._v.set(p.x, p.y + 0.035, p.z), this._q, this._s.set(p.w, 1, p.k === 2 ? p.w * 1.25 : p.w * 1.05));
       this._m.toArray(mats, n * 16);
-      const a = 0.62 * (1 - age / life); col[n * 3] = a; col[n * 3 + 1] = a; col[n * 3 + 2] = a;
+      const a = 0.9 * (1 - age / life); col[n * 3] = a; col[n * 3 + 1] = a; col[n * 3 + 2] = a;   // sharp when fresh, crumbling away with age
       this.cell[n] = p.k; n++;
     }
     this.mesh.count = n; this.mesh.instanceMatrix.needsUpdate = true; this.mesh.instanceColor.needsUpdate = true; this.mesh.geometry.attributes.aCell.needsUpdate = true;

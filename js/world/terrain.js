@@ -172,6 +172,11 @@ export function groundHeight(x, z) {
   if (u + v <= 1) return h00 + (h10 - h00) * u + (h01 - h00) * v;
   return h11 + (h01 - h11) * (1 - u) + (h10 - h11) * (1 - v);
 }
+// grid spacing of the loaded terrain mesh at (x, z), or 0 where no chunk is built yet
+export function groundStep(x, z) {
+  const c = heightCache.get(ckey(Math.floor(x / CHUNK), Math.floor(z / CHUNK)));
+  return c ? c.step : 0;
+}
 export function groundNormal(x, z, out) {
   const e = 0.6;
   const hx = groundHeight(x + e, z) - groundHeight(x - e, z);
@@ -289,7 +294,7 @@ export function createTerrainMaterial(tex, far, lq = false) {
           float u = fract(h * 7.13);
           if (u < lat * 0.22) return 12 + int(fract(u * 53.0) * 2.99);
           if (moist > 0.45 && u < 0.08 + moist * 0.3) return 9;
-          if (u < 0.62) { if (fract(u * 5.7) < green * 0.35) return 3; return int(fract(u * 17.3) * 2.99); }
+          if (u < 0.62) { if (fract(u * 5.7) < green * 0.14) return 3; return int(fract(u * 17.3) * 2.99); }   // few fallen leaves are still green
           if (u < 0.72) return 4;
           if (u < 0.8) return 5;
           if (u < 0.92) return 6 + int(fract(u * 11.0) * 1.99);

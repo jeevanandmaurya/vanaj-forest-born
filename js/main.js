@@ -110,7 +110,8 @@ class Game {
   slowmo(k, dur) { this.slowK = k; this.slowT = dur; }
   // -------------------------------------------------------------------------------- boot
   async boot() {
-    const prog = (p, t) => { $('load-bar').style.width = (p * 100).toFixed(0) + '%'; $('load-step').textContent = t; return new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0))); };
+    // let the bar paint between steps; a hidden tab gets no animation frames, so a timer keeps loading going there
+    const prog = (p, t) => { $('load-bar').style.width = (p * 100).toFixed(0) + '%'; $('load-step').textContent = t; return new Promise((r) => { requestAnimationFrame(() => setTimeout(r, 0)); setTimeout(r, 120); }); };
     await prog(0.02, 'Waking the renderer');
     const q = this.q;
     const renderer = this.renderer = new THREE.WebGLRenderer({ antialias: q.aa, powerPreference: 'high-performance', stencil: false });

@@ -78,6 +78,66 @@ function drawLeaf(ctx, r, x, y, ang, len, w, base, opts = {}) {
   ctx.restore();
 }
 
+// A leaf that has lain dead on the floor for weeks: dull and part-greyed, blotched with rot and bleached
+// patches, flecked with fungus, the margin browned, bitten and torn, the odd skeletonised window where only
+// the veins are left, and the veins themselves just faint ridges. No clean outline. Petiole at (x, y).
+function deadLeaf(ctx, r, x, y, ang, len, w, base, o = {}) {
+  const widest = o.widest ?? 0.5, tip = o.tip ?? 0, detail = o.detail ?? 1;
+  const half = (t) => w * Math.sin(Math.PI * Math.min(1, t * 1.05)) * 0.9;   // blade half-width at fraction t
+  ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+  const grey = (base[0] + base[1] + base[2]) / 3, v = 0.82 + r() * 0.3;
+  const c0 = base.map((c) => (c * 0.8 + grey * 0.2) * v);
+  ctx.save(); leafPath(ctx, len, w, widest, tip); ctx.clip();
+  ctx.fillStyle = rgb(...c0); ctx.fillRect(-w * 1.2, -len * 1.1, w * 2.4, len * 1.2);
+  // rot and bleach: soft dark and pale blotches
+  const nb = Math.round((8 + 18 * detail) * Math.min(1, len / 60));
+  for (let k = 0; k < nb; k++) {
+    const bx = (r() - 0.5) * w * 1.8, by = -r() * len, rr = 3 + r() * w * 0.4, dark = r() < 0.58, a = 0.12 + r() * 0.25;
+    const col = dark ? [c0[0] * 0.5, c0[1] * 0.44, c0[2] * 0.4] : [c0[0] * 1.12 + 16, c0[1] * 1.08 + 12, c0[2] * 1.0 + 6];
+    const g = ctx.createRadialGradient(bx, by, 0, bx, by, rr);
+    g.addColorStop(0, rgba(...col, a)); g.addColorStop(1, rgba(...col, 0));
+    ctx.fillStyle = g; ctx.fillRect(bx - rr, by - rr, rr * 2, rr * 2);
+  }
+  // papery grain and fungal flecks
+  const ng = Math.round(len * w * 0.12 * detail);
+  for (let k = 0; k < ng; k++) { const l = r() < 0.5; ctx.fillStyle = l ? 'rgba(235,220,190,0.07)' : 'rgba(25,18,10,0.09)'; ctx.fillRect((r() - 0.5) * w * 2, -r() * len, 1 + r() * 1.6, 1 + r() * 1.6); }
+  const nf = Math.round((2 + r() * 10) * detail * Math.min(1, len / 50));
+  for (let k = 0; k < nf; k++) { ctx.fillStyle = rgba(18, 14, 10, 0.3 + r() * 0.35); ctx.beginPath(); ctx.arc((r() - 0.5) * w * 1.4, -len * (0.1 + r() * 0.85), 0.5 + r() * 1.4, 0, 6.28); ctx.fill(); }
+  // browned, drier margin
+  leafPath(ctx, len, w, widest, tip); ctx.lineWidth = w * (0.12 + r() * 0.22); ctx.strokeStyle = rgba(c0[0] * 0.6, c0[1] * 0.48, c0[2] * 0.38, 0.12 + r() * 0.14); ctx.stroke();
+  // veins: low ridges, a shade lighter than the blade, broken up by the blotches above them
+  ctx.strokeStyle = rgba(c0[0] * 1.12 + 10, c0[1] * 1.1 + 10, c0[2] * 1.06 + 8, o.veinA ?? 0.3);
+  ctx.lineWidth = Math.max(1, w * 0.06); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -len * 0.95); ctx.stroke();
+  ctx.globalAlpha = 0.6; ctx.lineWidth = Math.max(0.6, w * 0.025);
+  const nv = o.veins ?? 7;
+  for (let i = 1; i < nv; i++) {
+    const t = i / nv, yy = -len * t * 0.92, ww = half(t) * 0.92;
+    for (const s of [1, -1]) { ctx.beginPath(); ctx.moveTo(0, yy); ctx.quadraticCurveTo(s * ww * 0.5, yy - len * 0.04, s * ww, yy - len * 0.09); ctx.stroke(); }
+  }
+  ctx.globalAlpha = 1; ctx.restore();
+  // damage: bites out of the margin, a broken tip, chewed holes; one hole may be skeletonised
+  ctx.globalCompositeOperation = 'destination-out';
+  const bites = o.bites ?? (2 + ((r() * 5) | 0));
+  // ragged shape cut from the blade: a lumpy polygon, never a clean circle
+  const ragged = (cx, cy, rr, n = 9) => { ctx.beginPath(); for (let j = 0; j < n; j++) { const a = j / n * 6.283, q = rr * (0.45 + r() * 0.8); ctx.lineTo(cx + Math.cos(a) * q, cy + Math.sin(a) * q); } ctx.fill(); };
+  for (let k = 0; k < bites; k++) { const t = 0.15 + r() * 0.8, s = r() < 0.5 ? 1 : -1; ragged(s * half(t) * (0.9 + r() * 0.3), -len * t, 2 + r() * w * 0.26); }
+  if (o.bites !== 0 && r() < 0.45) {   // broken tip: a crumbling, jagged break
+    const y0 = -len * (0.74 + r() * 0.16); ctx.beginPath(); ctx.moveTo(-w * 1.1, y0);
+    for (let j = 1; j < 9; j++) ctx.lineTo(-w * 1.1 + j * w * 2.2 / 8, y0 + (r() - 0.5) * len * 0.07 - Math.sin(j / 8 * Math.PI) * len * 0.04);
+    ctx.lineTo(w * 1.1, -len * 1.2); ctx.lineTo(-w * 1.1, -len * 1.2); ctx.fill();
+  }
+  const holes = o.bites === 0 ? 0 : (r() * 3.2) | 0, skel = [];
+  for (let k = 0; k < holes; k++) {
+    const hx = (r() - 0.5) * w * 0.9, hy = -len * (0.25 + r() * 0.55), hr = 2 + r() * w * 0.16;
+    ctx.beginPath(); for (let j = 0; j < 7; j++) { const a = j / 7 * 6.283, rr = hr * (0.6 + r() * 0.6); ctx.lineTo(hx + Math.cos(a) * rr, hy + Math.sin(a) * rr); } ctx.fill();
+    if (hr > 5 && r() < 0.5) skel.push([hx, hy, hr]);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.strokeStyle = rgba(c0[0] * 1.05, c0[1], c0[2] * 0.95, 0.85); ctx.lineWidth = 1;
+  for (const [hx, hy, hr] of skel) { ctx.save(); ctx.beginPath(); ctx.arc(hx, hy, hr * 0.9, 0, 6.28); ctx.clip(); for (let k = -3; k <= 3; k++) { ctx.beginPath(); ctx.moveTo(hx - hr, hy + k * hr * 0.33 - hr * 0.3); ctx.lineTo(hx + hr, hy + k * hr * 0.33 + hr * 0.3); ctx.stroke(); } ctx.restore(); }
+  ctx.restore();
+}
+
 function twig(ctx, x0, y0, x1, y1, wid, col = [70, 52, 36]) {
   ctx.strokeStyle = rgb(...col); ctx.lineWidth = wid; ctx.lineCap = 'round';
   ctx.beginPath(); ctx.moveTo(x0, y0); ctx.quadraticCurveTo((x0 + x1) / 2 + (y1 - y0) * 0.1, (y0 + y1) / 2, x1, y1); ctx.stroke();
@@ -94,7 +154,7 @@ function makeLitter() {
     const col = cols[(r() * cols.length) | 0];
     wrapDraw(S, x, y, len, (xx, yy) => {
       ctx.globalAlpha = 0.95;
-      drawLeaf(ctx, r, xx, yy, r() * 6.28, len, w, col, { widest: big ? 0.62 : 0.5, veins: big ? 8 : 4, veinA: 0.3, holes: big });
+      deadLeaf(ctx, r, xx, yy, r() * 6.28, len, w, col, { widest: big ? 0.62 : 0.5, veins: big ? 8 : 4, veinA: 0.25, detail: big ? 0.6 : 0.3, bites: 0 });   // no cut-outs: this layer is opaque ground
       // curl shadow
       ctx.globalAlpha = 0.18; ctx.fillStyle = '#000';
       ctx.beginPath(); ctx.ellipse(xx + 2, yy + 3, w * 0.5, w * 0.3, r() * 3, 0, 6.28); ctx.fill();
@@ -560,24 +620,25 @@ function makeGroundAtlas() {
   const cell = (i, j, fn) => { ctx.save(); ctx.translate(i * C + C / 2, j * C + C / 2); fn(); ctx.restore(); };
   const leaf = (len, w, col, o = {}) => {
     // curl: shade one side darker, lift the edges
-    drawLeaf(ctx, r, 0, len * 0.5, 0, len, w, col, { widest: o.widest ?? 0.55, veins: o.veins ?? 8, veinA: o.veinA ?? 0.35, holes: o.holes ?? true, tip: o.tip ?? 0 });
+    deadLeaf(ctx, r, 0, len * 0.5, 0, len, w, col, { widest: o.widest ?? 0.55, veins: o.veins ?? 8, veinA: o.veinA ?? 0.3, bites: o.holes === false ? 0 : undefined, tip: o.tip ?? 0 });
     const g = ctx.createLinearGradient(-w, 0, w, 0); g.addColorStop(0, 'rgba(0,0,0,0.28)'); g.addColorStop(0.45, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(255,240,210,0.08)');
     ctx.globalCompositeOperation = 'source-atop'; ctx.fillStyle = g; ctx.fillRect(-C / 2, -C / 2, C, C); ctx.globalCompositeOperation = 'source-over';
   };
-  // teak: huge broad ovate leaves
-  cell(0, 0, () => { ctx.rotate(0.1); leaf(210, 92, [196, 156, 98], { widest: 0.55, veins: 10 }); });
-  cell(1, 0, () => { ctx.rotate(-0.15); leaf(200, 88, [142, 98, 58], { widest: 0.55, veins: 10 }); });
-  cell(2, 0, () => { ctx.rotate(0.2); ctx.scale(0.62, 1); leaf(200, 92, [104, 72, 44], { widest: 0.5, veins: 9 }); });
-  cell(3, 0, () => { leaf(196, 84, [150, 150, 70], { widest: 0.55, veins: 10, holes: false }); });
+  // teak: huge broad ovate leaves, dried papery tan, rusty brown and rotted grey-brown
+  cell(0, 0, () => { ctx.rotate(0.1); leaf(210, 92, [172, 140, 100], { widest: 0.55, veins: 10 }); });
+  cell(1, 0, () => { ctx.rotate(-0.15); leaf(200, 88, [134, 94, 62], { widest: 0.55, veins: 10 }); });
+  cell(2, 0, () => { ctx.rotate(0.2); ctx.scale(0.62, 1); leaf(200, 92, [98, 74, 50], { widest: 0.5, veins: 9 }); });
+  // the rare one fallen before it browned: yellowing and already spotting, never a clean green
+  cell(3, 0, () => { leaf(196, 84, [160, 146, 84], { widest: 0.55, veins: 10 }); });
   // mahua (leathery elliptic), saja (small oblong), lanceolate associates
-  cell(0, 1, () => { ctx.rotate(0.3); leaf(170, 58, [122, 84, 52], { widest: 0.5, veins: 9 }); });
-  cell(1, 1, () => { ctx.rotate(-0.4); leaf(120, 52, [150, 116, 72], { widest: 0.55, veins: 7 }); ctx.translate(40, 30); ctx.rotate(1.2); leaf(110, 48, [128, 96, 60], { widest: 0.55, veins: 7 }); });
-  cell(2, 1, () => { ctx.rotate(0.7); leaf(160, 36, [170, 132, 80], { widest: 0.45, veins: 7, tip: -0.2 }); });
-  cell(3, 1, () => { ctx.rotate(-0.6); leaf(150, 34, [112, 86, 52], { widest: 0.45, veins: 6, tip: -0.2 }); ctx.translate(-30, 10); ctx.rotate(1.4); leaf(120, 30, [156, 120, 70], { widest: 0.45, veins: 6, tip: -0.2 }); });
+  cell(0, 1, () => { ctx.rotate(0.3); leaf(170, 58, [112, 82, 58], { widest: 0.5, veins: 9 }); });
+  cell(1, 1, () => { ctx.rotate(-0.4); leaf(120, 52, [140, 112, 78], { widest: 0.55, veins: 7 }); ctx.translate(40, 30); ctx.rotate(1.2); leaf(110, 48, [118, 92, 64], { widest: 0.55, veins: 7 }); });
+  cell(2, 1, () => { ctx.rotate(0.7); leaf(160, 36, [158, 126, 86], { widest: 0.45, veins: 7, tip: -0.2 }); });
+  cell(3, 1, () => { ctx.rotate(-0.6); leaf(150, 34, [104, 82, 58], { widest: 0.45, veins: 6, tip: -0.2 }); ctx.translate(-30, 10); ctx.rotate(1.4); leaf(120, 30, [146, 116, 76], { widest: 0.45, veins: 6, tip: -0.2 }); });
   // palash: three broad leaflets on one stalk
-  cell(0, 2, () => { for (const [a, l] of [[-1.0, 100], [0, 120], [1.0, 100]]) { ctx.save(); ctx.rotate(a); ctx.translate(0, -l * 0.15); leaf(l, l * 0.62, [160, 122, 70], { widest: 0.6, veins: 7 }); ctx.restore(); } ctx.strokeStyle = 'rgb(90,64,40)'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 90); ctx.stroke(); });
+  cell(0, 2, () => { for (const [a, l] of [[-1.0, 100], [0, 120], [1.0, 100]]) { ctx.save(); ctx.rotate(a); ctx.translate(0, -l * 0.15); leaf(l, l * 0.62, [148, 116, 78], { widest: 0.6, veins: 7 }); ctx.restore(); } ctx.strokeStyle = 'rgb(84,62,44)'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 90); ctx.stroke(); });
   // bamboo: narrow straw leaves
-  cell(1, 2, () => { for (let k = 0; k < 6; k++) { ctx.save(); ctx.rotate(-0.9 + k * 0.36 + (r() - 0.5) * 0.2); leaf(170, 14, [186 + r() * 20, 166, 104], { widest: 0.4, veins: 3, holes: false, veinA: 0.2 }); ctx.restore(); } });
+  cell(1, 2, () => { for (let k = 0; k < 6; k++) { ctx.save(); ctx.rotate(-0.9 + k * 0.36 + (r() - 0.5) * 0.2); leaf(170, 14, [172 + r() * 20, 156, 108], { widest: 0.4, veins: 3, holes: false, veinA: 0.2 }); ctx.restore(); } });
   // twigs
   cell(2, 2, () => { ctx.rotate(0.6); twig(ctx, -110, 0, 110, 6, 9, [74, 56, 40]); twig(ctx, 20, 3, 70, -40, 5, [80, 60, 42]); });
   cell(3, 2, () => { ctx.rotate(-0.4); twig(ctx, -100, 20, 100, -10, 7, [96, 76, 56]); twig(ctx, -30, 12, -70, -40, 4, [90, 70, 50]); twig(ctx, 40, -2, 80, 30, 4, [90, 70, 50]); });
@@ -589,7 +650,8 @@ function makeGroundAtlas() {
   };
   cell(0, 3, () => pebble(0, 0, 90, 66, [128, 122, 112]));
   cell(1, 3, () => { pebble(-40, -20, 56, 44, [96, 88, 80]); pebble(50, 30, 48, 36, [150, 136, 118]); pebble(10, 70, 30, 24, [110, 70, 50]); });
-  cell(2, 3, () => { for (let k = 0; k < 9; k++) pebble((r() - 0.5) * 180, (r() - 0.5) * 180, 14 + r() * 26, 12 + r() * 20, [90 + r() * 70, 80 + r() * 60, 70 + r() * 50]); });
+  // gravel: grey gneiss and quartz with some red laterite nodules (one brightness per stone, not random RGB)
+  cell(2, 3, () => { for (let k = 0; k < 9; k++) { const v = 85 + r() * 75, lat = r() < 0.3; pebble((r() - 0.5) * 180, (r() - 0.5) * 180, 14 + r() * 26, 12 + r() * 20, lat ? [v * 0.95, v * 0.66, v * 0.52] : [v, v * 0.95, v * 0.88]); } });
   cell(3, 3, () => { ctx.strokeStyle = 'rgba(196,176,120,0.95)'; for (let k = 0; k < 14; k++) { ctx.lineWidth = 2 + r() * 2; ctx.beginPath(); const a = -1.9 + r() * 0.8; ctx.moveTo(0, 60); ctx.quadraticCurveTo(Math.cos(a) * 60, 60 + Math.sin(a) * 60, Math.cos(a) * 110 + (r() - 0.5) * 40, 60 + Math.sin(a) * 140); ctx.stroke(); } });
   const t = tex(c, { repeat: false }); t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
   return t;

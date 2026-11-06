@@ -4,13 +4,26 @@
 // pond beds, under the water. Everything is deterministic per 4 m cell, so it is the same when you come back.
 import * as THREE from 'three';
 import { G, patch, NOISE_GLSL } from '../core/shaderlib.js';
-import { height, biomeAt, waterAt } from './terrain.js';
+import { biomeAt, waterAt, groundHeight, groundStep } from './terrain.js';
 import { Simplex } from '../core/noise.js';
 
 const CELL = 4;
 const LEAF_CELLS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];         // atlas cells that are leaves
 const LEAF_SIZE = [0.42, 0.4, 0.3, 0.4, 0.26, 0.17, 0.2, 0.18, 0.3, 0.2];  // metres, longest side
 const SEASON_LEAF = { winter: 1.0, summer: 1.35, monsoon: 0.3, post: 0.55 };
+// share of fallen teak leaves still green: teak sheds leaves that have already browned, so green ones are
+// the few that langurs drop or storms tear off, more of them in the rains
+const SEASON_FRESH = { winter: 0.06, summer: 0.02, monsoon: 0.2, post: 0.1 };
+const LS = 12, TS = 7, SS = 10;   // floats per leaf, twig and stone record
+
+// sit things on the rendered terrain mesh, not the analytic height (they differ by a few cm between vertices):
+// returns [y, nx, nz] for the surface under (x, z), the normal sampled over the size of the object
+function surface(x, z, e) {
+  const y = groundHeight(x, z);
+  const hx = groundHeight(x + e, z) - groundHeight(x - e, z), hz = groundHeight(x, z + e) - groundHeight(x, z - e);
+  const l = Math.hypot(hx, 2 * e, hz);
+  return [y, -hx / l, -hz / l];
+}
 
 function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
 
@@ -47,7 +60,7 @@ function stoneGeometry(seed) {
   const g = new THREE.IcosahedronGeometry(1, 2), p = g.attributes.position, S = new Simplex(seed), n2 = (a, b) => S.noise2(a, b);
   for (let i = 0; i < p.count; i++) {
     const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
-    const d = 1 + 0.18 * n2(x * 1.7 + y, z * 1.7 - y) + 0.08 * n2(x * 4 + 3, z * 4 - y * 3);
+    const d = 1 + 0.26 * n2(x * 1.7 + y, z * 1.7 - y) + 0.12 * n2(x * 4 + 3, z * 4 - y * 3);   // lumpy, not egg-smooth
     // flat-bottomed, a little faceted like weathered gneiss
     p.setXYZ(i, x * d, Math.max(-0.35, y * d * 0.62), z * d * 0.85);
   }
@@ -60,8 +73,9 @@ export class GroundCover {
     const lv = quality.grassR > 60 ? 1.5 : quality.grassR > 45 ? 1.1 : quality.grassR > 30 ? 0.8 : 0.45;
     this.R = 12 + lv * 12;                      // radius of 3D litter
     this.dens = lv;
-    this.leafMul = 1;
+    this.leafMul = 1; this.fresh = SEASON_FRESH.winter;
     this.cells = new Map(); this.last = new THREE.Vector3(1e9, 0, 1e9);
+    this.pressed = new Map(); this.dirty = false; this.rebuiltAt = 0;
     const capL = Math.floor(9000 + lv * 16000), capT = Math.floor(600 + lv * 1400), capS = Math.floor(900 + lv * 2200);
     this.uR = { value: this.R };
 
@@ -97,7 +111,7 @@ export class GroundCover {
         uniform float uDry; uniform float uWetness; varying float vTint; varying float vUnder;`)
         .replace('#include <map_fragment>', `#include <map_fragment>
           // per-leaf tint: some bleached, some dark and rotting; wet season darkens everything
-          vec3 tint = mix(vec3(0.78, 0.72, 0.66), vec3(1.12, 1.04, 0.92), vTint);
+          vec3 tint = mix(vec3(0.74, 0.69, 0.64), vec3(1.05, 0.99, 0.9), vTint);
           diffuseColor.rgb *= tint * mix(1.0, 0.62, uWetness);
           if (!gl_FrontFacing) diffuseColor.rgb *= 0.55;   // underside of a curled leaf is in its own shade`)
         .replace('#include <roughnessmap_fragment>', `float roughnessFactor = mix(0.9, 0.45, uWetness);`);
@@ -118,7 +132,7 @@ export class GroundCover {
           // triplanar on the stone's own shape, so every stone shows grain and pits
           vec3 bw = abs(normalize(vSN)); bw = pow(bw, vec3(4.0)); bw /= dot(bw, vec3(1.0));
           vec3 st = texture2D(map, vSP.yz * 0.6).rgb * bw.x + texture2D(map, vSP.xz * 0.6).rgb * bw.y + texture2D(map, vSP.xy * 0.6).rgb * bw.z;
-          diffuseColor.rgb *= st * 1.5;
+          diffuseColor.rgb *= st * 1.2;
           diffuseColor.rgb *= mix(0.62, 1.0, smoothstep(-0.3, 0.2, vSP.y));   // dirt line where it sits in the soil`)
         .replace('#include <roughnessmap_fragment>', `float roughnessFactor = mix(0.82, 0.3, uWetness);`);
     });
@@ -131,8 +145,34 @@ export class GroundCover {
     }
     for (const m of this.stones) m.castShadow = true;
     this._m = new THREE.Matrix4(); this._q = new THREE.Quaternion(); this._e = new THREE.Euler(); this._v = new THREE.Vector3(); this._s = new THREE.Vector3();
+    this._up = new THREE.Vector3(0, 1, 0); this._n = new THREE.Vector3(); this._qa = new THREE.Quaternion();
   }
-  setSeason(s) { this.leafMul = SEASON_LEAF[s] ?? 1; this.cells.clear(); this.last.set(1e9, 0, 1e9); }
+  setSeason(s) { this.leafMul = SEASON_LEAF[s] ?? 1; this.fresh = SEASON_FRESH[s] ?? 0.06; this.cells.clear(); this.pressed.clear(); this.last.set(1e9, 0, 1e9); }
+  // a foot came down here: dry leaves under it crumble into the print, so leave the 3D leaves out of that spot.
+  // Kept per cell for half a game day, which is longer than any print lasts.
+  press(x, z, r, t) {
+    const m = r + 0.2;   // reach of the largest leaf whose centre could still lie over the print
+    for (let cx = Math.floor((x - m) / CELL); cx <= Math.floor((x + m) / CELL); cx++) for (let cz = Math.floor((z - m) / CELL); cz <= Math.floor((z + m) / CELL); cz++) {
+      const key = cx * 100003 + cz;
+      let a = this.pressed.get(key);
+      if (!a) { a = []; this.pressed.set(key, a); }
+      while (a.length && t - a[3] > 12) a.splice(0, 4);
+      a.push(x, z, r, t);
+    }
+    if (this.pressed.size > 4000) for (const [k] of this.pressed) { this.pressed.delete(k); if (this.pressed.size < 2000) break; }
+    if ((x - this.last.x) ** 2 + (z - this.last.z) ** 2 < (this.R + 2) ** 2) this.dirty = true;
+  }
+  crushed(x, z, size) {
+    const a = this.pressed.get(Math.floor(x / CELL) * 100003 + Math.floor(z / CELL)); if (!a) return false;
+    for (let i = 0; i < a.length; i += 4) { const r = a[i + 2] + size * 0.3; if ((x - a[i]) ** 2 + (z - a[i + 1]) ** 2 < r * r) return true; }
+    return false;
+  }
+  // rotation that lays a local-XZ object on the ground slope (nx, nz), after its own yaw and tilt
+  orient(nx, nz) {
+    this._n.set(nx, Math.sqrt(Math.max(0, 1 - nx * nx - nz * nz)), nz);
+    this._q.setFromEuler(this._e).premultiply(this._qa.setFromUnitVectors(this._up, this._n));
+    return this._q;
+  }
   genCell(cx, cz) {
     const rng = mulberry32((cx * 2654435761) ^ (cz * 40503) ^ 0x9e37);
     const x0 = cx * CELL, z0 = cz * CELL;
@@ -146,49 +186,56 @@ export class GroundCover {
     for (let i = 0; i < nLeaf; i++) {
       // clustered: half the leaves fall near a few drift centres in the cell
       let x, z;
-      if (i % 2 && i > 3) { const j = ((i * 7) % Math.max(1, leaves.length / 8 | 0)) * 8; x = leaves[j] + (rng() - 0.5) * 0.9; z = leaves[j + 2] + (rng() - 0.5) * 0.9; }
+      const placed = leaves.length / LS;
+      if (i % 2 && placed >= 4) { const j = ((i * 7) % placed) * LS; x = leaves[j] + (rng() - 0.5) * 0.9; z = leaves[j + 2] + (rng() - 0.5) * 0.9; }
       else { x = x0 + rng() * CELL; z = z0 + rng() * CELL; }
-      const y = height(x, z);
+      const [y, nx, nz] = surface(x, z, 0.2);
       if (waterAt(x, z) > y - 0.03) continue;
       // species mix: mostly teak where teak dominates, small leaves in mixed forest, bamboo straw in brakes
       const r = rng();
       let cell;
       if (b.bamboo > 0.5 && r < 0.6) cell = 9;
-      else if (r < b.teak * 0.75) cell = (rng() * 4) | 0;
+      else if (r < b.teak * 0.75) cell = rng() < this.fresh ? 3 : (rng() * 3) | 0;
       else cell = 4 + ((rng() * 5) | 0);
       const size = LEAF_SIZE[cell] * (0.75 + rng() * 0.5);
-      const cup = (0.03 + rng() * 0.09) * (this.leafMul > 1 ? 1.4 : this.leafMul < 0.5 ? 0.4 : 1);
+      // dead teak leaves dry into boats and half-tubes; in the rains they go limp and flat
+      const cup = (0.04 + rng() * 0.13) * (this.leafMul > 1 ? 1.4 : this.leafMul < 0.5 ? 0.4 : 1);
       const lift = (rng() - 0.3) * 0.08;
-      // stacking: later leaves sit a little higher; some lean on others
-      const stack = (i / Math.max(1, nLeaf)) * 0.03;
-      leaves.push(x, y + stack, z, rng() * 6.283, size, cell, cup, lift, rng(), (rng() - 0.5) * 0.35);
+      const tilt = (rng() - 0.5) * 0.35;
+      // stacking: later leaves sit a little higher; some lean on others. A tilted leaf is raised by the
+      // height its low edge would otherwise dig into the ground.
+      const stack = (i / Math.max(1, nLeaf)) * 0.03 + Math.abs(tilt) * size * 0.31 + Math.abs(tilt * 0.25) * size * 0.5;
+      leaves.push(x, y + stack, z, rng() * 6.283, size, cell, cup, lift, rng(), tilt, nx, nz);
     }
     const nTwig = Math.floor((0.2 + b.teak * 0.6 + b.bamboo * 0.4 + b.riparian * 0.3) * (1 - b.village) * (1 - b.field) * 3 * this.dens + rng());
     for (let i = 0; i < nTwig; i++) {
-      const x = x0 + rng() * CELL, z = z0 + rng() * CELL, y = height(x, z);
+      const x = x0 + rng() * CELL, z = z0 + rng() * CELL, [y, nx, nz] = surface(x, z, 0.4);
       if (waterAt(x, z) > y - 0.02) continue;
-      twigs.push(x, y + 0.01, z, rng() * 6.283, 0.35 + rng() * 0.9);
+      twigs.push(x, y + 0.01, z, rng() * 6.283, 0.35 + rng() * 0.9, nx, nz);
     }
     // stones: gravel and rocks on ridges and laterite, river cobbles on banks and beds (under the water too)
     const bank = b.sand + b.riparian * 0.3;
     const nStone = Math.floor((b.rock * 9 + laterite * 2.5 + bank * 10 + 0.4) * this.dens * (1 - b.field) + rng());
     for (let i = 0; i < nStone; i++) {
-      const x = x0 + rng() * CELL, z = z0 + rng() * CELL, y = height(x, z), w = waterAt(x, z);
+      const x = x0 + rng() * CELL, z = z0 + rng() * CELL, y = groundHeight(x, z), w = waterAt(x, z);
       const under = w > y + 0.02;
       if (under && w - y > 2.2) continue;
       const big = rng() < 0.12 + b.rock * 0.15;
       const sz = big ? 0.18 + rng() * 0.32 : 0.035 + rng() * 0.09;
       let col;
-      if (under || bank > 0.5) { const g = 0.42 + rng() * 0.35; col = under ? [g * 0.72, g * 0.8, g * 0.6] : [g * 1.05, g, g * 0.92]; }   // smooth river cobbles; algae under water
-      else if (rng() < laterite) { col = [0.72 + rng() * 0.2, 0.36 + rng() * 0.12, 0.22 + rng() * 0.08]; }                                 // laterite
-      else { const g = 0.5 + rng() * 0.35; col = [g, g * 0.96, g * 0.9]; }                                                                     // gneiss / basalt
+      // dull, dusty colours: these sit in the litter, they are not polished
+      if (under || bank > 0.5) { const g = 0.36 + rng() * 0.3; col = under ? [g * 0.72, g * 0.8, g * 0.6] : [g * 1.04, g, g * 0.93]; }   // smooth river cobbles; algae under water
+      else if (rng() < laterite) { const g = 0.85 + rng() * 0.3; col = [0.46 * g, 0.33 * g, 0.26 * g]; }                                   // rusty laterite nodules
+      else { const g = 0.36 + rng() * 0.26; col = [g, g * 0.96, g * 0.9]; }                                                                     // gneiss / basalt
       stones.push(x, y - sz * 0.25, z, rng() * 6.283, sz, (rng() * 3) | 0, col[0], col[1], col[2], under || bank > 0.5 ? 1 : 0);
     }
-    return { leaves: new Float32Array(leaves), twigs: new Float32Array(twigs), stones: new Float32Array(stones) };
+    return { leaves: new Float32Array(leaves), twigs: new Float32Array(twigs), stones: new Float32Array(stones), step: groundStep(x0 + 2, z0 + 2) };
   }
   update(cam, force) {
-    if (!force && this.last.distanceToSquared(cam) < 2.25) return;
-    this.last.copy(cam);
+    // rebuild when the camera has moved, or (at most twice a second) when fresh prints crushed leaves nearby
+    const now = performance.now();
+    if (!force && this.last.distanceToSquared(cam) < 2.25 && !(this.dirty && now - this.rebuiltAt > 500)) return;
+    this.last.copy(cam); this.dirty = false; this.rebuiltAt = now;
     const R = this.R, r = Math.ceil(R / CELL), pcx = Math.floor(cam.x / CELL), pcz = Math.floor(cam.z / CELL);
     let nl = 0, nt = 0; const ns = [0, 0, 0];
     const L = this.leaves, LA = this.leafAttr.array, capL = L.instanceMatrix.count;
@@ -199,29 +246,36 @@ export class GroundCover {
       if (ccx * ccx + ccz * ccz > (R + 3) * (R + 3)) continue;
       const key = (pcx + dx) * 100003 + (pcz + dz);
       let c = this.cells.get(key);
-      if (!c) { if (!force && gen > 30) continue; c = this.genCell(pcx + dx, pcz + dz); this.cells.set(key, c); gen++; }
+      // regenerate (same layout, new heights) when the terrain under the cell was rebuilt at another resolution
+      const stale = c && c.step !== groundStep((pcx + dx) * CELL + 2, (pcz + dz) * CELL + 2);
+      if (!c || stale) {
+        if (!force && gen > 30) { if (!c) continue; }
+        else { c = this.genCell(pcx + dx, pcz + dz); this.cells.set(key, c); gen++; }
+      }
       const a = c.leaves;
-      for (let i = 0; i < a.length && nl < capL; i += 10) {
-        this._e.set(a[i + 9] * 0.25, a[i + 3], a[i + 9], 'YXZ'); this._q.setFromEuler(this._e);
+      for (let i = 0; i < a.length && nl < capL; i += LS) {
+        if (this.pressed.size && this.crushed(a[i], a[i + 2], a[i + 4])) continue;
+        this._e.set(a[i + 9] * 0.25, a[i + 3], a[i + 9], 'YXZ');
         const s = a[i + 4];
-        this._m.compose(this._v.set(a[i], a[i + 1], a[i + 2]), this._q, this._s.set(s * (a[i + 5] === 9 ? 0.25 : 0.62), s, s));
+        this._m.compose(this._v.set(a[i], a[i + 1], a[i + 2]), this.orient(a[i + 10], a[i + 11]), this._s.set(s * (a[i + 5] === 9 ? 0.25 : 0.62), s, s));
         this._m.toArray(L.instanceMatrix.array, nl * 16);
         LA[nl * 4] = a[i + 5]; LA[nl * 4 + 1] = a[i + 6]; LA[nl * 4 + 2] = a[i + 7]; LA[nl * 4 + 3] = a[i + 8];
         nl++;
       }
       const t = c.twigs;
-      for (let i = 0; i < t.length && nt < capT; i += 5) {
-        this._e.set(0, t[i + 3], 0.04); this._q.setFromEuler(this._e);
+      for (let i = 0; i < t.length && nt < capT; i += TS) {
+        this._e.set(0, t[i + 3], 0.04);
         const s = t[i + 4];
-        this._m.compose(this._v.set(t[i], t[i + 1], t[i + 2]), this._q, this._s.set(s, Math.min(1.4, 0.6 + s), Math.min(1.4, 0.6 + s)));
+        this._m.compose(this._v.set(t[i], t[i + 1], t[i + 2]), this.orient(t[i + 5], t[i + 6]), this._s.set(s, Math.min(1.4, 0.6 + s), Math.min(1.4, 0.6 + s)));
         this._m.toArray(this.twigs.instanceMatrix.array, nt * 16); nt++;
       }
       const st = c.stones;
-      for (let i = 0; i < st.length; i += 10) {
+      for (let i = 0; i < st.length; i += SS) {
         const k = st[i + 5], m = this.stones[k]; if (ns[k] >= m.instanceMatrix.count) continue;
         this._e.set((st[i + 3] % 0.4) - 0.2, st[i + 3], 0); this._q.setFromEuler(this._e);
-        const s = st[i + 4], round = st[i + 9];
-        this._m.compose(this._v.set(st[i], st[i + 1], st[i + 2]), this._q, this._s.set(s * (round ? 1.15 : 1), s * (round ? 0.8 : 1), s));
+        // every stone its own proportions, flat-bedded and sunk into the soil, so none reads as an egg
+        const s = st[i + 4], round = st[i + 9], h = st[i + 3] * 7.31, sx = 0.75 + (h % 0.5), sz = 0.75 + ((h * 3.7) % 0.5);
+        this._m.compose(this._v.set(st[i], st[i + 1] - s * 0.1, st[i + 2]), this._q, this._s.set(s * sx * (round ? 1.15 : 1), s * (round ? 0.62 : 0.7), s * sz));
         this._m.toArray(m.instanceMatrix.array, ns[k] * 16);
         m.instanceColor.array[ns[k] * 3] = st[i + 6]; m.instanceColor.array[ns[k] * 3 + 1] = st[i + 7]; m.instanceColor.array[ns[k] * 3 + 2] = st[i + 8];
         ns[k]++;

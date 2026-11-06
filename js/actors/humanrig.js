@@ -69,31 +69,41 @@ function dress(inst, opts, S) {
   }
   if (opts.topTex) { const tm = cloth(opts.topTex, 0xffffff); add(ring(hy + 0.02, chest.y + 0.1, 0.16, 0.15), tm, 'DEF-spine002'); }
   const hairM = new THREE.MeshStandardMaterial({ color: opts.hairColor || 0x16110d, roughness: 0.9 });
-  const hr = 0.115;
+  // the head bone sits at the base of the skull, ~0.26 below the crown: measure the skull from the mesh itself
+  // (centre and width of everything above the bone) so hair and turbans sit on the head, not inside it
+  let top = -1e9, sx = 0, sz = 0, sn = 0, rad = 0;
+  inst.traverse((o) => {
+    if (!o.isSkinnedMesh) return;
+    const p = o.geometry.attributes.position;
+    for (let i = 0; i < p.count; i++) { const y = p.getY(i); if (y > head.y + 0.02) { top = Math.max(top, y); sx += p.getX(i); sz += p.getZ(i); sn++; } }
+    if (sn) for (let i = 0; i < p.count; i++) if (p.getY(i) > head.y + 0.02) rad = Math.max(rad, Math.hypot(p.getX(i) - sx / sn, p.getZ(i) - sz / sn));
+  });
+  const hr = sn ? rad : 0.115;
+  const skull = sn ? new THREE.Vector3(sx / sn, top - hr, sz / sn) : head.clone().setY(head.y + 0.13);
   if (opts.hair === 'matted') {
     // matted locks hanging from the crown to the shoulders
     const locks = [];
     for (let i = 0; i < 26; i++) {
       const a = (i / 26) * Math.PI * 2, front = Math.cos(a) > 0.55;
       const len = front ? 0.1 : 0.3 + ((i * 37) % 11) / 40;
-      const p0 = new THREE.Vector3(Math.sin(a) * hr * 0.75, head.y + hr * 0.85, Math.cos(a) * hr * 0.75);
-      const p1 = new THREE.Vector3(Math.sin(a) * hr * 1.15, head.y + hr * 0.2, Math.cos(a) * hr * 1.1 - 0.02);
-      const p2 = new THREE.Vector3(Math.sin(a) * hr * 1.25, head.y + hr * 0.2 - len, Math.cos(a) * hr * 1.0 - 0.05);
+      const p0 = new THREE.Vector3(skull.x + Math.sin(a) * hr * 0.75, skull.y + hr * 0.85, skull.z + Math.cos(a) * hr * 0.75);
+      const p1 = new THREE.Vector3(skull.x + Math.sin(a) * hr * 1.15, skull.y + hr * 0.2, skull.z + Math.cos(a) * hr * 1.1 - 0.02);
+      const p2 = new THREE.Vector3(skull.x + Math.sin(a) * hr * 1.25, skull.y + hr * 0.2 - len, skull.z + Math.cos(a) * hr * 1.0 - 0.05);
       const c = new THREE.CatmullRomCurve3([p0, p1, p2]);
       locks.push(new THREE.TubeGeometry(c, 6, 0.017, 5, false));
     }
-    locks.push(new THREE.SphereGeometry(hr * 1.06, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.55).translate(0, head.y + 0.02, -0.005));
+    locks.push(new THREE.SphereGeometry(hr * 1.06, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.55).translate(skull.x, skull.y + 0.005, skull.z - 0.005));
     add(mergeGeometries(locks.map((g) => g.toNonIndexed ? (g.index ? g.toNonIndexed() : g) : g).map((g) => { g.deleteAttribute('uv'); return g; })), hairM, 'DEF-head');
   } else if (opts.hair === 'short') {
-    add(new THREE.SphereGeometry(hr * 1.05, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.5).translate(0, head.y + 0.03, -0.008), hairM, 'DEF-head');
+    add(new THREE.SphereGeometry(hr * 1.05, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.5).translate(skull.x, skull.y + 0.012, skull.z - 0.008), hairM, 'DEF-head');
   } else if (opts.hair === 'bun') {
-    add(new THREE.SphereGeometry(hr * 1.05, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.52).translate(0, head.y + 0.025, -0.008), hairM, 'DEF-head');
-    add(new THREE.SphereGeometry(0.05, 10, 8).translate(0, head.y + 0.02, -hr * 1.05), hairM, 'DEF-head');
+    add(new THREE.SphereGeometry(hr * 1.05, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.52).translate(skull.x, skull.y + 0.01, skull.z - 0.008), hairM, 'DEF-head');
+    add(new THREE.SphereGeometry(0.05, 10, 8).translate(skull.x, skull.y, skull.z - hr * 1.05), hairM, 'DEF-head');
   }
   if (opts.turban) {
     const tm = new THREE.MeshStandardMaterial({ color: opts.turbanColor || 0xd8d0bc, roughness: 0.95 });
-    const tg = new THREE.TorusGeometry(hr * 1.02, 0.04, 8, 20); tg.rotateX(Math.PI / 2); tg.translate(0, head.y + 0.06, 0);
-    add(tg, tm, 'DEF-head'); add(new THREE.SphereGeometry(hr * 1.05, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.45).translate(0, head.y + 0.05, 0), tm, 'DEF-head');
+    const tg = new THREE.TorusGeometry(hr * 1.02, 0.04, 8, 20); tg.rotateX(Math.PI / 2); tg.translate(skull.x, skull.y + 0.03, skull.z);
+    add(tg, tm, 'DEF-head'); add(new THREE.SphereGeometry(hr * 1.05, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.45).translate(skull.x, skull.y + 0.025, skull.z), tm, 'DEF-head');
   }
   return mats;
 }
