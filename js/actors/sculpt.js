@@ -316,7 +316,8 @@ export function eyeMesh(e, patchFn, noise) {
     s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\n varying vec3 vEN;').replace('#include <begin_vertex>', '#include <begin_vertex>\n vEN = normalize(position);');
     s.fragmentShader = s.fragmentShader.replace('#include <common>', '#include <common>\n varying vec3 vEN;\n' + noise)
       .replace('#include <color_fragment>', `#include <color_fragment>
-        float a = acos(clamp(vEN.z, -1.0, 1.0)), ang = atan(vEN.y, vEN.x);
+        // atan(0, 0) at the centre of the pupil is undefined (NaN on some GPUs): guard it
+        float a = acos(clamp(vEN.z, -1.0, 1.0)), ang = abs(vEN.x) + abs(vEN.y) > 1e-5 ? atan(vEN.y, vEN.x) : 0.0;
         // a dull, slightly yellowed white with faint veins toward the corners; a dark limbal ring round the iris
         vec3 sclera = vec3(0.34, 0.29, 0.24) * (1.0 - 0.35 * smoothstep(0.7, 1.4, a)) * (1.0 - 0.15 * smoothstep(0.6, 0.9, vnoise(vec2(ang * 14.0, a * 9.0))));
         vec3 iris = vec3(0.04, 0.02, 0.01) * (0.65 + 0.7 * vnoise(vec2(ang * 9.0, a * 30.0)));

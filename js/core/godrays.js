@@ -15,15 +15,18 @@ export const GodRaysShader = {
     uniform sampler2D tDiffuse; uniform vec2 uSun; uniform float uStrength, uThreshold, uAspect, uDensity; uniform vec3 uTint;
     varying vec2 vUv;
     float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    // This pass runs just before bloom, so it also cleans the image: a single NaN or infinite pixel from any
+    // shader would otherwise be blurred by the bloom across the whole screen and flash the frame black.
+    vec3 clean(vec3 c){ return (any(isnan(c)) || any(isinf(c))) ? vec3(0.0) : min(c, vec3(1e4)); }
     void main(){
-      vec4 base = texture2D(tDiffuse, vUv);
+      vec4 base = vec4(clean(texture2D(tDiffuse, vUv).rgb), 1.0);
       if (uStrength < 0.002) { gl_FragColor = base; return; }
       vec2 delta = (vUv - uSun) * (uDensity / float(GR_SAMPLES));
       vec2 uv = vUv - delta * h(vUv * 917.0);                // jitter hides banding
       float illum = 1.0; vec3 acc = vec3(0.0);
       for (int i = 0; i < GR_SAMPLES; i++) {
         uv -= delta;
-        vec3 s = texture2D(tDiffuse, clamp(uv, 0.001, 0.999)).rgb;
+        vec3 s = clean(texture2D(tDiffuse, clamp(uv, 0.001, 0.999)).rgb);
         float l = dot(s, vec3(0.3, 0.59, 0.11));
         acc += s * smoothstep(uThreshold, uThreshold * 2.2, l) * illum;
         illum *= 0.955;

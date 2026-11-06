@@ -68,9 +68,14 @@ function skinMat(color, key, o = {}) {
           return s;
         }
         vec3 perturbSkin(vec3 sp, vec3 sn, vec2 dH, float fd) {
-          vec3 sx = normalize(dFdx(sp)), sy = normalize(dFdy(sp)), r1 = cross(sy, sn), r2 = cross(sn, sx);
+          // some pixels (silhouette edges, helper lanes) have no screen-space slope: normalising it gives NaN,
+          // and one NaN pixel turns the whole frame black through the bloom, so keep the plain normal there
+          vec3 dx = dFdx(sp), dy = dFdy(sp);
+          if (dot(dx, dx) < 1e-16 || dot(dy, dy) < 1e-16) return sn;
+          vec3 sx = normalize(dx), sy = normalize(dy), r1 = cross(sy, sn), r2 = cross(sn, sx);
           float det = dot(sx, r1) * fd;
-          return normalize(abs(det) * sn - sign(det) * (dH.x * r1 + dH.y * r2));
+          vec3 n = abs(det) * sn - sign(det) * (dH.x * r1 + dH.y * r2);
+          return dot(n, n) > 1e-12 ? normalize(n) : sn;
         }`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         float tn = vnoise3(vBP * 6.0), tf = vnoise3(vBP * 31.0 + 4.0);
