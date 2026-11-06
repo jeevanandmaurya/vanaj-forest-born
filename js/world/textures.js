@@ -550,8 +550,62 @@ function makeCloth(col) {
   return tex(c);
 }
 
+// Ground sprite atlas (4x4, transparent): individual fallen leaves, twigs and pebbles that the terrain
+// shader scatters one by one, so the forest floor never repeats.
+//   row 0: teak dry tan, teak brown, teak curled dark, teak fresh   row 1: mahua, saja, small lanceolate x2
+//   row 2: palash trifoliate, bamboo leaves, twig, forked twig        row 3: pebble x3, dry grass wisp
+function makeGroundAtlas() {
+  const S = 1024, C = 256, c = canvas(S, S), ctx = c.getContext('2d'), r = mulberry32(77);
+  ctx.clearRect(0, 0, S, S);
+  const cell = (i, j, fn) => { ctx.save(); ctx.translate(i * C + C / 2, j * C + C / 2); fn(); ctx.restore(); };
+  const leaf = (len, w, col, o = {}) => {
+    // curl: shade one side darker, lift the edges
+    drawLeaf(ctx, r, 0, len * 0.5, 0, len, w, col, { widest: o.widest ?? 0.55, veins: o.veins ?? 8, veinA: o.veinA ?? 0.35, holes: o.holes ?? true, tip: o.tip ?? 0 });
+    const g = ctx.createLinearGradient(-w, 0, w, 0); g.addColorStop(0, 'rgba(0,0,0,0.28)'); g.addColorStop(0.45, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(255,240,210,0.08)');
+    ctx.globalCompositeOperation = 'source-atop'; ctx.fillStyle = g; ctx.fillRect(-C / 2, -C / 2, C, C); ctx.globalCompositeOperation = 'source-over';
+  };
+  // teak: huge broad ovate leaves
+  cell(0, 0, () => { ctx.rotate(0.1); leaf(210, 92, [196, 156, 98], { widest: 0.55, veins: 10 }); });
+  cell(1, 0, () => { ctx.rotate(-0.15); leaf(200, 88, [142, 98, 58], { widest: 0.55, veins: 10 }); });
+  cell(2, 0, () => { ctx.rotate(0.2); ctx.scale(0.62, 1); leaf(200, 92, [104, 72, 44], { widest: 0.5, veins: 9 }); });
+  cell(3, 0, () => { leaf(196, 84, [150, 150, 70], { widest: 0.55, veins: 10, holes: false }); });
+  // mahua (leathery elliptic), saja (small oblong), lanceolate associates
+  cell(0, 1, () => { ctx.rotate(0.3); leaf(170, 58, [122, 84, 52], { widest: 0.5, veins: 9 }); });
+  cell(1, 1, () => { ctx.rotate(-0.4); leaf(120, 52, [150, 116, 72], { widest: 0.55, veins: 7 }); ctx.translate(40, 30); ctx.rotate(1.2); leaf(110, 48, [128, 96, 60], { widest: 0.55, veins: 7 }); });
+  cell(2, 1, () => { ctx.rotate(0.7); leaf(160, 36, [170, 132, 80], { widest: 0.45, veins: 7, tip: -0.2 }); });
+  cell(3, 1, () => { ctx.rotate(-0.6); leaf(150, 34, [112, 86, 52], { widest: 0.45, veins: 6, tip: -0.2 }); ctx.translate(-30, 10); ctx.rotate(1.4); leaf(120, 30, [156, 120, 70], { widest: 0.45, veins: 6, tip: -0.2 }); });
+  // palash: three broad leaflets on one stalk
+  cell(0, 2, () => { for (const [a, l] of [[-1.0, 100], [0, 120], [1.0, 100]]) { ctx.save(); ctx.rotate(a); ctx.translate(0, -l * 0.15); leaf(l, l * 0.62, [160, 122, 70], { widest: 0.6, veins: 7 }); ctx.restore(); } ctx.strokeStyle = 'rgb(90,64,40)'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 90); ctx.stroke(); });
+  // bamboo: narrow straw leaves
+  cell(1, 2, () => { for (let k = 0; k < 6; k++) { ctx.save(); ctx.rotate(-0.9 + k * 0.36 + (r() - 0.5) * 0.2); leaf(170, 14, [186 + r() * 20, 166, 104], { widest: 0.4, veins: 3, holes: false, veinA: 0.2 }); ctx.restore(); } });
+  // twigs
+  cell(2, 2, () => { ctx.rotate(0.6); twig(ctx, -110, 0, 110, 6, 9, [74, 56, 40]); twig(ctx, 20, 3, 70, -40, 5, [80, 60, 42]); });
+  cell(3, 2, () => { ctx.rotate(-0.4); twig(ctx, -100, 20, 100, -10, 7, [96, 76, 56]); twig(ctx, -30, 12, -70, -40, 4, [90, 70, 50]); twig(ctx, 40, -2, 80, 30, 4, [90, 70, 50]); });
+  // pebbles (river bed / laterite gravel)
+  const pebble = (x, y, rw, rh, col) => {
+    const g = ctx.createRadialGradient(x - rw * 0.3, y - rh * 0.35, rw * 0.1, x, y, Math.max(rw, rh));
+    g.addColorStop(0, rgb(col[0] * 1.25, col[1] * 1.25, col[2] * 1.25)); g.addColorStop(0.7, rgb(...col)); g.addColorStop(1, rgb(col[0] * 0.55, col[1] * 0.55, col[2] * 0.55));
+    ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(x, y, rw, rh, r() * 3, 0, 6.28); ctx.fill();
+  };
+  cell(0, 3, () => pebble(0, 0, 90, 66, [128, 122, 112]));
+  cell(1, 3, () => { pebble(-40, -20, 56, 44, [96, 88, 80]); pebble(50, 30, 48, 36, [150, 136, 118]); pebble(10, 70, 30, 24, [110, 70, 50]); });
+  cell(2, 3, () => { for (let k = 0; k < 9; k++) pebble((r() - 0.5) * 180, (r() - 0.5) * 180, 14 + r() * 26, 12 + r() * 20, [90 + r() * 70, 80 + r() * 60, 70 + r() * 50]); });
+  cell(3, 3, () => { ctx.strokeStyle = 'rgba(196,176,120,0.95)'; for (let k = 0; k < 14; k++) { ctx.lineWidth = 2 + r() * 2; ctx.beginPath(); const a = -1.9 + r() * 0.8; ctx.moveTo(0, 60); ctx.quadraticCurveTo(Math.cos(a) * 60, 60 + Math.sin(a) * 60, Math.cos(a) * 110 + (r() - 0.5) * 40, 60 + Math.sin(a) * 140); ctx.stroke(); } });
+  const t = tex(c, { repeat: false }); t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+  return t;
+}
+
+// Photo-scanned bark (CC0: Poly Haven oak & willow, TextureCan pine & birch; bundled with EZ-Tree)
+function scanBark(kind) {
+  const L = new THREE.TextureLoader();
+  const set = (t, srgb) => { if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 8; return t; };
+  return { map: set(L.load(`lib/textures/bark/${kind}_color_1k.jpg`), true), normal: set(L.load(`lib/textures/bark/${kind}_normal_1k.jpg`), false) };
+}
+
 export function buildTextures() {
   const T = {};
+  T.groundAtlas = makeGroundAtlas();
+  T.scan = { oak: scanBark('oak'), pine: scanBark('pine'), willow: scanBark('willow'), birch: scanBark('birch') };
   T.litter = makeLitter(); T.litterMoist = makeLitterMoist(); T.redSoil = makeRedSoil(); T.blackSoil = makeBlackSoil(); T.soil = makeSoil(); T.grassGround = makeGrassGround(); T.rock = makeRock(); T.sand = makeSand();
   T.bark = {};
   for (const k of ['teak', 'kulu', 'saja', 'mahua', 'bamboo', 'banyan', 'arjun', 'palash', 'generic']) T.bark[k] = makeBark(k);

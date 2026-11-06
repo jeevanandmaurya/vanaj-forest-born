@@ -31,7 +31,7 @@ export class Player {
     this.shake = 0; this.hurtFlash = 0; this.lastFoot = 0; this.fallVel = 0; this.climb = null; this.grabbed = null;
     this.projectiles = []; this.stuck = [];
     this.spawn = new THREE.Vector3();
-    this.body = buildHumanoid({ hair: 'matted', cloth: 'loin', clothTex: g.T.clothBark, skinColor: 0x7a5038, mud: 0.4, skinKey: 'skin-player', lean: 0.95 });
+    this.body = buildHumanoid({ hair: 'matted', cloth: 'loin', clothTex: g.T.clothBark, skinColor: 0x5c4030, mud: 0.4, skinKey: 'skin-player', lean: 0.95 });
     g.scene.add(this.body.root);
     this.bodyMats = new Set(); this.body.root.traverse((o) => { if (o.isMesh) this.bodyMats.add(o.material); });
     this.W3 = buildWeapons(g.T);

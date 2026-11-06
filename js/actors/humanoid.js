@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { patch, NOISE_GLSL } from '../core/shaderlib.js';
 import { mergeByMaterial } from '../core/merge.js';
+import { humanRigReady, buildRiggedHuman, animateRiggedHuman } from './humanrig.js';
 
 function limbGeo(r0, r1, len, radial = 10) {
   const c = new THREE.CylinderGeometry(r1, r0, len, radial, 4, true); c.translate(0, -len / 2, 0);
@@ -39,6 +40,7 @@ export function skinMaterial(color = 0x5e3d2a, mud = 0.35, key = 'skin') {
 }
 
 export function buildHumanoid(opts = {}) {
+  if (humanRigReady() && !opts.procedural) return buildRiggedHuman(opts);
   const S = opts.scale || 1.0;
   const skin = opts.skin || skinMaterial(opts.skinColor || 0x5e3d2a, opts.mud ?? 0.35, opts.skinKey || 'skin');
   const hairM = new THREE.MeshStandardMaterial({ color: opts.hairColor || 0x16110d, roughness: 0.85 });
@@ -149,6 +151,7 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
 // anim: { speed, crouch, air, vy, swim, action:{type,t}, weapon, aim, draw, lookPitch, dead, kneel }
 export function animateHumanoid(h, dt, a) {
+  if (h.rig) return animateRiggedHuman(h, dt, a);
   const j = h.j, S = h.S;
   h.t += dt;
   const spd = a.speed || 0;

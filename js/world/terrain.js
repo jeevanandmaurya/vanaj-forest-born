@@ -111,6 +111,8 @@ export function height(x, z) {
     h = smin(h, lp, 6);
   }
   h += 0.9 * S3.noise2(x / 22, z / 22) + 0.25 * S1.noise2(x / 6.5, z / 6.5);
+  // micro-relief you feel underfoot: hummocks, root bumps, hollows where leaves collect, cattle-trodden mud
+  h += 0.11 * S4.noise2(x / 2.7, z / 2.7) + 0.045 * S5.noise2(x / 1.3 + 7, z / 1.3 - 3);
   return h;
 }
 
@@ -262,7 +264,7 @@ export function createTerrainMaterial(tex, far, lq = false) {
   patch(m, (far ? 'terrain-far' : 'terrain') + (lq ? '-lq' : ''), (s) => {
     s.uniforms.tLitter = { value: tex.litter }; s.uniforms.tLitterM = { value: tex.litterMoist }; s.uniforms.tSoil = { value: tex.soil };
     s.uniforms.tRock = { value: tex.rock }; s.uniforms.tGrassG = { value: tex.grassGround }; s.uniforms.tSand = { value: tex.sand };
-    s.uniforms.tRed = { value: tex.redSoil }; s.uniforms.tBlack = { value: tex.blackSoil };
+    s.uniforms.tRed = { value: tex.redSoil }; s.uniforms.tBlack = { value: tex.blackSoil }; s.uniforms.tAtlas = { value: tex.groundAtlas };
     s.uniforms.uNearRect = m.userData.near;
     s.vertexShader = s.vertexShader
       .replace('#include <common>', `#include <common>
@@ -275,10 +277,50 @@ export function createTerrainMaterial(tex, far, lq = false) {
       .replace('#include <common>', `#include <common>
         ${lq ? '#define TERRAIN_LQ' : ''}
         ${NOISE_GLSL}
-        uniform sampler2D tLitter, tLitterM, tSoil, tRock, tGrassG, tSand, tRed, tBlack, tGroundAO; uniform vec4 uNearRect, uAORect;
+        uniform sampler2D tLitter, tLitterM, tSoil, tRock, tGrassG, tSand, tRed, tBlack, tGroundAO, tAtlas; uniform vec4 uNearRect, uAORect;
         uniform float uSeasonGreen, uWetness, uDry, uTime; uniform vec2 uWind; uniform vec3 uSunDir;
         varying vec4 vSplat; varying vec4 vBio; varying float vField; varying vec3 vWP; varying vec3 vWN;
-        float lum(vec3 c){ return dot(c, vec3(0.3,0.55,0.15)); }`)
+        float lum(vec3 c){ return dot(c, vec3(0.3,0.55,0.15)); }
+        // ---- texture bombing: every fallen leaf, twig and pebble placed individually (no repeating tile)
+        // mode 0 = mixed litter, 1 = pebbles, 2 = twigs & dry grass
+        int pickSprite(float h, int mode, float moist, float lat, float grassW, float green) {
+          if (mode == 1) return 12 + int(h * 2.99);
+          if (mode == 2) return h < grassW ? 15 : 10 + int(fract(h * 31.0) * 1.99);
+          float u = fract(h * 7.13);
+          if (u < lat * 0.22) return 12 + int(fract(u * 53.0) * 2.99);
+          if (moist > 0.45 && u < 0.08 + moist * 0.3) return 9;
+          if (u < 0.62) { if (fract(u * 5.7) < green * 0.35) return 3; return int(fract(u * 17.3) * 2.99); }
+          if (u < 0.72) return 4;
+          if (u < 0.8) return 5;
+          if (u < 0.92) return 6 + int(fract(u * 11.0) * 1.99);
+          return 8;
+        }
+        vec4 bomb(vec2 g, vec2 gdx, vec2 gdy, float seed, float density, float scMin, float scMax, int mode, float moist, float lat, float grassW, float green, float wet, float dry) {
+          vec4 acc = vec4(0.0);
+          vec2 gi = floor(g) - 1.0;
+          for (int j = 0; j < 3; j++) for (int i = 0; i < 3; i++) {
+            vec2 c = gi + vec2(float(i), float(j));
+            if (hash12(c * 1.37 + seed) > density) continue;
+            vec2 ctr = c + 0.5 + (vec2(hash12(c + seed + 1.7), hash12(c + seed + 3.1)) - 0.5) * 0.8;
+            float ang = hash12(c + seed + 5.3) * 6.2832, cs = cos(ang), sn = sin(ang);
+            float sc = mix(scMin, scMax, hash12(c + seed + 7.9));
+            vec2 d = (g - ctr) / sc;
+            vec2 l = vec2(cs * d.x - sn * d.y, sn * d.x + cs * d.y);
+            if (abs(l.x) > 0.5 || abs(l.y) > 0.5) continue;
+            float hs = hash12(c + seed + 9.7);
+            int k = pickSprite(hs, mode, moist, lat, grassW, green);
+            float col = float(k - (k / 4) * 4), row = float(k / 4);
+            vec2 auv = vec2((col + l.x + 0.5) * 0.25, 1.0 - (row + l.y + 0.5) * 0.25);
+            vec2 rx = vec2(cs * gdx.x - sn * gdx.y, sn * gdx.x + cs * gdx.y) / sc, ry = vec2(cs * gdy.x - sn * gdy.y, sn * gdy.x + cs * gdy.y) / sc;
+            vec4 t = textureGrad(tAtlas, auv, vec2(rx.x, -rx.y) * 0.25, vec2(ry.x, -ry.y) * 0.25);
+            float age = hash12(c + seed + 11.3);
+            vec3 tint = mix(vec3(1.06, 1.0, 0.92), vec3(0.72, 0.7, 0.66), age * age);          // fresh fall -> weathered grey
+            if (mode == 0) tint *= mix(vec3(1.0), vec3(1.12, 1.04, 0.86), dry) * mix(1.0, 0.62, wet);
+            t.rgb *= tint * (0.72 + 0.28 * t.a);                                                 // darker, lifted edges
+            acc.rgb = mix(acc.rgb, t.rgb, t.a); acc.a = max(acc.a, t.a);
+          }
+          return acc;
+        }`)
       .replace('#include <map_fragment>', `
         ${far ? 'if (vWP.x > uNearRect.x && vWP.x < uNearRect.z && vWP.z > uNearRect.y && vWP.z < uNearRect.w) discard;' : ''}
         vec2 uv = vWP.xz;
@@ -293,6 +335,15 @@ export function createTerrainMaterial(tex, far, lq = false) {
         // leaf litter, sampled at two rotated scales and blended by noise so the tile never repeats visibly
         float sel = smoothstep(0.3, 0.7, vnoise(uv * 0.06 + 11.0));
         vec3 tl = mix(texture2D(tLitter, uv * 0.21).rgb, texture2D(tLitter, R1 * uv * 0.163 + 0.31).rgb, sel);
+        float camDg = length(vViewPosition);
+        #ifndef TERRAIN_LQ
+        float nf = 1.0 - smoothstep(16.0, 42.0, camDg);
+        #else
+        float nf = 1.0 - smoothstep(10.0, 24.0, camDg);
+        #endif
+        vec2 gdx = dFdx(uv), gdy = dFdy(uv);
+        float fieldW0 = max(vField, 0.0), bedW0 = smoothstep(0.0, 0.6, -vField);
+        vec4 pebL = vec4(0.0);
         #ifndef TERRAIN_LQ
         tl = mix(tl, texture2D(tLitter, uv * 0.053 + 0.37).rgb, 0.3);
         vec3 tm = mix(texture2D(tLitterM, R1 * uv * 0.2).rgb, texture2D(tLitterM, uv * 0.067 + 0.7).rgb, 0.35);
@@ -311,6 +362,29 @@ export function createTerrainMaterial(tex, far, lq = false) {
         tg *= mix(vec3(1.12, 0.95, 0.62), vec3(0.58, 0.84, 0.38), green);
         // litter character drifts across the forest: fresh golden teak fall, grey weathered litter, russet patches
         tl = mix(vec3(lum(tl)), tl, 0.72);                                  // teak litter is tan-brown, not orange
+        if (nf > 0.001) {
+          float slope0 = 1.0 - vWN.y;
+          float cov0 = smoothstep(0.25, 0.62, fbm2(uv * 0.045 + 7.3) + vBio.y * 0.35 - slope0 * 0.9 - vBio.z * 0.18 + 0.1);
+          float grass0 = vSplat.y;
+          float dens = mix(0.25, 1.0, cov0) * (1.0 - bedW0) * (1.0 - fieldW0 * 0.9) * mix(1.0, 0.45, grass0) * mix(1.0, 0.75, uWetness);
+          // base: the litter mat itself (broken, half-buried leaves), with bare humus where cover is thin
+          vec3 humus = mix(texture2D(tSoil, uv * 0.16).rgb * vec3(0.62, 0.55, 0.48), texture2D(tBlack, uv * 0.085).rgb * 0.75, 0.45);
+          humus = mix(humus, tl * 0.82, mix(0.35, 0.9, cov0));
+          float gr = clamp(uSeasonGreen, 0.0, 1.0);
+          vec4 Ls = bomb(uv / 0.26 + 7.1, gdx / 0.26, gdy / 0.26, 23.0, dens, 0.9, 1.6, 0, vBio.x, vBio.z, grass0, gr, uWetness, uDry);
+          vec4 Lb = bomb(uv / 0.42, gdx / 0.42, gdy / 0.42, 11.0, dens * 0.95, 1.0, 1.75, 0, vBio.x, vBio.z, grass0, gr, uWetness, uDry);
+          #ifndef TERRAIN_LQ
+          vec4 Lt = bomb(uv / 0.9 + 3.3, gdx / 0.9, gdy / 0.9, 37.0, (0.2 + grass0 * 0.5) * (1.0 - bedW0), 0.8, 1.2, 2, vBio.x, vBio.z, grass0, gr, uWetness, uDry);
+          #else
+          vec4 Lt = vec4(0.0);
+          #endif
+          vec3 near = humus;
+          near = mix(near, Ls.rgb, Ls.a);
+          near = mix(near * (1.0 - Lb.a * 0.25), Lb.rgb, Lb.a);               // big leaves shade what lies under them
+          near = mix(near, Lt.rgb, Lt.a);
+          tl = mix(tl, near, nf);
+          if (bedW0 > 0.01) pebL = bomb(uv / 0.2 + 1.9, gdx / 0.2, gdy / 0.2, 51.0, 0.72, 0.6, 1.0, 1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        }
         vec3 litTint = mix(vec3(1.08, 0.98, 0.8), vec3(0.8, 0.79, 0.77), smoothstep(0.3, 0.7, hueN));
         litTint = mix(litTint, vec3(1.06, 0.84, 0.7), smoothstep(0.6, 0.85, vnoise(uv * 0.011 - 5.0)) * 0.7);
         litTint = mix(litTint, vec3(0.62, 0.56, 0.48), smoothstep(0.62, 0.82, vnoise(uv * 0.021 + 17.0)) * 0.6);   // dark rotted patches
@@ -318,7 +392,7 @@ export function createTerrainMaterial(tex, far, lq = false) {
         tl *= litTint;
         // damp, half-rotted litter near water, in bamboo, and through the rains
         float moistW = clamp(bio.x * 1.1 + uWetness * 0.25 - uDry * 0.3 + (patchN - 0.5) * 0.5, 0.0, 1.0);
-        tl = mix(tl, tm, smoothstep(0.3, 0.75, moistW));
+        tl = mix(tl, tm, smoothstep(0.3, 0.75, moistW) * mix(1.0, 0.3, nf));
         tl *= mix(vec3(1.05, 0.98, 0.9), vec3(0.76, 0.86, 0.6), green * 0.5);
         float sprout = green * smoothstep(0.74, 0.8, vnoise(uv * 3.1)) * (1.0 - uDry);
         tl = mix(tl, vec3(0.15, 0.25, 0.07), sprout * 0.55);
@@ -333,7 +407,7 @@ export function createTerrainMaterial(tex, far, lq = false) {
         vec4 hb = vec4(lum(tl), lum(tg), lum(tr), lum(tnd)) + 0.35;
         w = w * hb * hb * hb * hb; w /= (w.x + w.y + w.z + w.w + 1e-4);
         vec3 tcol = tl * w.x + tg * w.y + tr * w.z + tnd * w.w;
-        tcol = mix(tcol, bare, (1.0 - cover) * w.x * 0.85);
+        tcol = mix(tcol, bare, (1.0 - cover) * w.x * 0.85 * mix(1.0, 0.45, nf));
         tcol = mix(tcol, bare, (1.0 - smoothstep(0.15, 0.45, patchN + 0.15)) * w.y * 0.45);
         vec3 fieldC = mix(vec3(0.42, 0.3, 0.19), vec3(0.36, 0.42, 0.18), green) * (0.8 + 0.4 * vnoise(vec2(uv.x * 0.6, uv.y * 0.03)));
         tcol = mix(tcol, fieldC * (0.9 + 0.2 * sin(uv.x * 2.2)), fieldW * 0.85);
@@ -345,7 +419,10 @@ export function createTerrainMaterial(tex, far, lq = false) {
         // submerged bed: dark pebbles, silt and algae film instead of dry pale sand
         vec3 bedC = mix(tr * vec3(0.3, 0.32, 0.24), tblk * vec3(0.45, 0.5, 0.36), smoothstep(0.35, 0.65, vnoise(uv * 0.7)));
         bedC = mix(bedC, vec3(0.16, 0.2, 0.08), smoothstep(0.55, 0.8, vnoise(uv * 0.23 + 4.0)) * 0.5 * (1.0 - uWetness));
-        tcol = mix(tcol, bedC, bedW * 0.85);
+        vec3 silt = mix(vec3(0.1, 0.095, 0.07), vec3(0.15, 0.135, 0.1), vnoise(uv * 1.3)) * mix(1.0, 0.7, smoothstep(0.4, 0.7, vnoise(uv * 0.21 + 9.0)));
+        bedC = mix(bedC * 0.6, silt, 0.6);
+        bedC = mix(bedC, pebL.rgb * vec3(0.4, 0.42, 0.34), pebL.a * nf);
+        tcol = mix(tcol, bedC, bedW * 0.9);
         // ground occlusion around trunks / rocks and shade under crowns
         vec2 aoUV = (vWP.xz - uAORect.xy) * uAORect.z;
         vec2 aoE = smoothstep(vec2(0.0), vec2(0.06), aoUV) * smoothstep(vec2(1.0), vec2(0.94), aoUV);
@@ -385,6 +462,13 @@ export function createTerrainMaterial(tex, far, lq = false) {
           float dap = mix(1.0, 0.42 + ck * 1.0, gCanopy * 0.62);
           reflectedLight.directDiffuse *= dap; reflectedLight.directSpecular *= dap;
           reflectedLight.indirectDiffuse *= 1.0 - gCanopy * 0.16 - contact * 0.42;
+          if (bedW > 0.01) {   // sunlight focused by the ripples above dances on the bed
+            float bd = max(-vField, 0.0);
+            vec2 cp = vWP.xz * 1.15 + uWind * uTime * 0.25;
+            vec2 c1 = cell3(vec3(cp, uTime * 0.45)), c2 = cell3(vec3(cp * 1.7 + 4.0, uTime * 0.6 + 2.0));
+            float ca = (1.0 - smoothstep(0.0, 0.09, c1.y - c1.x)) * 0.65 + (1.0 - smoothstep(0.0, 0.07, c2.y - c2.x)) * 0.45;
+            reflectedLight.directDiffuse *= 1.0 + ca * 1.6 * bedW * exp(-bd * 0.7) * (1.0 - uWetness * 0.7);
+          }
         }`);
   });
   return m;
@@ -409,7 +493,7 @@ export class TerrainManager {
     this.far.renderOrder = -1;
     scene.add(this.far);
   }
-  lodFor(d) { return d <= 1 ? 64 : d <= 2 ? 32 : 16; }
+  lodFor(d) { return d <= 1 ? (this.q.name === 'Low' ? 64 : 128) : d <= 2 ? 32 : 16; }
   update(px, pz, budgetMs = 6, force = false) {
     const cx = Math.floor(px / CHUNK), cz = Math.floor(pz / CHUNK);
     if (cx !== this.center.cx || cz !== this.center.cz || force) {
@@ -492,3 +576,16 @@ export function renderMapCanvas(size = 384) {
   ctx.putImageData(img, 0, 0);
   return cv;
 }
+
+// Closest drinking spot: a waterhole edge or the river bank, as a point on dry ground just at the water line.
+export function nearestWaterPoint(p) {
+  let best = null, bd = Infinity;
+  for (const w of WATERHOLES) {
+    const dx = p.x - w.x, dz = p.z - w.z, d = Math.hypot(dx, dz) || 1;
+    const e = d - (w.r - 2); if (e < bd) { bd = e; best = { x: w.x + dx / d * (w.r - 2), z: w.z + dz / d * (w.r - 2) }; }
+  }
+  const rx = riverX(p.z), side = p.x > rx ? 1 : -1, dr = Math.abs(p.x - rx) - (RIVER_W - 2);
+  if (dr < bd && p.z < RIVER_END_Z) { bd = dr; best = { x: rx + side * (RIVER_W - 2), z: p.z }; }
+  return best ? new THREE.Vector3(best.x, 0, best.z) : null;
+}
+

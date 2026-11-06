@@ -4,7 +4,7 @@ A third- and first-person survival game in the browser, set in **Pench Tiger Res
 
 A boy who was lost in a flood at three has grown up alone in the jungle. He doesn't know whether anyone like him exists. Over four seasons he learns to survive, talks to and fights the animals around him, follows clues left by humans, and in the end walks into a Gond village and finds the grandmother who lost him.
 
-Everything is generated in code at load time: terrain, trees, animals, people, textures, sound and music. There are no downloaded models, images or audio files.
+Terrain, trees, ground cover, textures, sound and music are generated in code at load time. The player, villagers, deer, gaur, cattle, dogs and wild dogs use rigged, animated CC0 models (see Credits); the remaining animals are still built in code.
 
 ![Morning light shafts through the teak canopy](docs/screenshots/morning-light-shafts.jpg)
 ![Forest floor in winter: teak litter, roots, fallen branches](docs/screenshots/forest-floor-winter.jpg)
@@ -64,12 +64,15 @@ The fight with Torn-Ear, the old tiger, ends with a choice to kill him or spare 
 ## What's in it
 
 - **World**: a 4 km × 4 km landscape built from the real place: the Pench river, a reservoir, waterholes, rocky ridges, open grassland, bamboo brakes, termite mounds and a village. It streams in 64 m chunks with distance-based detail.
-- **Ground**: the forest floor changes as you walk: dry teak litter in golden, grey and russet drifts; damp, half-rotted litter near water and bamboo; red laterite gravel on ridges and slopes; dark basalt soil that cracks in summer; sheet rock on the ridge tops; summer burn scars; rain puddles. Fallen branches and stone clusters lie in the litter, and the soil darkens around trunk bases and under crowns.
-- **Plants**: teak, mahua, saja, kulu, palash, arjun, banyan, bamboo and lantana, each with its real trunk and bark: teak's fluted base and fibrous bark, saja's tall straight stem in crocodile-skin plates, the ghost tree's crooked pale bole with peeling papery bark, mahua's short stout trunk, arjun's pale buttressed riverside trunk, palash's twisted stem. Surface roots run into the litter; every tree gets its own girth, lean and bark tint. Wind sway, seasonal leaf fall and flowering.
+- **Ground**: real objects lie on the forest floor near you, not just a painted texture: thousands of individual curled leaf meshes in drifts (teak, mahua, saja, palash, bamboo straw), forked sticks, stones (red laterite on the ridges, grey rock elsewhere) and rounded, algae-tinted cobbles on stream and pond beds under the water. The ground itself has small hummocks and hollows. Further out, the floor shader places individual leaves, twigs and pebbles one by one (no repeating tile), with damp litter, laterite, black soil, sheet rock, burn scars and puddles; under water it switches to silt and pebbles with moving caustics. Leaf cover follows the season: thick in summer, rotted away after the rains.
+- **Plants**: teak, mahua, saja, kulu, palash, arjun, banyan, bamboo and lantana. Trees grow from a recursive branching model (adapted from EZ-Tree): trunks fork, bend, lean and taper, with roots, broken snags and dead limbs, and each species has its own growth habit. Teak, mahua, saja and palash use photo-scanned bark; every tree gets its own girth, lean and tint. Wind sway, seasonal leaf fall and flowering.
 - **Water**: the light path through the water decides what you see: the bed shows in the shallows, deep pools go dark. The surrounding forest reflects in the surface. Seasons change the water: clear green winter pools, algae and floating leaves on stagnant summer pools, muddy ochre monsoon spate.
 - **Light**: sun shafts through the canopy, dappled sun flecks on the forest floor, ground occlusion at tree bases and rocks, SMAA anti-aliasing (Medium) or MSAA with alpha-to-coverage foliage (High/Ultra).
 - **Sky and weather**: the sun follows its real path at 21.7° N for each season. There are clouds, a moon and stars, height fog, haze, mist, rain, storms and lightning; streams and waterholes rise in the monsoon.
-- **Animals**: tiger, leopard, dhole, wolf, sloth bear, gaur, sambar, chital, wild boar, grey langur, peafowl, mugger crocodile, village cows and dogs. Each species has its own procedural body and coat shader. Behaviour includes herds, packs that circle their prey, langur troops in the trees, an alarm-call network, ambushes from the water and a companion who follows you. Animals steer round trunks and rocks and don't walk through each other; on slopes their legs stay plumb, ungulates nod as they walk, and runners lean into turns.
+- **Animals**: tiger, leopard, dhole, wolf, sloth bear, gaur, sambar, chital, wild boar, grey langur, peafowl, mugger crocodile, village cows and dogs. Chital, sambar, gaur, dhole, wolf, dogs and cattle are rigged models with blended walk, gallop, graze, attack, hit-react and death clips. Behaviour follows the day rather than chance: grazing at dawn and dusk, resting in shade at midday, walking to water to drink. Chital follow langur troops; alarm calls spread between species, and sambar bell only for tiger, leopard or dhole. Herds, packs that circle their prey, ambushes from the water and a companion who follows you.
+- **Birds**: flocks of spotted doves, mynas and rose-ringed parakeets feed on open ground, flush when you or a predator come near and settle further off, and stream to roost at dusk. Vultures gather and circle over a kill.
+- **Real places**: the map uses real Pench names, shown as you walk in: Alikatta meadow, Junewani Talao (dead trees standing in the water), Piyorthadi rocks, Kalapahad, Sitaghat and Raiyakassa on the river, Jamun Nala, Chhindimatta, Karmajhiri, Turia and the Totladoh reservoir.
+- **Tracking**: animals leave pugmarks, paw prints and hoof slots that fade over hours and wash out in rain. Crouch still over them to read who made them, how old they are and which way they went. Alarm calls are read out too, with the direction and what that caller only calls for.
 - **Movement**: feet plant on uneven ground (two-bone leg IK with pelvis drop), the walk vaults over the stance leg while the run compresses into it, and the third-person camera won't pass through trunks or walls.
 - **Survival and combat**: hunger, thirst, bleeding, sickness and fire. You craft a knife, club, spear, bow, arrows, torch and flute. Fighting includes blocking, parrying, dodging and finishing moves; arrows and spears stay stuck in whatever they hit; there are blood decals, limping animals and skinning.
 - **Sound**: Web Audio with spatial (HRTF) panning and reverb. Birds, animal calls, footsteps for each surface, impacts and thunder are all synthesised.
@@ -90,20 +93,29 @@ Browsers don't let a page read system-wide CPU or RAM usage, so those figures co
 
 ## Code layout
 
-About 7,800 lines of JavaScript on top of [three.js](https://threejs.org) r170 (MIT, bundled in `lib/`).
+About 10,000 lines of JavaScript on top of [three.js](https://threejs.org) r170 (MIT, bundled in `lib/`).
 
 ```
 index.html            UI: menus, HUD, panels
 js/main.js            boot, render pipeline, game loop, input, interactions, save/load
 js/core/              noise, shared shader code (fog, wind), mesh merging, performance overlay
-js/world/             terrain, flora, sky, weather, water, effects, props, procedural textures
-js/actors/            animals (rigs, coats, AI), humanoid rig and animation, player
+js/world/             terrain, flora, ground cover, birds, tracks, places, sky, weather, water, effects, props, textures
+js/actors/            animals (AI, procedural and rigged bodies), rigged humans, player
+assets/models/        rigged GLB models (CC0)
 js/audio/             sound engine, music engine
 js/game/              story chapters, items and crafting, UI logic, lore
 ```
 
+## Credits
+
+- [three.js](https://threejs.org) r170, MIT.
+- Tree branching adapted from [EZ-Tree](https://github.com/dgreenheck/ez-tree) by Daniel Greenheck, MIT (`lib/textures/bark/EZ-TREE-LICENSE`).
+- Bark scans: oak and willow from [Poly Haven](https://polyhaven.com) (CC0); pine and birch from TextureCan, as bundled with EZ-Tree. See `lib/textures/bark/SOURCES.md`.
+- Animated animals (Ultimate Animated Animals) and the animated human mannequin: [Quaternius](https://quaternius.com), CC0 (`assets/models/LICENSE-Quaternius.txt`).
+
 ## Limitations
 
-- Animals and people are procedural rigs animated in code, not motion-captured, so they look stylised up close.
+- Tiger, leopard, sloth bear, boar, langur, peafowl and crocodile are still procedural bodies animated in code; they look stylised up close until rigged models replace them.
+- The rigged models are low-poly (Quaternius style).
 - Pointer lock can be refused inside sandboxed frames. If the mouse doesn't lock, move the cursor to the screen edge to turn.
 - Progress saves to your browser's localStorage.

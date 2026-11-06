@@ -13,20 +13,20 @@ site('den', 760, 880, 'Wolf Den');
 site('denWater', 700, 985, 'Waterhole');
 site('termite', 1150, 260, 'Termite Flats');
 site('hive', 1110, 205, 'Rock-bee Tree');
-site('mahua', 820, -220, 'Mahua Grove');
-site('maidan', MAIDAN.x, MAIDAN.z, 'The Maidan');
+site('mahua', 820, -220, 'Karmajhiri Mahua');
+site('maidan', MAIDAN.x, MAIDAN.z, 'Alikatta Meadow');
 site('stumps', 150, -740, 'Cut Wood');
 site('hearth', 168, -752, 'Cold Hearth');
-site('rocks', ROCKS.x, ROCKS.z, 'Ghost Tree Rocks');
+site('rocks', ROCKS.x, ROCKS.z, 'Piyorthadi Rocks');
 site('cave', -1020, -250, 'Painted Shelter');
 site('dholeDen', -480, 420, 'Dhole Den');
-site('sandbar', riverX(640) + RIVER_W + 5, 640, 'The Old Sandbar');
+site('sandbar', riverX(640) + RIVER_W + 5, 640, 'Sitaghat Sandbar');
 site('shrine', riverX(-1250) - 260, -1250, 'Bada Dev Shrine');
-site('tower', riverX(-1400) - 140, -1400, 'Watchtower');
+site('tower', riverX(-1400) - 140, -1400, 'Kalapahad Tower');
 site('fluteSpot', riverX(-1500) - RIVER_W - 6, -1500, 'Riverbank');
 site('sukhiSpot', riverX(-1500) + RIVER_W + 8, -1500, 'Far Bank');
 site('fields', VILLAGE.x - 120, -1640, 'Village Fields');
-site('village', VILLAGE.x, VILLAGE.z, 'Village');
+site('village', VILLAGE.x, VILLAGE.z, 'Turia Village');
 
 const std = (o) => new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0, ...o });
 

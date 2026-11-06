@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { mulberry32, hash2, clamp, smoothstep } from '../core/noise.js';
 import { G, patch, WIND_VERTEX, NOISE_GLSL } from '../core/shaderlib.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
-import { height, biomeAt, waterAt, CHUNK } from './terrain.js';
+import { height, biomeAt, waterAt, CHUNK, WATERHOLES, lakeE } from './terrain.js';
 
 // ------------------------------------------------------------------ geometry builder
 class GB {
@@ -141,86 +141,154 @@ function growBranch(gb, leaves, rng, start, dir, L, r0, depth, spec, ctx) {
   }
 }
 
-function buildGeneric(specName, seed) {
-  const spec = SPEC[specName], rng = mulberry32(seed);
-  const gb = new GB(), leavesG = new GB();
-  const H = spec.H[0] + rng() * (spec.H[1] - spec.H[0]);
-  const r0 = spec.r0[0] + rng() * (spec.r0[1] - spec.r0[0]);
-  const cardS = spec.cardS[0] + rng() * (spec.cardS[1] - spec.cardS[0]);
-  const ctx = { H, cardS };
-  const lx = (rng() - 0.5) * 2 * spec.lean, lz = (rng() - 0.5) * 2 * spec.lean;
-  const tp = [], tr = [];
-  const segs = 14;
-  const trunkTop = H * (spec.trunkTop || (spec.snag ? 0.75 + rng() * 0.2 : 0.92));
-  const taper = spec.taper ?? 0.72, flare = spec.flare ?? 0.55;
-  const bend = (spec.bend || 0) * (0.6 + rng() * 0.8), bendF = 0.7 + rng() * 0.9, bendPh = rng() * 6.28, bA = rng() * 6.28;
-  const bdx = Math.cos(bA), bdz = Math.sin(bA);
-  let wx = 0, wz = 0;
-  for (let s = 0; s <= segs; s++) {
-    const t = s / segs, y = -1.6 + t * (trunkTop + 1.6);
-    wx += (rng() - 0.5) * spec.gnarl * 0.6; wz += (rng() - 0.5) * spec.gnarl * 0.6;
-    const bo = bend * Math.sin(Math.max(0, y) / trunkTop * Math.PI * bendF + bendPh) * clamp(y / 2, 0, 1);
-    tp.push([lx * y + wx + bdx * bo, y, lz * y + wz + bdz * bo]);
-    const tt = clamp(y / trunkTop, 0, 1);
-    tr.push(r0 * (1 - taper * tt) * (1 + flare * Math.exp(-Math.max(0, y) * 1.5)));
-  }
-  const fl = spec.flute, flPh = rng() * 6.28;
-  const shape = fl ? (si, a, p) => 1 + fl.amp * Math.pow(Math.max(0, Math.cos(a * fl.n + flPh + p[1] * 0.15)), 1.6) * Math.exp(-Math.max(0, p[1] + 0.3) / fl.h) - fl.amp * 0.25 * Math.exp(-Math.max(0, p[1]) / fl.h) : null;
-  tube(gb, tp, tr, fl ? 14 : 10, windTrunk(H), rng(), null, 1, shape, (p) => 0.62 + 0.38 * clamp((p[1] + 0.2) / 2.2, 0, 1));
-  // surface roots running out from the base into the litter
-  const nR = spec.roots || 0;
-  for (let k = 0; k < nR; k++) {
-    const a = (fl ? (k / nR) * 6.28 - flPh / fl.n : rng() * 6.28) + (rng() - 0.5) * 0.5;
-    const L = r0 * (3.5 + rng() * 4), rr = r0 * (0.32 + rng() * 0.18);
-    const ca = Math.cos(a), sa = Math.sin(a), b0x = tp[2][0], b0z = tp[2][2];
-    const pts = [], rads = [];
-    for (let q = 0; q <= 4; q++) { const t = q / 4; const d = r0 * 0.5 + t * L; pts.push([b0x + ca * d + (rng() - 0.5) * 0.08, 0.35 * (1 - t) * (1 - t) - 0.12 * t, b0z + sa * d + (rng() - 0.5) * 0.08]); rads.push(rr * (1 - 0.8 * t) + 0.015); }
-    tube(gb, pts, rads, 5, () => 0, rng(), 1, 0.8);
-  }
-  if (spec.snag) { // jagged broken top
-    const top = tp[segs], rt = tr[segs];
-    for (let k = 0; k < 4; k++) { const a = k * 1.57 + rng(); tube(gb, [top, [top[0] + Math.cos(a) * rt * 0.4, top[1] + 0.3 + rng() * 0.7, top[2] + Math.sin(a) * rt * 0.4]], [rt * 0.45, 0.02], 4, () => 0.05, rng(), 1); }
-  }
-  // branches
-  const leaves = [];
-  const nB = spec.nB[0] + Math.floor(rng() * (spec.nB[1] - spec.nB[0] + 1));
-  let phi = rng() * 6.28;
-  for (let b = 0; b < nB; b++) {
-    const t = spec.trunkFrac + (1 - spec.trunkFrac) * (b / nB) * 0.95 + rng() * 0.05;
-    const idx = Math.min(segs, Math.round(t * segs));
-    const sp = new THREE.Vector3(...tp[idx]);
-    phi += 2.39996 + (rng() - 0.5) * 0.4;
-    const th = spec.ang[0] + rng() * (spec.ang[1] - spec.ang[0]);
-    const dir = new THREE.Vector3(Math.cos(phi) * Math.sin(th), Math.cos(th), Math.sin(phi) * Math.sin(th));
-    const L = spec.crownR * spec.bLen * (0.65 + rng() * 0.5) * (1 - (t - spec.trunkFrac) * 0.55);
-    growBranch(gb, leaves, rng, sp, dir, L, tr[idx] * 0.6, 0, spec, ctx);
-  }
-  // top leader
-  if (spec.perTip > 0 && !spec.snag) growBranch(gb, leaves, rng, new THREE.Vector3(...tp[segs]), new THREE.Vector3(0, 1, 0), spec.crownR * 0.5, tr[segs] * 0.8, 0, spec, ctx);
-  // crown centre
-  const crownC = new THREE.Vector3(); for (const l of leaves) crownC.add(l.C); if (leaves.length) crownC.multiplyScalar(1 / leaves.length);
-  let crownR = 0.1; for (const l of leaves) crownR = Math.max(crownR, l.C.distanceTo(crownC)); crownR *= 0.85;
-  for (const l of leaves) {
-    const out = l.C.clone().sub(crownC).normalize();
-    const up = out.multiplyScalar(0.8).add(new THREE.Vector3(0, 0.9, 0)).add(new THREE.Vector3(rng() - 0.5, rng() - 0.5, rng() - 0.5).multiplyScalar(0.9)).normalize();
-    const s = cardS * (0.75 + rng() * 0.5);
-    card(leavesG, l.C, up, s, s, crownC, crownR, 0.6 + 0.4 * clamp((l.C.y - H * 0.4) / H, 0, 1), rng(), rng, spec.tint);
-  }
-  // LOD1
-  const lb = new GB(), ll = new GB();
-  const tp1 = [tp[0], tp[3], tp[7], tp[10], tp[14]], tr1 = [tr[0], tr[3], tr[7], tr[10], tr[14]];
-  tube(lb, tp1, tr1, 5, windTrunk(H), 0.5, null);
-  if (leaves.length) {
-    const k = Math.max(1, Math.round(leaves.length / 9));
-    for (let i = 0; i < leaves.length; i += k) {
-      const l = leaves[i];
-      const out = l.C.clone().sub(crownC).normalize();
-      const up = out.multiplyScalar(0.6).add(new THREE.Vector3(0, 1, 0)).normalize();
-      const s = cardS * Math.sqrt(k) * 1.05;
-      card(ll, l.C.clone().addScaledVector(up, -s * 0.3), up, s, s, crownC, crownR, 0.5, rng(), rng, spec.tint);
+// ------------------------------------------------------------------ recursive tree growth
+// Skeleton growth follows EZ-Tree's method (Daniel Greenheck, MIT): each branch is a chain of sections that
+// wander by "gnarliness", bend toward a growth force, taper, then spawn children around it and a terminal
+// continuation from its tip. Species settings below are tuned from field descriptions of the Pench trees.
+const GROW = {
+  // teak: tall clean bole forking high into an open, airy crown of huge leaves
+  teak: { trunkL: [10, 14], trunkR: [0.3, 0.44], levels: 3, children: [5, 4, 3], angle: [0, 48, 50, 45], start: [0, 0.62, 0.3, 0.25], length: [0, 6.0, 3.4, 1.5], radius: [1, 0.6, 0.55, 0.6], gnarl: [0.045, 0.14, 0.2, 0.28], taper: [0.55, 0.65, 0.7, 0.75], force: 0.012, sections: [10, 6, 4, 3], segs: [12, 7, 5, 3], leafCount: 2, leafSize: [2.8, 3.6], flute: { n: 6, amp: 0.2, h: 1.4 }, roots: 4, flare: 0.45, lean: 0.04 },
+  // mahua: short stout bole, forks low into heavy limbs; dense rounded crown
+  mahua: { trunkL: [3.2, 4.6], trunkR: [0.48, 0.62], levels: 3, children: [5, 4, 3], angle: [0, 42, 52, 50], start: [0, 0.7, 0.3, 0.2], length: [0, 6.2, 3.2, 1.4], radius: [1, 0.72, 0.6, 0.6], gnarl: [0.12, 0.17, 0.22, 0.3], taper: [0.35, 0.6, 0.68, 0.75], force: 0.008, sections: [6, 7, 5, 3], segs: [14, 8, 5, 3], leafCount: 3, leafSize: [2.1, 2.6], flute: { n: 5, amp: 0.12, h: 1.0 }, roots: 5, flare: 0.55, lean: 0.06 },
+  // saja (crocodile bark): tall straight cylindrical stem, small high crown
+  saja: { trunkL: [14, 19], trunkR: [0.3, 0.42], levels: 3, children: [4, 4, 3], angle: [0, 36, 46, 45], start: [0, 0.74, 0.3, 0.25], length: [0, 4.6, 2.4, 1.2], radius: [1, 0.5, 0.55, 0.6], gnarl: [0.03, 0.12, 0.2, 0.26], taper: [0.5, 0.65, 0.7, 0.75], force: 0.014, sections: [12, 6, 4, 3], segs: [12, 7, 5, 3], leafCount: 2, leafSize: [2.1, 2.6], roots: 3, flare: 0.35, lean: 0.02 },
+  // kulu / ghost tree: short crooked bole, big limbs spreading almost horizontally, sparse leaves at the tips
+  kulu: { trunkL: [4.5, 6.5], trunkR: [0.24, 0.34], levels: 3, children: [4, 3, 3], angle: [0, 74, 50, 45], start: [0, 0.55, 0.35, 0.3], length: [0, 5.6, 2.8, 1.2], radius: [1, 0.66, 0.58, 0.6], gnarl: [0.3, 0.28, 0.3, 0.3], taper: [0.45, 0.62, 0.7, 0.75], force: 0.003, sections: [7, 6, 4, 3], segs: [11, 7, 5, 3], leafCount: 1, leafSize: [1.8, 2.2], roots: 2, flare: 0.4, lean: 0.25 },
+  // palash: crooked tortuous trunk, irregular branching, low
+  palash: { trunkL: [2.6, 4.2], trunkR: [0.15, 0.24], levels: 3, children: [4, 3, 3], angle: [0, 52, 50, 50], start: [0, 0.5, 0.3, 0.3], length: [0, 3.4, 2.0, 1.0], radius: [1, 0.66, 0.6, 0.6], gnarl: [0.42, 0.36, 0.34, 0.3], taper: [0.45, 0.65, 0.7, 0.75], force: 0.006, sections: [6, 5, 4, 3], segs: [9, 6, 4, 3], leafCount: 2, leafSize: [1.6, 2.0], roots: 2, flare: 0.35, lean: 0.2 },
+  // tendu / lendia and other small associates
+  small: { trunkL: [4.5, 7], trunkR: [0.18, 0.28], levels: 3, children: [5, 3, 3], angle: [0, 50, 48, 45], start: [0, 0.55, 0.3, 0.3], length: [0, 3.6, 2.0, 1.0], radius: [1, 0.6, 0.58, 0.6], gnarl: [0.14, 0.2, 0.25, 0.3], taper: [0.5, 0.65, 0.7, 0.75], force: 0.01, sections: [7, 5, 4, 3], segs: [9, 6, 4, 3], leafCount: 2, leafSize: [1.8, 2.2], roots: 2, flare: 0.4, lean: 0.08 },
+  // arjun: riverside giant, buttressed uneven stem, wide spreading crown
+  arjun: { trunkL: [6, 8.5], trunkR: [0.5, 0.68], levels: 3, children: [6, 4, 3], angle: [0, 56, 50, 45], start: [0, 0.58, 0.3, 0.25], length: [0, 7.2, 3.5, 1.5], radius: [1, 0.62, 0.56, 0.6], gnarl: [0.1, 0.16, 0.22, 0.28], taper: [0.45, 0.62, 0.7, 0.75], force: 0.007, sections: [8, 7, 5, 3], segs: [14, 8, 5, 3], leafCount: 3, leafSize: [2.3, 2.9], flute: { n: 5, amp: 0.55, h: 2.0 }, roots: 5, flare: 0.5, lean: 0.07 },
+  // dead snag: no leaves, broken leader
+  dead: { trunkL: [7, 11], trunkR: [0.22, 0.34], levels: 2, children: [4, 3, 0], angle: [0, 50, 48, 0], start: [0, 0.5, 0.35, 0], length: [0, 3.2, 1.3, 0], radius: [1, 0.55, 0.55, 0], gnarl: [0.12, 0.25, 0.3, 0], taper: [0.5, 0.75, 0.8, 0], force: 0.008, sections: [8, 5, 3, 0], segs: [10, 6, 4, 0], leafCount: 0, leafSize: [0, 0], roots: 3, flare: 0.45, lean: 0.12, snag: true },
+};
+const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _qF = new THREE.Quaternion(), _e = new THREE.Euler(), _up = new THREE.Vector3(0, 1, 0), _vv = new THREE.Vector3();
+function growSkeleton(P, rng) {
+  const rnd = (a, b) => a + rng() * (b - a);
+  const branches = [], leaves = [];
+  const trunkL = rnd(...P.trunkL), r0 = rnd(...P.trunkR);
+  const leanQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(rnd(-P.lean, P.lean), 0, rnd(-P.lean, P.lean)));
+  const queue = [{ origin: new THREE.Vector3(0, -1.2, 0), q: leanQ, length: trunkL + 1.2, radius: r0, level: 0 }];
+  _qF.setFromUnitVectors(_up, _up);
+  while (queue.length) {
+    const b = queue.shift();
+    const L = b.level, nSec = P.sections[L], secLen = b.length / nSec;
+    const sections = [];
+    const pos = b.origin.clone(), q = b.q.clone();
+    for (let i = 0; i <= nSec; i++) {
+      let r = b.radius * (1 - P.taper[L] * (i / nSec));
+      if (i === nSec && L === P.levels) r = Math.max(0.006, r * 0.15);
+      sections.push({ p: pos.clone(), q: q.clone(), r });
+      pos.add(_vv.set(0, secLen, 0).applyQuaternion(q));
+      const g = P.gnarl[L] * Math.max(1, 1 / Math.sqrt(Math.max(r, 0.02)) * 0.6);
+      _e.set(rnd(-g, g), rnd(-g, g) * 0.3, rnd(-g, g)); _q2.setFromEuler(_e); q.multiply(_q2);
+      q.rotateTowards(_qF, Math.min(0.25, P.force / Math.max(r, 0.03)));
+    }
+    branches.push({ level: L, sections, segs: P.segs[L] });
+    if (L < P.levels) {
+      // terminal continuation from the tip (keeps the leader / limb going and lets it fork)
+      const last = sections[nSec];
+      if (!(L === 0 && P.snag)) queue.push({ origin: last.p.clone(), q: last.q.clone(), length: P.length[L + 1] * rnd(0.75, 1.1), radius: last.r, level: L + 1 });
+      // side children, spiralled round the parent
+      const n = P.children[L], off = rng() * 6.28;
+      for (let c = 0; c < n; c++) {
+        const t = rnd(P.start[L + 1], 1);
+        const fi = t * nSec, i0 = Math.min(nSec - 1, Math.floor(fi)), al = fi - i0;
+        const A = sections[i0], B = sections[i0 + 1];
+        const o = new THREE.Vector3().lerpVectors(A.p, B.p, al);
+        const pr = A.r * (1 - al) + B.r * al;
+        const qp = A.q.clone().slerp(B.q, al);
+        const ang = (P.angle[L + 1] + rnd(-12, 12)) * Math.PI / 180, rad = off + c * 2.39996 + rnd(-0.3, 0.3);
+        const qc = qp.clone().multiply(_q2.setFromAxisAngle(_up, rad)).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), ang));
+        const len = P.length[L + 1] * rnd(0.7, 1.15) * (L === 0 ? 1 - (t - P.start[L + 1]) * 0.35 : 1);
+        queue.push({ origin: o, q: qc, length: len, radius: pr * P.radius[L + 1], level: L + 1 });
+      }
+    } else if (P.leafCount > 0) {
+      for (let k = 0; k < Math.max(0, P.leafCount - 1); k++) { const t = rnd(0.35, 1); const s = sections[Math.min(nSec, Math.round(t * nSec))]; leaves.push({ p: s.p.clone(), q: s.q.clone() }); }
+      leaves.push({ p: sections[nSec].p.clone(), q: sections[nSec].q.clone() });
     }
   }
-  return { bark: gb.geo(), leaf: leaves.length ? leavesG.geo() : null, bark1: lb.geo(), leaf1: leaves.length ? ll.geo() : null, H, trunkR: r0 * (1.3 + (fl ? fl.amp * 0.5 : 0)), crownY: crownC.y, crownR, barkKind: spec.bark, leafKind: spec.leaf };
+  return { branches, leaves, r0, trunkL };
+}
+
+function meshSkeleton(gb, sk, P, rng, detail, H) {
+  const fl = P.flute, flPh = rng() * 6.28;
+  for (const b of sk.branches) {
+    if (detail === 1 && b.level >= 2) continue;
+    if (b.level >= 3) continue;   // finest twigs sit inside the leaf clusters; not worth their vertices
+    const segs = detail === 1 ? Math.max(3, Math.round(b.segs * 0.5)) : b.segs;
+    const step = detail === 1 && b.sections.length > 4 ? 2 : 1;
+    const secs = b.sections.filter((s, i) => i % step === 0 || i === b.sections.length - 1);
+    const base = gb.p.length / 3; let len = 0;
+    const uRep = Math.max(1, Math.round(2 * Math.PI * b.sections[0].r / 0.9));
+    for (let i = 0; i < secs.length; i++) {
+      const S = secs[i];
+      if (i > 0) len += S.p.distanceTo(secs[i - 1].p);
+      let r = S.r;
+      if (b.level === 0) r *= 1 + P.flare * Math.exp(-Math.max(0, S.p.y) * 1.5);
+      const hf = clamp(S.p.y / H, 0, 1);
+      const wv = (b.level === 0 ? Math.pow(hf, 2.2) * 0.22 : 0.16 + 0.22 * b.level * hf);
+      const ao = (0.62 + 0.38 * clamp((S.p.y + 0.2) / 2.4, 0, 1)) * (b.level === 0 ? 1 : 0.92);
+      for (let j = 0; j <= segs; j++) {
+        const a = (j / segs) * Math.PI * 2;
+        let m = 1;
+        if (fl && b.level === 0) m = 1 + fl.amp * Math.pow(Math.max(0, Math.cos(a * fl.n + flPh + S.p.y * 0.15)), 1.6) * Math.exp(-Math.max(0, S.p.y + 0.3) / fl.h);
+        _vv.set(Math.cos(a), 0, Math.sin(a)).applyQuaternion(S.q);
+        const nx = _vv.x, ny = _vv.y, nz = _vv.z, rr = r * m, gro = fl && b.level === 0 ? 0.8 + 0.2 * clamp(m - 0.6, 0, 1) : 1;
+        gb.vert(S.p.x + nx * rr, S.p.y + ny * rr, S.p.z + nz * rr, nx, ny, nz, (j / segs) * uRep, len / 1.7, ao * gro, ao * gro, ao * gro, wv, rng());
+      }
+    }
+    for (let i = 0; i < secs.length - 1; i++) for (let j = 0; j < segs; j++) {
+      const a = base + i * (segs + 1) + j, bb = a + 1, c = a + segs + 1, d = c + 1;
+      gb.i.push(a, c, bb, bb, c, d);
+    }
+  }
+}
+
+function buildGeneric(specName, seed) {
+  const P = GROW[specName], spec = SPEC[specName], rng = mulberry32(seed);
+  const sk = growSkeleton(P, rng);
+  let H = 1; for (const b of sk.branches) for (const s of b.sections) H = Math.max(H, s.p.y);
+  const gb = new GB(), lb = new GB();
+  meshSkeleton(gb, sk, P, rng, 0, H);
+  meshSkeleton(lb, sk, P, mulberry32(seed + 7), 1, H);
+  // surface roots running out from the base into the litter
+  const r0 = sk.r0;
+  for (let k = 0; k < (P.roots || 0); k++) {
+    const a = (k / P.roots) * 6.28 + (rng() - 0.5) * 0.6;
+    const L = r0 * (3.5 + rng() * 4), rr = r0 * (0.32 + rng() * 0.18), ca = Math.cos(a), sa = Math.sin(a);
+    const pts = [], rads = [];
+    for (let q = 0; q <= 4; q++) { const t = q / 4, d = r0 * 0.5 + t * L; pts.push([ca * d, 0.35 * (1 - t) * (1 - t) - 0.12 * t, sa * d]); rads.push(rr * (1 - 0.8 * t) + 0.015); }
+    tube(gb, pts, rads, 5, () => 0, rng(), 1, 0.8);
+  }
+  if (P.snag) { const top = sk.branches[0].sections.at(-1); for (let k = 0; k < 4; k++) { const a = k * 1.57 + rng(); tube(gb, [[top.p.x, top.p.y, top.p.z], [top.p.x + Math.cos(a) * top.r * 0.5, top.p.y + 0.3 + rng() * 0.8, top.p.z + Math.sin(a) * top.r * 0.5]], [top.r * 0.5, 0.02], 4, () => 0.05, rng(), 1); } }
+  // leaves: crossed cards at each twig, normals from the crown centre (soft, rounded canopy shading)
+  const leafG = new GB(), leaf1 = new GB();
+  let crownC = new THREE.Vector3(), crownR = 0.1;
+  if (sk.leaves.length) {
+    for (const l of sk.leaves) crownC.add(l.p); crownC.multiplyScalar(1 / sk.leaves.length);
+    for (const l of sk.leaves) crownR = Math.max(crownR, l.p.distanceTo(crownC)); crownR *= 0.9;
+    for (const l of sk.leaves) {
+      const out = l.p.clone().sub(crownC).normalize();
+      const dir = _vv.set(0, 1, 0).applyQuaternion(l.q);
+      const up = dir.clone().multiplyScalar(0.6).add(out.multiplyScalar(0.7)).add(new THREE.Vector3(0, 0.5, 0)).add(new THREE.Vector3(rng() - 0.5, rng() - 0.5, rng() - 0.5).multiplyScalar(0.6)).normalize();
+      const sz = P.leafSize[0] + rng() * (P.leafSize[1] - P.leafSize[0]);
+      const C = l.p.clone().addScaledVector(up, -sz * 0.25);
+      const w = 0.6 + 0.4 * clamp((l.p.y - H * 0.35) / H, 0, 1);
+      card(leafG, C, up, sz, sz, crownC, crownR, w, rng(), rng, spec.tint);
+      if (rng() < 0.4) card(leafG, C, up, sz * 0.85, sz * 0.85, crownC, crownR, w, rng(), rng, spec.tint); // second plane, crossed
+    }
+    // far LOD: a few big clumps at the ends of the main limbs
+    const step = Math.max(1, Math.round(sk.leaves.length / 26));
+    for (let i = 0; i < sk.leaves.length; i += step) {
+      const l = sk.leaves[i], out = l.p.clone().sub(crownC).normalize();
+      const up = out.multiplyScalar(0.55).add(new THREE.Vector3(0, 1, 0)).normalize();
+      const sz = P.leafSize[1] * Math.sqrt(step) * 1.25;
+      card(leaf1, l.p.clone().addScaledVector(up, -sz * 0.35), up, sz, sz, crownC, crownR, 0.5, rng(), rng, spec.tint);
+    }
+  }
+  return { bark: gb.geo(), leaf: sk.leaves.length ? leafG.geo() : null, bark1: lb.geo(), leaf1: sk.leaves.length ? leaf1.geo() : null, H, trunkR: r0 * (1.25 + (P.flute ? P.flute.amp * 0.5 : 0)), crownY: crownC.y || H * 0.7, crownR, barkKind: spec.bark, leafKind: spec.leaf };
 }
 
 function buildBamboo(seed) {
@@ -409,8 +477,9 @@ function leafDepthMaterial(map, key, dropRef) {
   });
   return m;
 }
-function barkMaterial(map, key, tint = 0xffffff, moss = 1) {
-  const m = new THREE.MeshStandardMaterial({ map, color: tint, roughness: 0.95, metalness: 0, vertexColors: true });
+function barkMaterial(map, key, tint = 0xffffff, moss = 1, normalMap = null) {
+  const m = new THREE.MeshStandardMaterial({ map, color: tint, roughness: 0.95, metalness: 0, vertexColors: true, normalMap });
+  if (normalMap) m.normalScale.set(1.4, 1.4);
   m.userData.moss = { value: moss };
   patch(m, 'bark-' + key, (s) => {
     s.uniforms.uBarkMoss = m.userData.moss;
@@ -480,9 +549,12 @@ export class Vegetation {
     // materials per species
     const barkTint = { dead: 0x9a9088, deadfall: 0x8c8478, stones: 0xd2c8ba };
     const barkMoss = { kulu: 0.25, arjun: 0.45, bamboo: 0.2, stones: 1.3, deadfall: 1.4, saja: 1.1, teak: 0.9 };
+    // scanned bark where a real bark matches the species: [scan, tint]
+    const scan = { teak: ['oak', 0xd2c4ae], mahua: ['oak', 0x8e8070], saja: ['pine', 0x8a8580], palash: ['willow', 0xb4a490], small: ['willow', 0xc4b6a4], dead: ['oak', 0xb4aca2], deadfall: ['oak', 0x9c948a] };
     for (const sp of SPECIES_LIST) {
-      const t0 = this.templates[SP[sp.name]][0];
-      this.barkMats[sp.name] = barkMaterial(T.bark[t0.barkKind], sp.name, barkTint[sp.name] || 0xffffff, barkMoss[sp.name] ?? 0.7);
+      const t0 = this.templates[SP[sp.name]][0], sc = scan[sp.name];
+      this.barkMats[sp.name] = sc && T.scan ? barkMaterial(T.scan[sc[0]].map, sp.name, sc[1], barkMoss[sp.name] ?? 0.7, T.scan[sc[0]].normal)
+        : barkMaterial(T.bark[t0.barkKind], sp.name, barkTint[sp.name] || 0xffffff, barkMoss[sp.name] ?? 0.7);
       if (t0.leafKind) {
         this.leafMats[sp.name] = leafMaterial(T.leaf[t0.leafKind], sp.name);
         if (quality.aa) this.leafMats[sp.name].alphaToCoverage = true;
@@ -564,9 +636,13 @@ export class Vegetation {
         sp = r2 < stoneShare ? SP.stones : SP.deadfall; scale = 0.75 + r3 * 0.7;
         if (b.village > 0.3 || b.field > 0.2) sp = -1;
       } else if (b.village > 0.2 && b.field > 0.3 && r1 > 0.997) { sp = SP.mahua; scale = 1.1; }  // mahua kept in fields
+      // drowned trees: Junewani Talao and the Totladoh margin keep the grey trunks of trees that died when the water rose
+      const jw = WATERHOLES[2], jd = Math.hypot(x - jw.x, z - jw.z), le = lakeE(x, z);
+      const drowned = (jd < jw.r * 0.85 && r4 < 0.12) || (le > 0.84 && le < 0.99 && r4 < 0.05);
+      if (drowned) { sp = SP.dead; scale = 0.75 + r3 * 0.5; }
       if (sp < 0) continue;
       const y = height(x, z);
-      if (sp === SP.stones ? waterAt(x, z) > y + 0.55 : waterAt(x, z) > y - 0.2) continue;
+      if (!drowned && (sp === SP.stones ? waterAt(x, z) > y + 0.55 : waterAt(x, z) > y - 0.2)) continue;
       const nv = SPECIES_LIST[sp].variants;
       out.push(x, y, z, r4 * 6.283, scale, sp, Math.floor(rng() * nv));
     }

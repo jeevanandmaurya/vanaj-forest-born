@@ -153,9 +153,9 @@ chapter({
 chapter({
   id: 'c5', title: 'Cut Wood', act: 'Act II · Summer', season: 'summer', weather: 'clear', hour: 14.5, spawn: ['mahua', -40, -30],
   setup(g, S) { g.eco.spawnGroup('gaur', sitePos('maidan', 60, 40), 5, { radius: 50 }); g.eco.spawnGroup('chital', sitePos('maidan', -40, -30), 12); g.eco.spawnGroup('sambar', sitePos('maidan', -120, 60), 3); g.ui.seeLore('gaur'); },
-  intro: ['I followed the swept ground west, across the open maidan where the chital graze and the gaur bull watches everything.'],
+  intro: ['I followed the swept ground west, across the open meadow the forest guards call Alikatta, where the chital graze and the gaur bull watches everything.'],
   objectives: [
-    { text: 'Cross the maidan to the far treeline', marker: 'stumps', reach: ['stumps', 35], hint: 'Gaur snort before they charge. Give the bull room.' },
+    { text: 'Cross Alikatta meadow to the far treeline', marker: 'stumps', reach: ['stumps', 35], hint: 'Gaur snort before they charge. Give the bull room.' },
     { text: 'Examine the stump', marker: 'stumps', check: (g, S) => S.flags.clue_stump, done: (g) => { g.ui.narrate(['Not torn by wind. Not burnt by lightning.', 'Struck again and again at one angle, by something like my knife, but far harder.']); g.ui.addJournal('Flat-cut stumps', 'Trees cut flat, the faces smooth, chips of wood lying around like scales. A harder claw than mine.', 'clue'); g.music.stinger('clue'); } },
     { text: 'Examine the burnt stones nearby', marker: 'hearth', check: (g, S) => S.flags.clue_hearth, done: (g) => { g.ui.narrate(['Three stones in a ring, ash, burnt bones, a cracked red pot.', 'I make fire. I thought I was the only one.', 'Someone.']); g.ui.addJournal('A cold hearth', 'Three stones set in a ring. Ash. Charred bones. Pieces of a red clay pot. Someone else makes fire.', 'clue'); } },
   ],
@@ -167,7 +167,7 @@ chapter({
   setup(g, S) { g.eco.blocked.add('leopard'); g.eco.spawnGroup('langur', sitePos('rocks', 40, 40), 6); g.ui.seeLore('kulu'); },
   intro: ['The cut stumps led west, to rocks where the ghost trees grow.', 'Leopard country.'],
   objectives: [
-    { text: 'Go west to the Ghost Tree Rocks', marker: 'rocks', reach: ['rocks', 140] },
+    { text: 'Go west to the Piyorthadi rocks', marker: 'rocks', reach: ['rocks', 140] },
     { text: 'Find shelter among the rocks', marker: 'cave', check: (g, S) => S.flags.clue_cave,
       done: (g) => { g.inv.locks.delete('bow'); g.ui.narrate(['Red figures on the rock. Deer, a bison, a tiger.', 'And thin two-legged figures drawing bows. They stand like me. They hunt like me.']); g.ui.addJournal('The ochre hunters', 'In a rock shelter, paintings in red ochre: animals I know, and among them people — two legs, like me — holding something that throws a stick. The painting taught me the bow.', 'clue'); g.ui.toast('New recipes: Bow, Arrows'); g.music.stinger('clue'); } },
     { text: 'Craft a bow (<b>Tab</b>) — and arrows if you have feathers', check: (g) => g.inv.has('bow'), hint: 'Sinew from a kill, or 3 fibre. Bamboo from clumps (<b>E</b> with a knife).' },

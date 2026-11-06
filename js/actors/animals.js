@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { patch, NOISE_GLSL } from '../core/shaderlib.js';
 import { mergeByMaterial } from '../core/merge.js';
+import { hasRig, makeRigged, playClip } from './rigged.js';
 import { groundHeight, waterAt, biomeAt, height, HALF } from '../world/terrain.js';
 import { clamp, lerp, smoothstep, mulberry32 } from '../core/noise.js';
 
@@ -358,10 +359,17 @@ export class Animal {
   constructor(species, pos, opts = {}) {
     this.id = UID++;
     this.sp = species; this.d = DEF[species];
-    this.root = getTemplate(species).clone(true);
+    this.male = opts.male ?? Math.random() < 0.45;
+    this.rig = hasRig(species) ? makeRigged(species, this.male) : null;
+    if (this.rig) {
+      this.root = this.rig.root; this.J = this.rig.J; this.meshes = this.rig.meshes;
+      if (!this.male) this.rig.inst.traverse((o) => { if (o.isMesh && /Horn/i.test(o.name)) o.visible = false; });
+    } else {
+      this.root = getTemplate(species).clone(true);
+      this.J = {}; this.root.traverse((o) => { if (o.name) this.J[o.name] = o; });
+      this.meshes = []; this.root.traverse((o) => { if (o.isMesh) this.meshes.push(o); });
+    }
     this.root.position.copy(pos);
-    this.J = {}; this.root.traverse((o) => { if (o.name) this.J[o.name] = o; });
-    this.meshes = []; this.root.traverse((o) => { if (o.isMesh) this.meshes.push(o); });
     this.pos = this.root.position; this.yaw = opts.yaw ?? Math.random() * 6.28; this.vel = V(); this.speed = 0; this.targetSpeed = 0;
     this.hp = this.d.hp * (opts.hpMul || 1); this.maxHp = this.hp;
     this.state = opts.state || 'idle'; this.stateT = 0; this.timer = 1 + Math.random() * 3;
@@ -370,7 +378,6 @@ export class Animal {
     this.goal = pos.clone(); this.threat = null; this.target = null; this.awareness = 0;
     this.alarmCD = 0; this.attackCD = 0; this.bleed = 0; this.bleedDrop = 0; this.stagger = 0;
     this.group = opts.group || null; this.slot = opts.slot || 0;
-    this.male = opts.male ?? Math.random() < 0.45;
     this.name = opts.name || null; this.story = opts.story || null;
     this.persistent = !!opts.persistent;
     this.aggro = opts.aggro || 0; // 0..1 willingness to attack player
@@ -397,6 +404,7 @@ export class Animal {
 
   // --------------------------------------------------------------------------- damage & death
   takeDamage(dmg, hitPos, dir, W, opts = {}) {
+    if (this.rig) this.hitT = 0.45;
     if (this.dead) { // mutilating a carcass
       W.fx.blood(hitPos, dir, 0.6); this.carcassHits++; return 0;
     }
@@ -433,6 +441,7 @@ export class Animal {
     W.audio.animal(this.d.voice, 'death', this.pos);
     W.fx.decal(this.pos.x, this.pos.z, 1.2 + this.d.L * 0.4);
     if (W.onKill) W.onKill(this, opts.by || this.lastHitBy);
+    if (W.onDeath && this.d.L > 0.9) W.onDeath(this);
   }
   harvest(W) {
     if (!this.dead || this.harvested) return null;
@@ -567,7 +576,11 @@ export class Animal {
       case 'wander': {
         const d = this.steer(this.goal.x, this.goal.z, this.d.walk * (this.group && this.group.pace || 1), dt, W);
         this.anim.graze = lerp(this.anim.graze, 0, dt * 3); this.anim.lie = lerp(this.anim.lie, 0, dt * 3);
-        if (d < 1.5 || this.timer <= 0) { const r = Math.random(); this.setState(k === 'prey' || k === 'livestock' ? (r < 0.6 ? 'graze' : 'idle') : (r < 0.25 && !W.isDay ? 'rest' : 'idle'), 3 + Math.random() * 8); }
+        if (d < 1.5 || this.timer <= 0) {
+          if (this.goingToDrink) { this.goingToDrink = false; this.drankAt = W.hour; this.setState('drink', 12 + Math.random() * 14); }
+          else if (this.restNext) { this.restNext = false; this.setState('rest', 25 + Math.random() * 40); }
+          else { const r = Math.random(); this.setState(k === 'prey' || k === 'livestock' ? (r < 0.65 ? 'graze' : 'idle') : (r < 0.25 && !W.isDay ? 'rest' : 'idle'), 4 + Math.random() * 9); }
+        }
         this.predatorScan(dt, W, pd);
         break;
       }
@@ -575,7 +588,7 @@ export class Animal {
         this.targetSpeed = 0; this.anim.graze = lerp(this.anim.graze, 0, dt * 6); this.anim.alertTail = 1;
         if (this.threat) this.faceTowards(this.threat, dt * 2);
         if (this.timer <= 0) {
-          if (k === 'prey' || k === 'bird' || k === 'livestock') { if (this.awareness > 0.8 || W.nearestPredator(this, this.d.sight)) this.setState('flee', 6 + Math.random() * 6); else this.setState('idle', 2); }
+          if (k === 'prey' || k === 'bird' || k === 'livestock') { if (this.awareness > 0.8 || W.nearestPredator(this, this.d.sight)) { this.afterAlert = null; this.setState('flee', 6 + Math.random() * 6); } else if (this.afterAlert === 'drink') { this.afterAlert = null; this.setState('drink', 6 + Math.random() * 8); } else this.setState('idle', 2); }
           else if (k === 'defensive' || k === 'neutral') this.decideDefend(W, pd);
           else this.setState('idle', 2);
         }
@@ -602,6 +615,13 @@ export class Animal {
         let ax = this.pos.x - th.x, az = this.pos.z - th.z; const l = Math.hypot(ax, az) || 1;
         this.steer(this.pos.x + ax / l * 30, this.pos.z + az / l * 30, this.d.run * 0.85, dt, W);
         if (this.timer <= 0 || l > 90) { this.setState('idle', 5); this.aggro *= 0.4; this.home.copy(this.pos); }
+        break;
+      }
+      case 'drink': {
+        this.targetSpeed = 0; this.anim.graze = lerp(this.anim.graze, 1, dt * 3);
+        if (Math.random() < dt * 0.25) { this.anim.graze = 0; this.setState('alert', 0.8); this.timer = 0.8; this.afterAlert = 'drink'; }
+        if (this.timer <= 0) this.setState('idle', 2);
+        this.predatorScan(dt, W, pd);
         break;
       }
       case 'feed': {
@@ -633,7 +653,38 @@ export class Animal {
     }
   }
   faceTowards(p, rate) { const want = Math.atan2(p.x - this.pos.x, p.z - this.pos.z); let diff = want - this.yaw; while (diff > Math.PI) diff -= 2 * Math.PI; while (diff < -Math.PI) diff += 2 * Math.PI; this.yaw += clamp(diff, -rate, rate); }
+  // What this species is doing at this hour: 'active' (graze / forage / patrol), 'rest', 'drink' or 'roost'
+  schedule(W) {
+    const h = W.hour ?? 12, sum = W.season === 'summer';
+    const inR = (a, b) => (a < b ? h >= a && h < b : h >= a || h < b);
+    switch (this.sp) {
+      case 'chital': if (inR(10.5, 15.5)) return sum && inR(12, 13.5) ? 'drink' : 'rest'; if (inR(16, 17.2) && sum) return 'drink'; return inR(21, 4.5) && this.id % 3 ? 'rest' : 'active';
+      case 'sambar': if (inR(18, 19.8)) return 'drink'; return inR(7.5, 17.5) ? 'rest' : 'active';
+      case 'gaur': if (inR(14, 15.5)) return 'drink'; return inR(10.5, 14) || inR(20, 5) ? 'rest' : 'active';
+      case 'boar': return inR(5, 9.5) || inR(16.5, 21) ? 'active' : 'rest';
+      case 'tiger': case 'leopard': if (inR(17, 18.6)) return 'drink'; return inR(9, 16.5) ? 'rest' : 'active';
+      case 'dhole': if (inR(9.5, 10.5) && sum) return 'drink'; return inR(5.5, 9.5) || inR(16, 18.5) ? 'active' : 'rest';
+      case 'bear': return inR(19, 6) ? 'active' : 'rest';
+      case 'peafowl': return inR(18.5, 5.8) ? 'roost' : 'active';
+      default: return 'active';
+    }
+  }
   pickWander(W) {
+    const plan = this.schedule(W);
+    this.plan = plan;
+    if (plan === 'drink' && W.nearestWater && !this.drankAt || plan === 'drink' && W.hour - this.drankAt > 3) {
+      const wp = W.nearestWater(this.pos);
+      if (wp && wp.distanceTo(this.pos) < 900) { this.goal.copy(wp); this.goingToDrink = true; this.setState('wander', 120); return; }
+    }
+    if (plan === 'rest' && W.nearestShade && this.d.kind !== 'bird') {
+      const t = W.nearestShade(this.pos, 35);
+      if (t) { const a = Math.random() * 6.28, rr = (t.r || 0.5) + 1.2 + Math.random() * 2; this.goal.set(t.x + Math.cos(a) * rr, 0, t.z + Math.sin(a) * rr); this.restNext = true; this.setState('wander', 40); return; }
+      this.setState('rest', 20 + Math.random() * 30); return;
+    }
+    // chital trail langur troops in the morning for the leaves and fruit they drop (and their sharp eyes)
+    if (this.sp === 'chital' && this.group && (W.hour ?? 12) < 11 && W.animals && Math.random() < 0.5) {
+      for (const l of W.animals) if (l.sp === 'langur' && !l.dead && l.dist2(this.pos) < 110 * 110) { this.group.center.lerp(l.pos, 0.35); break; }
+    }
     const g = this.group;
     const c = g ? g.center : this.home;
     const r = g ? g.radius : this.homeR;
@@ -650,6 +701,17 @@ export class Animal {
     this.alarmCD = 2.5 + Math.random() * 3;
     W.audio.animal(v, 'alarm', this.pos, { threat: threatKind });
     if (W.onAlarm) W.onAlarm(this, threatKind);
+    // the jungle listens: other prey within earshot freeze, look toward the call; langur and sambar calls carry most weight
+    if (W.animals) {
+      const range = v === 'langur' || v === 'sambar' ? 160 : 110, trust = v === 'langur' || v === 'sambar' ? 0.9 : v === 'chital' ? 0.55 : 0.4;
+      for (const o of W.animals) {
+        if (o === this || o.dead || o.companion || o.group === this.group) continue;
+        const ok = o.d.kind === 'prey' || o.d.kind === 'bird' || (o.d.kind === 'arboreal' && v !== 'langur');
+        if (!ok || o.state === 'flee' || o.dist2(this.pos) > range * range) continue;
+        if (Math.random() > trust) continue;
+        o.threat = (this.threat || this.pos).clone(); o.setState('alert', 1.2 + Math.random() * 1.5);
+      }
+    }
   }
   predatorScan(dt, W, pd) {
     const k = this.d.kind;
@@ -875,7 +937,46 @@ export class Animal {
     this.steer(this.goal.x, this.goal.z, this.d.walk, dt, W);
   }
   // --------------------------------------------------------------------------- animation
+  animateRig(dt, W) {
+    const r = this.rig, d = this.d, A = this.anim, cfg = r.cfg, J = this.J;
+    this.root.rotation.y = this.yaw;
+    const carn = d.kind === 'pack' || d.voice === 'wolf' || d.voice === 'dog';
+    this.hitT = Math.max(0, (this.hitT || 0) - dt);
+    let clip = 'Idle', ts = 1, fade = 0.3;
+    const sp = this.speed / Math.max(0.3, this.scale);
+    if (this.dead) { clip = 'Death'; fade = 0.15; }
+    else if (A.bite > 0.15 || (this.state === 'attack' && this.attackCD > (carn ? 1.1 : 1.2))) { clip = carn ? 'Attack' : 'Attack_Headbutt'; fade = 0.12; }
+    else if (this.hitT > 0) { clip = 'Idle_HitReact1'; fade = 0.1; }
+    else if (this.air > 0) clip = carn ? 'Gallop_Jump' : 'Gallop_Jump';
+    else if (sp > 0.2) {
+      if (sp < cfg.walk * 1.9) { clip = 'Walk'; ts = Math.min(2.2, Math.max(0.45, sp / cfg.walk)); }
+      else { clip = 'Gallop'; ts = Math.min(1.7, Math.max(0.65, sp / cfg.run)); }
+    } else if (A.graze > 0.35 || this.state === 'graze' || this.state === 'feed' || this.state === 'forage') clip = 'Eating';
+    else if (this.state === 'rest' || A.lie > 0.5) clip = r.actions.Idle_Headlow ? 'Idle_Headlow' : 'Idle_2_HeadLow';
+    else if (this.state === 'alert' || this.state === 'warn') clip = 'Idle';
+    else clip = (this.id % 3 === 0 && r.actions.Idle_2) ? 'Idle_2' : 'Idle';
+    playClip(r, clip, fade, ts);
+    r.mixer.update(dt);
+    // look toward a threat / target on top of the clip
+    const look = this.lookAt || (this.state === 'alert' ? this.threat : null) || ((this.state === 'stalk' || this.state === 'attack' || this.state === 'warn') && W ? (this.target === 'player' ? W.player.pos : this.target?.pos) : null);
+    let ny = 0;
+    if (look && !this.dead) { const want = Math.atan2(look.x - this.pos.x, look.z - this.pos.z); let diff = want - this.yaw; while (diff > Math.PI) diff -= 2 * Math.PI; while (diff < -Math.PI) diff += 2 * Math.PI; ny = clamp(diff, -1.0, 1.0); }
+    this.neckY = lerp(this.neckY || 0, ny, Math.min(1, dt * 5));
+    if (J.Neck1 && Math.abs(this.neckY) > 0.01) { J.Neck1.rotateY(this.neckY * 0.5); if (J.Head) J.Head.rotateY(this.neckY * 0.4); }
+    if (this.state === 'alert' && J.Neck1 && !this.dead) J.Neck1.rotateX(-0.25);   // head up, ears forward
+    // body follows the slope and leans into turns
+    let slopeP = 0;
+    if (!this.dead) {
+      const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw), hl = (d.L || 1.5) * 0.5 * this.scale;
+      const hf = groundHeight(this.pos.x + fx * hl, this.pos.z + fz * hl), hb = groundHeight(this.pos.x - fx * hl, this.pos.z - fz * hl);
+      slopeP = -Math.atan2(hf - hb, hl * 2) * 0.9;
+    }
+    const yawRate = (this.yaw - (this.prevYaw ?? this.yaw)) / Math.max(dt, 1e-3); this.prevYaw = this.yaw;
+    this.leanS = lerp(this.leanS || 0, this.dead ? 0 : clamp(-yawRate * this.speed * 0.03, -0.25, 0.25), Math.min(1, dt * 5));
+    r.inst.rotation.x = slopeP; r.inst.rotation.z = this.leanS;
+  }
   animate(dt, W) {
+    if (this.rig) return this.animateRig(dt, W);
     const J = this.J, d = this.d, A = this.anim;
     this.root.rotation.y = this.yaw;
     const body = J.body;

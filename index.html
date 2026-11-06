@@ -91,6 +91,11 @@ button { font-family:var(--sans); cursor:pointer; }
 #prompt { position:absolute; left:50%; top:calc(50% + 46px); transform:translateX(-50%); font-size:14px; letter-spacing:.03em; text-shadow:0 1px 8px #000; opacity:0; transition:opacity .2s; white-space:nowrap; }
 #subtitle { position:absolute; left:50%; bottom:13vh; transform:translateX(-50%); width:min(880px, 80vw); text-align:center; font-family:var(--serif); font-size:27px; line-height:1.35; text-shadow:0 2px 14px rgba(0,0,0,.95), 0 0 2px #000; opacity:0; transition:opacity .8s; }
 #subtitle.show { opacity:1; } #subtitle em { font-style:italic; }
+#place { position:absolute; left:0; right:0; top:22%; text-align:center; pointer-events:none; opacity:0; color:#efe6d2; text-shadow:0 2px 14px rgba(0,0,0,.75); }
+#place.show { animation: placeIn 6s ease forwards; }
+#place .pn { font: 400 44px/1.1 'Cormorant Garamond', Georgia, serif; letter-spacing:.12em; }
+#place .ps { font: 15px Karla, sans-serif; letter-spacing:.3em; text-transform:uppercase; opacity:.75; margin-top:8px; }
+@keyframes placeIn { 0%{opacity:0; transform:translateY(6px)} 15%{opacity:1; transform:none} 70%{opacity:1} 100%{opacity:0} }
 #toasts { position:absolute; right:34px; top:110px; display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
 .toast { background:rgba(10,10,8,.6); border-left:2px solid var(--ochre); padding:6px 12px; font-size:13px; max-width:380px; animation:tin .3s ease; transition:opacity .5s, transform .5s; } .toast.out { opacity:0; transform:translateX(20px); } @keyframes tin { from { opacity:0; transform:translateX(20px);} }
 #eye { position:absolute; left:50%; top:calc(50% - 86px); margin-left:-11px; width:22px; height:11px; border:2px solid rgba(235,227,208,.8); border-radius:50% / 100%; opacity:0; transition:opacity .3s; } #eye::after { content:''; position:absolute; left:50%; top:50%; width:6px; height:6px; margin:-3px; border-radius:50%; background:rgba(235,227,208,.9); } #eye.alert { border-color:#ff5a3a; } #eye.alert::after { background:#ff5a3a; }
@@ -192,6 +197,7 @@ button { font-family:var(--sans); cursor:pointer; }
     <div id="compass"><div id="compass-strip"></div></div>
     <div id="clock"></div>
     <div id="toasts"></div>
+    <div id="place"></div>
     <div id="crosshair" class="cross"></div>
     <div id="eye"></div>
     <div id="dmgind"></div>

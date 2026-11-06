@@ -2,6 +2,8 @@
 import * as THREE from 'three';
 import { GodRaysShader } from './core/godrays.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { loadRigs } from './actors/rigged.js';
+import { loadHumanRig } from './actors/humanrig.js';
 import { GroundAO } from './world/groundao.js';
 import { PerfOverlay } from './core/perf.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -12,7 +14,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { G } from './core/shaderlib.js';
 import { clamp, lerp, smoothstep } from './core/noise.js';
 import { buildTextures } from './world/textures.js';
-import { TerrainManager, groundHeight, waterAt, renderMapCanvas, height, biomeAt } from './world/terrain.js';
+import { TerrainManager, groundHeight, waterAt, renderMapCanvas, height, biomeAt, nearestWaterPoint } from './world/terrain.js';
 import { Vegetation, Grass, SP } from './world/flora.js';
 import { SkySystem } from './world/sky.js';
 import { Weather, SEASONS } from './world/weather.js';
@@ -20,6 +22,10 @@ import { Water } from './world/water.js';
 import { FX } from './world/fx.js';
 import { Props, SITES } from './world/props.js';
 import { Ecosystem } from './actors/animals.js';
+import { Birds } from './world/birds.js';
+import { PlaceTracker } from './world/places.js';
+import { Tracks } from './world/tracks.js';
+import { GroundCover } from './world/groundcover.js';
 import { Player } from './actors/player.js';
 import { AudioEngine } from './audio/audio.js';
 import { Music } from './audio/music.js';
@@ -29,8 +35,8 @@ import { UI } from './game/ui.js';
 
 const _grv = new THREE.Vector3(), _grd = new THREE.Vector3(), _grc = new THREE.Color();
 const QUALITY = {
-  low: { name: 'Low', pr: 0.7, shadow: 1024, shadowDist: 40, treeNear: 65, treeFar: 360, grassR: 26, grassDensity: 0.45, grassCap: 4000, bloom: false, chunkR: 3, env: false, treeCap0: 900, treeCap1: 4000, rainDrops: 2500, aa: false },
-  medium: { name: 'Medium', pr: 1.0, shadow: 2048, shadowDist: 55, treeNear: 95, treeFar: 520, grassR: 38, grassDensity: 0.75, grassCap: 7000, bloom: true, chunkR: 4, env: true, treeCap0: 1300, treeCap1: 6500, rainDrops: 4000, aa: false },
+  low: { name: 'Low', pr: 0.7, shadow: 1024, shadowDist: 40, treeNear: 50, treeFar: 360, grassR: 26, grassDensity: 0.45, grassCap: 4000, bloom: false, chunkR: 3, env: false, treeCap0: 900, treeCap1: 4000, rainDrops: 2500, aa: false },
+  medium: { name: 'Medium', pr: 1.0, shadow: 2048, shadowDist: 55, treeNear: 75, treeFar: 520, grassR: 38, grassDensity: 0.75, grassCap: 7000, bloom: true, chunkR: 4, env: true, treeCap0: 1300, treeCap1: 6500, rainDrops: 4000, aa: false },
   high: { name: 'High', pr: 1.25, shadow: 2048, shadowDist: 70, treeNear: 125, treeFar: 700, grassR: 52, grassDensity: 1.0, grassCap: 10000, bloom: true, chunkR: 5, env: true, treeCap0: 1800, treeCap1: 9000, rainDrops: 5000, aa: true },
   ultra: { name: 'Ultra', pr: 2.0, shadow: 4096, shadowDist: 90, treeNear: 170, treeFar: 900, grassR: 68, grassDensity: 1.3, grassCap: 16000, bloom: true, chunkR: 6, env: true, treeCap0: 2600, treeCap1: 13000, rainDrops: 6000, aa: true },
 };
@@ -128,6 +134,7 @@ class Game {
     await prog(0.35, 'Growing teak, mahua, saja, kulu, palash and bamboo');
     this.veg = new Vegetation(this.scene, this.T, q);
     this.grass = new Grass(this.scene, q);
+    this.cover = new GroundCover(this.scene, this.T || T, q);
     await prog(0.5, 'Placing rocks, termite mounds, the den, the shrine and the village');
     this.props = new Props(this.scene, this.T, this.veg); this.props.build();
     this.groundAO = new GroundAO(256);
@@ -138,7 +145,12 @@ class Game {
     this.weather = new Weather(this.scene, q, this.audio);
     this.fx = new FX(this.scene, this.T);
     this.pickups = new Pickups(this.scene, this.T);
+    await prog(0.66, 'Bringing in the chital, sambar, gaur and dholes');
+    await Promise.all([loadRigs(), loadHumanRig()]);
     this.eco = new Ecosystem(this.scene);
+    this.birds = new Birds(this.scene, this);
+    this.tracks = new Tracks(this.scene, this);
+    this.places = new PlaceTracker(document.getElementById('place'));
     this.inv = new Inventory();
     this.player = new Player(this);
     this.player.setView(this.settings.view);
@@ -149,7 +161,7 @@ class Game {
     await prog(0.78, 'Building terrain around the den');
     const den = SITES.den; this.player.pos.set(den.x + 3, height(den.x + 3, den.z + 6), den.z + 6);
     this.terrain.update(this.player.pos.x, this.player.pos.z, 1e9, true);
-    this.veg.update(this.player.pos, true); this.grass.update(this.player.pos, true); this.pickups.update(this.player.pos, true);
+    this.veg.update(this.player.pos, true); this.grass.update(this.player.pos, true); this.cover.update(this.player.pos, true); this.pickups.update(this.player.pos, true);
     await prog(0.86, 'Post-processing');
     this.buildComposer();
     this.setSeason('winter', 'mist'); this.setTime(6.5);
@@ -210,25 +222,44 @@ class Game {
       nearestPredator: (a, r) => g.eco.nearestPredator(a, r), nearestPrey: (a, r) => g.eco.nearestPrey(a, r),
       damagePlayer: (d, from, o) => g.player.hurt(d, from, o),
       onAlarm: (an, threat) => {
-        if (an.dist2(g.player.pos) < 260 * 260) { const lbl = { chital: 'Chital', sambar: 'Sambar', langur: 'Langur', peafowl: 'Peafowl', cow: 'Cattle', dog: 'Dog' }[an.d.voice] || ''; g.ui.alarmMarker(an.pos.x, an.pos.z, lbl); g.ui.seeLore(an.sp); }
+        if (an.dist2(g.player.pos) < 260 * 260) { const lbl = { chital: 'Chital', sambar: 'Sambar', langur: 'Langur', peafowl: 'Peafowl', cow: 'Cattle', dog: 'Dog' }[an.d.voice] || ''; g.ui.alarmMarker(an.pos.x, an.pos.z, lbl); g.ui.seeLore(an.sp);
+          // read the call, as a tracker would: who is calling, from where, and what that caller only calls for
+          const now = performance.now() / 1000;
+          if (!(g._readT > now)) {
+            g._readT = now + 40;
+            const a = Math.atan2(an.pos.x - g.player.pos.x, -(an.pos.z - g.player.pos.z));
+            const dir = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'][((Math.round(a / (Math.PI / 4)) % 8) + 8) % 8];
+            const me = threat === 'player';
+            const msg = me ? `${lbl} alarm, ${dir}. They have seen me.` : {
+              sambar: `Sambar belling to the ${dir}. A sambar only bells for a tiger, a leopard or dhole.`,
+              langur: `Langur barking from the trees, ${dir}. It can see a cat on the ground.`,
+              chital: `Chital calling, ${dir}. Something is moving there. Wait for a second voice.`,
+              peafowl: `Peacock screaming in alarm, ${dir}.`,
+            }[an.d.voice] || `${lbl} alarm, ${dir}.`;
+            g.ui.toast(msg, 5.5);
+          } }
       },
       onKill: (an, by) => { g.emit('kill', { animal: an, by }); if (an === g.companion) { g.companionBody = an; g.companion = null; g.ui.toast(an.name + ' is dead', 5); } },
       get companion() { return g.companion; }, get companionPos() { return g.companion ? g.companion.pos : null; },
       threatToPlayer: (c) => { let best = null, bd = 22 * 22; for (const a of g.eco.animals) { if (a.dead || a.companion) continue; if ((a.target === 'player' && (a.state === 'charge' || a.state === 'attack' || a.state === 'pounce' || a.state === 'stalk')) || a.target === c) { const d = a.dist2(g.player.pos); if (d < bd) { bd = d; best = a; } } } return best; },
       findForage: (p) => g.props.forageNear(p),
+      get hour() { return g.time.hour; }, get animals() { return g.eco.animals; },
+      nearestWater: (p) => nearestWaterPoint(p),
+      nearestShade: (p, r) => g.veg.nearestTree(p.x, p.z, r || 30),
+      onDeath: (an) => g.birds && !an.companion && g.birds.addCarcass(an.pos),
     };
   }
   // -------------------------------------------------------------------------------- world state
   setSeason(s, weatherState) {
     this.season = s; this.seasonCfg = SEASONS[s];
-    this.weather.setSeason(s, weatherState); this.veg.setSeason(s); this.grass.setSeason(s); this.pickups.setSeason(s); this.props.setSeason(s); this.water.setSeason(s);
+    this.weather.setSeason(s, weatherState); this.veg.setSeason(s); this.grass.setSeason(s); this.cover.setSeason(s); this.pickups.setSeason(s); this.props.setSeason(s); this.water.setSeason(s);
     this.pickups.update(this.player.pos, true);
   }
   setTime(h) { this.time.hour = ((h % 24) + 24) % 24; }
   teleport(p, yaw = 0) {
     const P = this.player; P.pos.copy(p); P.pos.y = groundHeight(p.x, p.z); P.vel.set(0, 0, 0); P.yaw = yaw; P.bodyYaw = yaw; P.spawn.copy(P.pos);
     P.camPos.set(p.x + Math.sin(yaw) * 3, P.pos.y + 2, p.z + Math.cos(yaw) * 3);
-    this.terrain.update(p.x, p.z, 1e9, true); this.veg.update(P.pos, true); this.grass.update(P.pos, true); this.pickups.update(P.pos, true);
+    this.terrain.update(p.x, p.z, 1e9, true); this.veg.update(P.pos, true); this.grass.update(P.pos, true); this.cover.update(P.pos, true); this.pickups.update(P.pos, true);
     if (this.companion) { this.companion.pos.set(p.x + 2, groundHeight(p.x + 2, p.z + 2), p.z + 2); }
     for (const a of [...this.eco.animals]) if (!a.persistent && a.dist2(P.pos) > 400 * 400) this.eco.remove(a);
   }
@@ -663,7 +694,7 @@ class Game {
     G.uPlayerPos.value.copy(P.pos);
     // world streaming
     this.terrain.update(focus.x, focus.z, 4);
-    this.veg.update(this.camera.position); this.grass.update(this.camera.position); this.pickups.update(focus);
+    this.veg.update(this.camera.position); this.grass.update(this.camera.position); this.cover.update(this.camera.position); this.pickups.update(focus);
     pf.mark('streaming');
     // sky & weather
     const env = this.weather.env;
@@ -672,7 +703,7 @@ class Game {
     this.water.update(this.sky, env.rain);
     pf.mark('sky');
     // animals
-    if (this.playing && dt > 0) { this.eco.update(dt, this.W); }
+    if (this.playing && dt > 0) { this.eco.update(dt, this.W); try { this.birds.update(dt); this.tracks.update(dt); this.places.update(dt, this.player.pos.x, this.player.pos.z, this.time.day * 1440 + this.time.hour * 60); } catch (e) { if (!this._birdErr) { this._birdErr = 1; console.error('birds', e); } } }
     pf.mark('animals');
     // fires: campfires burn down
     this.nearFire = false;
