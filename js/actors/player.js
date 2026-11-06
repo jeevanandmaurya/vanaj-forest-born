@@ -31,7 +31,8 @@ export class Player {
     this.shake = 0; this.hurtFlash = 0; this.lastFoot = 0; this.fallVel = 0; this.climb = null; this.grabbed = null;
     this.projectiles = []; this.stuck = [];
     this.spawn = new THREE.Vector3();
-    this.body = buildHumanoid({ hair: 'matted', cloth: 'loin', clothTex: g.T.clothBark, skinColor: 0x5c4030, mud: 0.4, skinKey: 'skin-player', lean: 0.95 });
+    // Vanaj is about fifteen: a lean, half-grown boy of ~1.55 m, not a grown man
+    this.body = buildHumanoid({ hair: 'matted', cloth: 'loin', clothTex: g.T.ragCloth, skinColor: 0x4a3022, mud: 0.4, dirt: 1, scars: 1, skinKey: 'skin-player', lean: 0.95, build: 'teen', sculpt: true, detail: g.q.name === 'Low' ? 1.5 : 1, scale: 0.9 });
     g.scene.add(this.body.root);
     this.bodyMats = new Set(); this.body.root.traverse((o) => { if (o.isMesh) this.bodyMats.add(o.material); });
     this.W3 = buildWeapons(g.T);
@@ -275,7 +276,7 @@ export class Player {
     const sx = (Math.random() - 0.5) * sh * 0.25, sy = (Math.random() - 0.5) * sh * 0.25;
     const targetFov = this.fov + (this.sprinting ? 7 : 0) - (this.weapon === 'bow' ? this.aim * this.draw * 22 : 0) - (this.weapon === 'spear' ? this.aim * 8 : 0);
     cam.fov = lerp(cam.fov, targetFov, Math.min(1, dt * 6)); cam.updateProjectionMatrix();
-    const eyeH = this.swimming ? 0.25 : this.crouch ? 1.0 : 1.55;
+    const eyeH = this.swimming ? 0.25 : (this.crouch ? 1.0 : 1.55) * (this.body.S || 1);   // eye height follows body size
     if (this.view === 'fpp') {
       this.bob += dt * this.speed * (this.onGround ? 1.4 : 0);
       const bobY = Math.sin(this.bob * 2) * 0.035 * Math.min(1, this.speed / 3), bobX = Math.cos(this.bob) * 0.02 * Math.min(1, this.speed / 3);

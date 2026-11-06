@@ -13,7 +13,7 @@ const sitePos = (k, dx = 0, dz = 0) => { const s = SITES[k]; return V3(s.x + dx,
 export class NPC {
   constructor(g, o) {
     this.g = g; this.name = o.name;
-    this.h = buildHumanoid({ scale: o.scale || 1, skinColor: o.skin || 0x9a6a4a, mud: 0.05, hair: o.hair || 'short', hairColor: o.hairColor, cloth: o.cloth || 'dhoti', clothTex: o.clothTex, topTex: o.topTex, turban: o.turban, lean: o.lean || 1, skinKey: 'skin-npc' + (o.skinKey || '') });
+    this.h = buildHumanoid({ scale: o.scale || 1, skinColor: o.skin || 0x9a6a4a, mud: 0.05, hair: o.hair || 'short', hairColor: o.hairColor, cloth: o.cloth || 'dhoti', clothTex: o.clothTex, topTex: o.topTex, turban: o.turban, lean: o.lean || 1, build: o.build, skinKey: 'skin-npc' + (o.skinKey || '') });
     g.scene.add(this.h.root);
     this.pos = this.h.root.position; this.pos.copy(o.pos); this.pos.y = groundHeight(this.pos.x, this.pos.z);
     this.yaw = o.yaw || 0; this.speed = 0; this.path = []; this.state = 'idle'; this.look = null; this.up = 0; this.action = null; this.t = Math.random() * 10;
@@ -349,7 +349,7 @@ chapter({
   setup(g, S) {
     S.ensureChingari(); S.spawnVillage();
     const f = sitePos('fields');
-    S.sukhi = S.npc({ name: 'Sukhi', pos: f.clone().add(V3(10, 0, 0)), scale: 0.8, cloth: 'dhoti', clothTex: g.T.clothWhite, topTex: g.T.clothKhaki, flute: true, skinKey: 'sukhi' });
+    S.sukhi = S.npc({ name: 'Sukhi', pos: f.clone().add(V3(10, 0, 0)), scale: 0.8, build: 'child', cloth: 'dhoti', clothTex: g.T.clothWhite, topTex: g.T.clothKhaki, flute: true, skinKey: 'sukhi' });
     S.cows = g.eco.spawnGroup('cow', f, 6, { persistent: true, radius: 25 }).members;
     g.eco.blocked.add('tiger');
   },
@@ -407,7 +407,7 @@ chapter({
   id: 'ep', title: 'The Name in the Steel', act: 'Epilogue', season: 'post', weather: 'clear', hour: 17.6, spawn: ['fields', -40, 30],
   setup(g, S) {
     S.ensureChingari(); S.spawnVillage();
-    if (!S.sukhi) { const f = sitePos('fields'); S.sukhi = S.npc({ name: 'Sukhi', pos: f.clone().add(V3(-25, 0, 15)), scale: 0.8, cloth: 'dhoti', clothTex: g.T.clothWhite, topTex: g.T.clothKhaki, flute: true, skinKey: 'sukhi' }); }
+    if (!S.sukhi) { const f = sitePos('fields'); S.sukhi = S.npc({ name: 'Sukhi', pos: f.clone().add(V3(-25, 0, 15)), scale: 0.8, build: 'child', cloth: 'dhoti', clothTex: g.T.clothWhite, topTex: g.T.clothKhaki, flute: true, skinKey: 'sukhi' }); }
     S.sukhi.up = 0; g.inv.add('lota', g.inv.has('lota') ? 0 : 1);
   },
   intro: ['The boy did not run.'],

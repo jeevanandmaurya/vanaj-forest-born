@@ -404,11 +404,14 @@ export class AudioEngine {
   }
   bowDraw() { if (!this.ready) return; const t = this.ctx.currentTime, o = this.spatial(null, 0.25); this.noiseBurst(o, t, { f: 400, f1: 1200, q: 4, dur: 0.6, a: 0.3, g: 0.3, color: 'pink' }); }
   arrowWhoosh() { if (!this.ready) return; const t = this.ctx.currentTime, o = this.spatial(null, 0.4); this.noiseBurst(o, t, { f: 2500, f1: 900, q: 2, dur: 0.25, a: 0.01, g: 0.5 }); }
+  // returns a function that cuts this roll short (it arrives seconds after the flash, so a scene that ends
+  // or is skipped in between needs to be able to silence it)
   thunder(dist, ang) {
-    if (!this.ready) return;
+    if (!this.ready) return () => {};
     const ctx = this.ctx, delay = dist / 343, t = ctx.currentTime + delay;
     const p = { x: this.listener.x + Math.cos(ang) * Math.min(dist, 400), y: this.listener.y + 200, z: this.listener.z + Math.sin(ang) * Math.min(dist, 400) };
-    const o = this.spatial(p, 2.4 * Math.max(0.3, 1 - dist / 2500), { verb: 0.9, ref: 300, roll: 0.3 });
+    const so = this.spatial(p, 2.4 * Math.max(0.3, 1 - dist / 2500), { verb: 0.9, ref: 300, roll: 0.3 });
+    const o = ctx.createGain(); o.connect(so);
     if (dist < 600) this.noiseBurst(o, t, { ft: 'highpass', f: 1200, dur: 0.35, a: 0.002, g: 1.2 });
     const n = ctx.createBufferSource(); n.buffer = this.noise.brown;
     const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = dist < 600 ? 900 : 350;
@@ -418,6 +421,7 @@ export class AudioEngine {
     while (tt < t + len) { tt += rand(0.15, 0.7); g.gain.linearRampToValueAtTime(rand(0.2, 1.1) * (1 - (tt - t) / len), tt); }
     g.gain.linearRampToValueAtTime(0, t + len + 0.5);
     n.connect(f); f.connect(g); g.connect(o); n.start(t); n.stop(t + len + 1);
+    return (fade = 0.3) => { const now = ctx.currentTime; o.gain.cancelScheduledValues(now); o.gain.setValueAtTime(o.gain.value, now); o.gain.linearRampToValueAtTime(0, now + fade); };
   }
   splash(pos, big = 1) { if (!this.ready) return; const t = this.ctx.currentTime, o = this.spatial(pos, 0.7 * big); this.noiseBurst(o, t, { ft: 'lowpass', f: 2000, f1: 400, dur: 0.5, a: 0.01, g: 0.8, color: 'pink' }); for (let i = 0; i < 5; i++) this.tone(o, t + rand(0.03, 0.3), { f0: rand(400, 1000), f1: rand(1000, 2200), dur: 0.05, g: 0.12 }); }
   pickup() { if (!this.ready) return; const t = this.ctx.currentTime, o = this.spatial(null, 0.35); this.noiseBurst(o, t, { f: 1800, q: 1, dur: 0.08, g: 0.4 }); this.noiseBurst(o, t + 0.06, { ft: 'lowpass', f: 500, dur: 0.06, g: 0.4, color: 'pink' }); }

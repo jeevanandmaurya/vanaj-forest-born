@@ -595,6 +595,33 @@ function makeBlood() {
   for (let i = 0; i < 40; i++) { const a = r() * 6.28, d = 60 + r() * 60; ctx.fillStyle = 'rgba(100,8,6,0.95)'; ctx.beginPath(); ctx.arc(128 + Math.cos(a) * d, 128 + Math.sin(a) * d, 1.5 + r() * 4, 0, 6.28); ctx.fill(); }
   return tex(c, { repeat: false });
 }
+// An old cotton rag worn as a langot: once dyed rust, faded by years of sun and washing in streams to a dull
+// dun, the weave showing, stained with sweat and mud (darkest toward the hem), the hem (bottom of the texture)
+// frayed into loose threads and torn. Transparent where it is torn, so materials use it with alphaTest.
+function makeRagCloth() {
+  const S = 256, c = canvas(S, S), ctx = c.getContext('2d'), r = mulberry32(61);
+  noiseFill(ctx, S, S, 13, (a, b) => { const v = 0.82 + 0.3 * (a - 0.5) + 0.2 * (b - 0.5), fade = Math.min(1, Math.max(0, 0.5 + (a - 0.5) * 2.2)); return [(142 - 20 * fade) * v, (92 + 10 * fade) * v, (66 + 12 * fade) * v]; });
+  // the weave: fine warp and weft, slightly uneven like handloom cotton
+  for (let i = 0; i < S; i += 2) {
+    ctx.fillStyle = `rgba(0,0,0,${0.06 + r() * 0.07})`; ctx.fillRect(0, i + (r() < 0.1 ? 1 : 0), S, 1);
+    ctx.fillStyle = `rgba(255,240,220,${0.03 + r() * 0.04})`; ctx.fillRect(i, 0, 1, S);
+  }
+  for (let i = 0; i < 10; i++) { const x = r() * S; ctx.fillStyle = 'rgba(40,24,14,0.12)'; ctx.fillRect(x, 0, 1 + r() * 2, S); }   // a few thick threads
+  for (let i = 0; i < 6; i++) { ctx.strokeStyle = 'rgba(255,235,210,0.12)'; ctx.lineWidth = 3 + r() * 5; ctx.beginPath(); const x = r() * S; ctx.moveTo(x, 0); ctx.quadraticCurveTo(x + (r() - 0.5) * 40, S * 0.5, x + (r() - 0.5) * 30, S); ctx.stroke(); }   // faded fold lines
+  for (let i = 0; i < 16; i++) {    // sweat and mud stains, darkest toward the hem
+    const x = r() * S, y = S * (0.25 + r() * 0.75), rr = 12 + r() * 44, g = ctx.createRadialGradient(x, y, 0, x, y, rr);
+    g.addColorStop(0, 'rgba(46,30,18,0.32)'); g.addColorStop(1, 'rgba(46,30,18,0)'); ctx.fillStyle = g; ctx.fillRect(x - rr, y - rr, rr * 2, rr * 2);
+  }
+  // frayed hem: a ragged edge with loose fibres hanging below it, and a couple of tears
+  ctx.globalCompositeOperation = 'destination-out';
+  ctx.beginPath(); ctx.moveTo(0, S); let y0 = S * 0.86;
+  for (let x = 0; x <= S; x += 4) { y0 = Math.min(S * 0.95, Math.max(S * 0.8, y0 + (r() - 0.5) * 8)); ctx.lineTo(x, y0); }
+  ctx.lineTo(S, S); ctx.closePath(); ctx.fill();
+  for (let i = 0; i < 3; i++) { const x = 20 + r() * (S - 40), y = S * (0.55 + r() * 0.3), w = 4 + r() * 8, h = 14 + r() * 30; ctx.beginPath(); ctx.moveTo(x, y + h); ctx.lineTo(x - w, y); ctx.lineTo(x + w * 0.3, y + h * 0.3); ctx.lineTo(x + w, y - 2); ctx.closePath(); ctx.fill(); }
+  ctx.globalCompositeOperation = 'source-over';
+  for (let i = 0; i < 140; i++) { const x = r() * S, y = S * (0.78 + r() * 0.08), l = 4 + r() * 22, v = 0.65 + r() * 0.45; ctx.strokeStyle = rgba(128 * v, 92 * v, 66 * v, 0.9); ctx.lineWidth = 0.6 + r() * 0.6; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + (r() - 0.5) * 6, y + l); ctx.stroke(); }   // loose threads
+  return tex(c);
+}
 function makeSoft() {
   const S = 128, c = canvas(S, S), ctx = c.getContext('2d');
   const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
@@ -678,6 +705,7 @@ export function buildTextures() {
   T.leaf.mahuaFlower = leafCard('mahua', true);
   T.cave = makeCavePaintings(); T.wall = makeWall(); T.roof = makeRoof(); T.thatch = makeThatch();
   T.stump = makeStumpTop(); T.blood = makeBlood(); T.soft = makeSoft();
+  T.ragCloth = makeRagCloth();
   T.clothRed = makeCloth('#9c2a1e'); T.clothKhaki = makeCloth('#8a7a52'); T.clothWhite = makeCloth('#d8d0bc'); T.clothBark = makeCloth('#6a5034');
   return T;
 }

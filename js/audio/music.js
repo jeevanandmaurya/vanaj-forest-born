@@ -107,6 +107,12 @@ export class Music {
     const metal = (f, dur, damp) => drum(f, [[1, 1, 1], [2.76, 0.7, 0.8], [5.4, 0.5, 0.6], [8.93, 0.35, 0.5], [13.3, 0.2, 0.4]], damp, 0.15, 0.9, 0, dur);
     this.buffers.manjira = metal(1650, 2.2, 0.9); this.buffers.chik = metal(1650, 0.25, 0.04);
   }
+  // A group for phrases scheduled ahead (a scene's score): pass cue.dest as a phrase's dest, and cue.stop()
+  // fades everything still sounding or still to come in that group, e.g. when the scene is skipped.
+  cue() {
+    const g = this.ctx.createGain(); g.connect(this.flG);
+    return { dest: g, stop: (fade = 0.25) => { const t = this.ctx.currentTime; g.gain.cancelScheduledValues(t); g.gain.setValueAtTime(g.gain.value, t); g.gain.linearRampToValueAtTime(0, t + fade); setTimeout(() => g.disconnect(), (fade + 0.2) * 1000); } };
+  }
   play(buf, t, gain, rate = 1, dest) {
     const s = this.ctx.createBufferSource(); s.buffer = buf; s.playbackRate.value = rate;
     const g = this.ctx.createGain(); g.gain.value = gain; s.connect(g); g.connect(dest || this.drG); s.start(t);
@@ -178,7 +184,7 @@ export class Music {
     const vib = ctx.createOscillator(); vib.frequency.value = 5.6; const vg = ctx.createGain(); vg.gain.value = 0; vib.connect(vg); vg.connect(osc.frequency);
     // drone string (Sa) bowed together
     const dr = ctx.createOscillator(); dr.type = 'sawtooth'; dr.frequency.value = hz(0, oct - 1); const dg = ctx.createGain(); dg.gain.value = 0.18; const dlp = ctx.createBiquadFilter(); dlp.type = 'lowpass'; dlp.frequency.value = 900; dr.connect(dlp); dlp.connect(dg); dg.connect(env);
-    const out = ctx.createGain(); out.gain.value = opts.gain ?? 0.07; env.connect(out); out.connect(this.flG);
+    const out = ctx.createGain(); out.gain.value = opts.gain ?? 0.07; env.connect(out); out.connect(opts.dest || this.flG);
     let t = t0;
     osc.frequency.setValueAtTime(hz(notes[0].semi, oct), t);
     env.gain.setValueAtTime(0, t);

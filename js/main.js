@@ -355,9 +355,13 @@ class Game {
         'I called her by a sound. In words it would be Kaali.',
       ];
       let i = 0, done = false;
+      // the prologue's score and thunder are scheduled seconds ahead; keep hold of them so Skip can cut them
+      // instead of letting them play on over the first chapter's own music
+      const cue = this.music ? this.music.cue() : null, rolls = [];
+      const silence = () => { if (cue) cue.stop(0.25); for (const r of rolls) r(0.25); rolls.length = 0; };
       this.weather.force('storm'); this.audio.update(0.1, { rain: 1, wind: 1.4, water: 1, night: 1, hour: 22, season: 'monsoon' });
-      const rainTimer = setInterval(() => { if (Math.random() < 0.35) this.audio.thunder(300 + Math.random() * 1500, Math.random() * 6); this.audio.update(0.5, { rain: 1, wind: 1.4, water: 1, night: 1, hour: 22, season: 'monsoon' }); }, 1500);
-      if (this.music) this.music.banaPhrase([{ semi: 0, dur: 2 }, { semi: 1, dur: 1.5, meend: true }, { semi: 0, dur: 1 }, { semi: -1, dur: 2.5, meend: true }, { semi: -5, dur: 4 }], this.audio.ctx.currentTime + 1, { gain: 0.08 });
+      const rainTimer = setInterval(() => { if (Math.random() < 0.35) rolls.push(this.audio.thunder(300 + Math.random() * 1500, Math.random() * 6)); this.audio.update(0.5, { rain: 1, wind: 1.4, water: 1, night: 1, hour: 22, season: 'monsoon' }); }, 1500);
+      if (this.music) this.music.banaPhrase([{ semi: 0, dur: 2 }, { semi: 1, dur: 1.5, meend: true }, { semi: 0, dur: 1 }, { semi: -1, dur: 2.5, meend: true }, { semi: -5, dur: 4 }], this.audio.ctx.currentTime + 1, { gain: 0.08, dest: cue.dest });
       const show = () => {
         if (done) return;
         if (i >= lines.length) return finish();
@@ -366,13 +370,13 @@ class Game {
           if (done) return;
           L.textContent = lines[i];
           L.classList.add('show');
-          if (i === 4 && this.music) this.music.flutePhrase([4, 2, 0, -3].map((s, k) => ({ semi: s, dur: k === 3 ? 2.5 : 0.8 })), this.audio.ctx.currentTime + 1.5, { gain: 0.12 });
+          if (i === 4 && this.music) this.music.flutePhrase([4, 2, 0, -3].map((s, k) => ({ semi: s, dur: k === 3 ? 2.5 : 0.8 })), this.audio.ctx.currentTime + 1.5, { gain: 0.12, dest: cue.dest });
           i++;
           setTimeout(show, Math.max(4200, lines[i - 1].length * 70));
         }, 900);
       };
       const finish = () => { if (done) return; done = true; clearInterval(rainTimer); L.classList.remove('show'); $('prologue-title').classList.add('show'); this.weather.forced = null; setTimeout(() => { P.classList.remove('show'); $('prologue-title').classList.remove('show'); resolve(); }, 3800); };
-      this.skipPrologue = () => { if (!done) { done = true; clearInterval(rainTimer); this.weather.forced = null; P.classList.remove('show'); resolve(); } };
+      this.skipPrologue = () => { if (!done) { done = true; clearInterval(rainTimer); silence(); this.weather.forced = null; P.classList.remove('show'); resolve(); } };
       setTimeout(show, 1200);
     });
   }
