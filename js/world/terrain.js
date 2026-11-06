@@ -178,12 +178,19 @@ export function groundNormal(x, z, out) {
   return out;
 }
 
-function splatFor(x, z, h, ny, out, o) {
+function splatFor(x, z, h, ny, out, o, bio) {
   const b = biomeAt(x, z);
   const slope = 1 - ny;
+  if (bio) {
+    bio[o] = clamp(b.riparian * 0.85 + Math.max(0, b.moist - 0.55) * 1.2 + b.bamboo * 0.35, 0, 1);                        // moisture
+    bio[o + 1] = clamp(b.teak * 0.85 + b.riparian * 0.4 + b.bamboo * 0.5, 0, 1) * (1 - b.grass * 0.8) * (1 - b.village);  // canopy
+    bio[o + 2] = clamp(smoothstep(0.1, 0.55, S2.noise2(x / 280 + 13, z / 280 - 7)) * 0.8 + b.rock * 0.3 + Math.max(0, (h - 60) / 120), 0, 1); // laterite
+    bio[o + 3] = clamp(smoothstep(0.15, 0.6, S3.noise2(x / 340 - 21, z / 340 + 4)) * (1 - slope * 4) * (1 - b.rock) * (1 - b.sand), 0, 1); // black soil
+  }
   let litter = 0.25 + b.teak * 0.9 + b.bamboo * 0.5;
   let grass = b.grass * 1.2 + b.riparian * 0.35 + b.open * 0.5;
-  let rock = b.rock * smoothstep(0.05, 0.25, slope + 0.1 * S2.noise2(x / 20, z / 20)) + smoothstep(0.42, 0.6, slope);
+  let rock = b.rock * smoothstep(0.05, 0.25, slope + 0.1 * S2.noise2(x / 20, z / 20)) + smoothstep(0.42, 0.6, slope)
+    + b.rock * smoothstep(0.15, 0.55, S5.noise2(x / 17, z / 17)) * 0.9;   // exposed sheet rock on the ridge tops
   let sand = b.sand * 1.4;
   if (h > 110) rock += 0.4;
   const s = litter + grass + rock + sand + 1e-4;
@@ -198,7 +205,7 @@ function buildGridGeometry(x0, z0, size, n, analytic, skirt, sink = 0) {
   const hb = new Float32Array(NB * NB);
   for (let j = 0; j < NB; j++) for (let i = 0; i < NB; i++) hb[j * NB + i] = analytic(x0 + (i - 1) * step, z0 + (j - 1) * step);
   const vCount = N * N + (skirt ? 4 * n + 4 : 0) ;
-  const pos = new Float32Array(vCount * 3), nor = new Float32Array(vCount * 3), spl = new Float32Array(vCount * 4), fld = new Float32Array(vCount);
+  const pos = new Float32Array(vCount * 3), nor = new Float32Array(vCount * 3), spl = new Float32Array(vCount * 4), bio = new Float32Array(vCount * 4), fld = new Float32Array(vCount);
   const hgrid = new Float32Array(N * N);
   let v = 0;
   for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
@@ -209,7 +216,8 @@ function buildGridGeometry(x0, z0, size, n, analytic, skirt, sink = 0) {
     let nx = hl - hr, ny = 2 * step, nz = hd - hu; const l = Math.hypot(nx, ny, nz); nx /= l; ny /= l; nz /= l;
     pos[v * 3] = x; pos[v * 3 + 1] = h - sink; pos[v * 3 + 2] = z;
     nor[v * 3] = nx; nor[v * 3 + 1] = ny; nor[v * 3 + 2] = nz;
-    fld[v] = splatFor(x, z, h, ny, spl, v * 4);
+    fld[v] = splatFor(x, z, h, ny, spl, v * 4, bio);
+    { const wl = waterAt(x, z); if (wl > h) fld[v] = -Math.min(3, wl - h); }   // negative = submerged depth (river / pool bed)
     v++;
   }
   const idx = [];
@@ -227,7 +235,7 @@ function buildGridGeometry(x0, z0, size, n, analytic, skirt, sink = 0) {
     for (const bi of border) {
       pos[v * 3] = pos[bi * 3]; pos[v * 3 + 1] = pos[bi * 3 + 1] - 7; pos[v * 3 + 2] = pos[bi * 3 + 2];
       nor[v * 3] = nor[bi * 3]; nor[v * 3 + 1] = nor[bi * 3 + 1]; nor[v * 3 + 2] = nor[bi * 3 + 2];
-      for (let k = 0; k < 4; k++) spl[v * 4 + k] = spl[bi * 4 + k];
+      for (let k = 0; k < 4; k++) { spl[v * 4 + k] = spl[bi * 4 + k]; bio[v * 4 + k] = bio[bi * 4 + k]; }
       fld[v] = fld[bi];
       v++;
     }
@@ -241,63 +249,121 @@ function buildGridGeometry(x0, z0, size, n, analytic, skirt, sink = 0) {
   g.setAttribute('position', new THREE.BufferAttribute(pos.subarray(0, v * 3), 3));
   g.setAttribute('normal', new THREE.BufferAttribute(nor.subarray(0, v * 3), 3));
   g.setAttribute('aSplat', new THREE.BufferAttribute(spl.subarray(0, v * 4), 4));
+  g.setAttribute('aBio', new THREE.BufferAttribute(bio.subarray(0, v * 4), 4));
   g.setAttribute('aField', new THREE.BufferAttribute(fld.subarray(0, v), 1));
   g.setIndex(idx);
   g.computeBoundingSphere();
   return { geometry: g, hgrid, step };
 }
 
-export function createTerrainMaterial(tex, far) {
+export function createTerrainMaterial(tex, far, lq = false) {
   const m = new THREE.MeshStandardMaterial({ roughness: 0.93, metalness: 0.0 });
   m.userData.near = { value: new THREE.Vector4(0, 0, 0, 0) };
-  patch(m, far ? 'terrain-far' : 'terrain', (s) => {
-    s.uniforms.tLitter = { value: tex.litter }; s.uniforms.tSoil = { value: tex.soil };
+  patch(m, (far ? 'terrain-far' : 'terrain') + (lq ? '-lq' : ''), (s) => {
+    s.uniforms.tLitter = { value: tex.litter }; s.uniforms.tLitterM = { value: tex.litterMoist }; s.uniforms.tSoil = { value: tex.soil };
     s.uniforms.tRock = { value: tex.rock }; s.uniforms.tGrassG = { value: tex.grassGround }; s.uniforms.tSand = { value: tex.sand };
+    s.uniforms.tRed = { value: tex.redSoil }; s.uniforms.tBlack = { value: tex.blackSoil };
     s.uniforms.uNearRect = m.userData.near;
     s.vertexShader = s.vertexShader
       .replace('#include <common>', `#include <common>
-        attribute vec4 aSplat; attribute float aField;
-        varying vec4 vSplat; varying float vField; varying vec3 vWP; varying vec3 vWN;`)
+        attribute vec4 aSplat; attribute vec4 aBio; attribute float aField;
+        varying vec4 vSplat; varying vec4 vBio; varying float vField; varying vec3 vWP; varying vec3 vWN;`)
       .replace('#include <fog_vertex>', `#include <fog_vertex>
         vWP = (modelMatrix * vec4(transformed, 1.0)).xyz; vWN = normalize(mat3(modelMatrix) * objectNormal);
-        vSplat = aSplat; vField = aField;`);
+        vSplat = aSplat; vBio = aBio; vField = aField;`);
     s.fragmentShader = s.fragmentShader
       .replace('#include <common>', `#include <common>
+        ${lq ? '#define TERRAIN_LQ' : ''}
         ${NOISE_GLSL}
-        uniform sampler2D tLitter, tSoil, tRock, tGrassG, tSand; uniform vec4 uNearRect;
-        uniform float uSeasonGreen, uWetness;
-        varying vec4 vSplat; varying float vField; varying vec3 vWP; varying vec3 vWN;
+        uniform sampler2D tLitter, tLitterM, tSoil, tRock, tGrassG, tSand, tRed, tBlack, tGroundAO; uniform vec4 uNearRect, uAORect;
+        uniform float uSeasonGreen, uWetness, uDry, uTime; uniform vec2 uWind; uniform vec3 uSunDir;
+        varying vec4 vSplat; varying vec4 vBio; varying float vField; varying vec3 vWP; varying vec3 vWN;
         float lum(vec3 c){ return dot(c, vec3(0.3,0.55,0.15)); }`)
       .replace('#include <map_fragment>', `
         ${far ? 'if (vWP.x > uNearRect.x && vWP.x < uNearRect.z && vWP.z > uNearRect.y && vWP.z < uNearRect.w) discard;' : ''}
         vec2 uv = vWP.xz;
         float macro = fbm2(uv * 0.011);
         float n2 = vnoise(uv * 0.09);
-        vec3 tl = mix(texture2D(tLitter, uv * 0.21).rgb, texture2D(tLitter, uv * 0.053 + 0.37).rgb, 0.35);
+        float hueN = vnoise(uv * 0.0065 + 3.1);
+        float patchN = fbm2(uv * 0.045 + 7.3);
+        float slope = 1.0 - vWN.y;
+        vec4 bio = vBio; // x moisture, y canopy, z laterite, w black soil
+        float fieldW = max(vField, 0.0), bedW = smoothstep(0.0, 0.6, -vField);
+        const mat2 R1 = mat2(0.743, -0.669, 0.669, 0.743);
+        // leaf litter, sampled at two rotated scales and blended by noise so the tile never repeats visibly
+        float sel = smoothstep(0.3, 0.7, vnoise(uv * 0.06 + 11.0));
+        vec3 tl = mix(texture2D(tLitter, uv * 0.21).rgb, texture2D(tLitter, R1 * uv * 0.163 + 0.31).rgb, sel);
+        #ifndef TERRAIN_LQ
+        tl = mix(tl, texture2D(tLitter, uv * 0.053 + 0.37).rgb, 0.3);
+        vec3 tm = mix(texture2D(tLitterM, R1 * uv * 0.2).rgb, texture2D(tLitterM, uv * 0.067 + 0.7).rgb, 0.35);
+        vec3 tred = mix(texture2D(tRed, uv * 0.14).rgb, texture2D(tRed, R1 * uv * 0.045).rgb, 0.35);
+        #else
+        vec3 tm = texture2D(tLitterM, R1 * uv * 0.2).rgb;
+        vec3 tred = texture2D(tRed, uv * 0.14).rgb;
+        #endif
         vec3 ts = mix(texture2D(tSoil, uv * 0.16).rgb, texture2D(tSoil, uv * 0.041).rgb, 0.4);
+        vec3 tblk = texture2D(tBlack, uv * 0.085).rgb;
         vec3 tg = mix(texture2D(tGrassG, uv * 0.19).rgb, texture2D(tGrassG, uv * 0.049 + 0.5).rgb, 0.4);
         vec3 tnd = texture2D(tSand, uv * 0.12).rgb;
         vec3 bw = pow(abs(vWN), vec3(4.0)); bw /= (bw.x + bw.y + bw.z);
         vec3 tr = texture2D(tRock, vWP.zy * 0.07).rgb * bw.x + texture2D(tRock, vWP.xz * 0.07).rgb * bw.y + texture2D(tRock, vWP.xy * 0.07).rgb * bw.z;
         float green = clamp(uSeasonGreen * (0.75 + 0.5 * macro), 0.0, 1.0);
         tg *= mix(vec3(1.12, 0.95, 0.62), vec3(0.58, 0.84, 0.38), green);
-        tl *= mix(vec3(1.05, 0.98, 0.9), vec3(0.72, 0.8, 0.58), green * 0.6);
-        float slope = 1.0 - vWN.y;
+        // litter character drifts across the forest: fresh golden teak fall, grey weathered litter, russet patches
+        tl = mix(vec3(lum(tl)), tl, 0.72);                                  // teak litter is tan-brown, not orange
+        vec3 litTint = mix(vec3(1.08, 0.98, 0.8), vec3(0.8, 0.79, 0.77), smoothstep(0.3, 0.7, hueN));
+        litTint = mix(litTint, vec3(1.06, 0.84, 0.7), smoothstep(0.6, 0.85, vnoise(uv * 0.011 - 5.0)) * 0.7);
+        litTint = mix(litTint, vec3(0.62, 0.56, 0.48), smoothstep(0.62, 0.82, vnoise(uv * 0.021 + 17.0)) * 0.6);   // dark rotted patches
+        litTint = mix(litTint, vec3(1.16, 1.04, 0.82), uDry * 0.45);
+        tl *= litTint;
+        // damp, half-rotted litter near water, in bamboo, and through the rains
+        float moistW = clamp(bio.x * 1.1 + uWetness * 0.25 - uDry * 0.3 + (patchN - 0.5) * 0.5, 0.0, 1.0);
+        tl = mix(tl, tm, smoothstep(0.3, 0.75, moistW));
+        tl *= mix(vec3(1.05, 0.98, 0.9), vec3(0.76, 0.86, 0.6), green * 0.5);
+        float sprout = green * smoothstep(0.74, 0.8, vnoise(uv * 3.1)) * (1.0 - uDry);
+        tl = mix(tl, vec3(0.15, 0.25, 0.07), sprout * 0.55);
+        // bare ground where the litter is thin: red laterite on ridges and slopes, black soil on flats, brown loam elsewhere
+        float latW = clamp(bio.z + slope * 1.2 - 0.25, 0.0, 1.0);
+        vec3 bare = mix(ts, tred, smoothstep(0.2, 0.7, latW));
+        bare = mix(bare, tblk * mix(1.0, 0.7, uWetness), smoothstep(0.3, 0.7, bio.w) * (1.0 - latW * 0.6));
+        float cover = smoothstep(0.32, 0.6, patchN + bio.y * 0.35 - slope * 0.9 - bio.z * 0.18 + 0.1);
         vec4 w = vSplat;
         w.z = max(w.z, smoothstep(0.38, 0.6, slope + (n2 - 0.5) * 0.2));
         w.y *= 0.6 + 0.8 * vnoise(uv * 0.05);
         vec4 hb = vec4(lum(tl), lum(tg), lum(tr), lum(tnd)) + 0.35;
         w = w * hb * hb * hb * hb; w /= (w.x + w.y + w.z + w.w + 1e-4);
         vec3 tcol = tl * w.x + tg * w.y + tr * w.z + tnd * w.w;
-        tcol = mix(tcol, ts, smoothstep(0.5, 0.85, macro) * 0.45 * (1.0 - w.z));
+        tcol = mix(tcol, bare, (1.0 - cover) * w.x * 0.85);
+        tcol = mix(tcol, bare, (1.0 - smoothstep(0.15, 0.45, patchN + 0.15)) * w.y * 0.45);
         vec3 fieldC = mix(vec3(0.42, 0.3, 0.19), vec3(0.36, 0.42, 0.18), green) * (0.8 + 0.4 * vnoise(vec2(uv.x * 0.6, uv.y * 0.03)));
-        tcol = mix(tcol, fieldC * (0.9 + 0.2 * sin(uv.x * 2.2)), vField * 0.85);
-        tcol *= 0.82 + 0.36 * macro;
-        float wet = clamp(uWetness * (0.6 + 0.4 * n2) + w.w * 0.5, 0.0, 1.0);
+        tcol = mix(tcol, fieldC * (0.9 + 0.2 * sin(uv.x * 2.2)), fieldW * 0.85);
+        // burn scars of the summer ground fires: ash, charred litter, a few pale ash flecks
+        float burn = uDry * smoothstep(0.64, 0.7, fbm2(uv * 0.006 + 9.0)) * bio.y * (1.0 - w.z) * (1.0 - w.w) * (1.0 - fieldW) * (1.0 - bedW);
+        vec3 ashC = vec3(0.075, 0.07, 0.065) + vec3(0.22) * smoothstep(0.78, 0.92, vnoise(uv * 2.3));
+        tcol = mix(tcol, ashC, burn * 0.85);
+        tcol *= 0.84 + 0.32 * macro;
+        // submerged bed: dark pebbles, silt and algae film instead of dry pale sand
+        vec3 bedC = mix(tr * vec3(0.3, 0.32, 0.24), tblk * vec3(0.45, 0.5, 0.36), smoothstep(0.35, 0.65, vnoise(uv * 0.7)));
+        bedC = mix(bedC, vec3(0.16, 0.2, 0.08), smoothstep(0.55, 0.8, vnoise(uv * 0.23 + 4.0)) * 0.5 * (1.0 - uWetness));
+        tcol = mix(tcol, bedC, bedW * 0.85);
+        // ground occlusion around trunks / rocks and shade under crowns
+        vec2 aoUV = (vWP.xz - uAORect.xy) * uAORect.z;
+        vec2 aoE = smoothstep(vec2(0.0), vec2(0.06), aoUV) * smoothstep(vec2(1.0), vec2(0.94), aoUV);
+        float aoIn = aoE.x * aoE.y * uAORect.w;
+        vec3 aoS = texture2D(tGroundAO, clamp(aoUV, 0.0, 1.0)).rgb * aoIn;
+        float contact = clamp(aoS.r, 0.0, 1.0);
+        float gCanopy = clamp(aoS.g * 1.7 + bio.y * 0.35 * (1.0 - aoIn), 0.0, 1.0);
+        tcol *= 1.0 - contact * 0.55;
+        tcol *= 1.0 - gCanopy * 0.1;
+        // wetness and rain puddles on flat ground
+        float flatG = smoothstep(0.06, 0.01, slope);
+        float puddle = clamp(uWetness * 1.4 - 0.3, 0.0, 1.0) * smoothstep(0.6, 0.68, vnoise(uv * 0.11 + 2.0) * 0.7 + vnoise(uv * 0.5) * 0.3) * flatG * (1.0 - w.z) * (1.0 - w.w) * (1.0 - bedW);
+        float wet = clamp(uWetness * (0.6 + 0.4 * n2) + w.w * 0.5 + bedW, 0.0, 1.0);
         tcol *= mix(1.0, 0.6, wet);
+        tcol = mix(tcol, tcol * 0.4 + vec3(0.02, 0.022, 0.02), puddle);
         diffuseColor.rgb = tcol;
       `)
-      .replace('#include <roughnessmap_fragment>', `float roughnessFactor = mix(0.96, 0.42, wet);`)
+      .replace('#include <roughnessmap_fragment>', `float roughnessFactor = mix(mix(0.96, 0.42, wet), 0.05, puddle);`)
       .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
         {
           float bh = lum(tcol) * 3.0;
@@ -305,9 +371,20 @@ export function createTerrainMaterial(tex, far) {
           float dhx = dFdx(bh), dhy = dFdy(bh);
           vec3 r1 = cross(dpy, normal), r2 = cross(normal, dpx);
           float det = dot(dpx, r1);
-          float bs = 0.018 * (1.0 - smoothstep(8.0, 30.0, length(vViewPosition)));
+          float bs = 0.018 * (1.0 - smoothstep(8.0, 30.0, length(vViewPosition))) * (1.0 - puddle);
           vec3 grad = sign(det) * (dhx * r1 + dhy * r2);
           normal = normalize(abs(det) * normal - grad * bs);
+        }`)
+      .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
+        {
+          // dappled sun flecks under the canopy: leaf gaps projected along the sun, drifting with the wind
+          vec2 sp = vWP.xz - uSunDir.xz / max(uSunDir.y, 0.25) * 9.0;
+          vec2 wo = uWind * uTime * 0.35;
+          float ck = vnoise(sp * 0.55 + wo) * 0.6 + vnoise(sp * 1.6 - wo * 1.7) * 0.4;
+          ck = smoothstep(0.36, 0.64, ck);
+          float dap = mix(1.0, 0.42 + ck * 1.0, gCanopy * 0.62);
+          reflectedLight.directDiffuse *= dap; reflectedLight.directSpecular *= dap;
+          reflectedLight.indirectDiffuse *= 1.0 - gCanopy * 0.16 - contact * 0.42;
         }`);
   });
   return m;
@@ -316,8 +393,9 @@ export function createTerrainMaterial(tex, far) {
 export class TerrainManager {
   constructor(scene, tex, quality) {
     this.scene = scene; this.q = quality;
-    this.mat = createTerrainMaterial(tex, false);
-    this.farMat = createTerrainMaterial(tex, true);
+    const lq = quality.name === 'Low';
+    this.mat = createTerrainMaterial(tex, false, lq);
+    this.farMat = createTerrainMaterial(tex, true, lq);
     this.chunks = new Map();
     this.queue = [];
     this.center = { cx: 1e9, cz: 1e9 };

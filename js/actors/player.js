@@ -169,7 +169,7 @@ export class Player {
     const lim = HALF - 60; this.pos.x = clamp(this.pos.x, -lim, lim); this.pos.z = clamp(this.pos.z, -lim, lim);
     let gy2 = groundHeight(this.pos.x, this.pos.z);
     // keep the player on the watchtower platform (railings)
-    if (g.props.towerTop && this.pos.y > g.props.towerTop.y - 0.6) { const t = g.props.towerTop; this.pos.x = clamp(this.pos.x, t.x - 1.7, t.x + 1.7); this.pos.z = clamp(this.pos.z, t.z - 1.7, t.z + 1.7); }
+    { const t = g.props.towerTop; if (t && this.pos.y > t.y - 0.6 && this.pos.y < t.y + 3 && Math.abs(this.pos.x - t.x) < 3 && Math.abs(this.pos.z - t.z) < 3) { this.pos.x = clamp(this.pos.x, t.x - 1.7, t.x + 1.7); this.pos.z = clamp(this.pos.z, t.z - 1.7, t.z + 1.7); } }
     const plat = g.props.platformHeight ? g.props.platformHeight(this.pos) : -1e9;
     if (plat > gy2) gy2 = plat;
     if (!this.swimming) {
@@ -228,6 +228,10 @@ export class Player {
       kneel: a && (a.type === 'harvest' || a.type === 'finish') ? Math.sin(Math.min(1, a.t / a.dur) * Math.PI) : 0,
     };
     if (this.climb) { anim.speed = 2; anim.air = false; }
+    if (this.onGround && !this.swimming && !this.climb && this.pos.y - groundHeight(this.pos.x, this.pos.z) < 0.25) {
+      const yawR = this.bodyYaw + Math.PI, cy = Math.cos(yawR), sy = Math.sin(yawR), px = this.pos.x, pz = this.pos.z, py = this.pos.y;
+      anim.ground = (lx, lz) => groundHeight(px + lx * cy + lz * sy, pz - lx * sy + lz * cy) - py;
+    }
     animateHumanoid(this.body, dt, anim);
     this.body.root.position.copy(this.pos);
     if (this.swimming) this.body.root.position.y += 0.6;
@@ -293,6 +297,10 @@ export class Player {
         const px = tgt.x + dir.x * dist * s, pz = tgt.z + dir.z * dist * s, py = tgt.y + dir.y * dist * s;
         if (py < groundHeight(px, pz) + 0.35) { d = dist * (s - 0.25) + 0.3; break; }
       }
+      // trunks, boulders and walls along the boom (vertical cylinders)
+      { const ex = tgt.x + dir.x * d, ez = tgt.z + dir.z * d;
+        const f = Math.min(g.veg.segmentHit(tgt.x, tgt.z, ex, ez, 0.28), g.props.segmentHit ? g.props.segmentHit(tgt.x, tgt.z, ex, ez, 0.28) : 1);
+        if (f < 1) d = Math.max(0.35, d * f); }
       const want = _v3.copy(tgt).addScaledVector(dir, d);
       const gyc = groundHeight(want.x, want.z) + 0.3; if (want.y < gyc) want.y = gyc;
       this.camPos.lerp(want, Math.min(1, dt * 18));
@@ -541,8 +549,12 @@ export class Player {
         continue;
       }
       const gy = groundHeight(p.pos.x, p.pos.z);
-      const tr = g.veg.nearestTree(p.pos.x, p.pos.z, 0.6);
-      if (p.pos.y < gy || (tr && p.pos.y < gy + 8) || p.life <= 0) {
+      // swept test against trunks and boulders so fast arrows cannot tunnel through
+      const prevX = p.pos.x - step.x, prevZ = p.pos.z - step.z;
+      const fT = p.pos.y < gy + 9 ? Math.min(g.veg.segmentHit(prevX, prevZ, p.pos.x, p.pos.z, 0.02), g.props.segmentHit ? g.props.segmentHit(prevX, prevZ, p.pos.x, p.pos.z, 0.02) : 1) : 1;
+      const tr = fT < 1;
+      if (tr) { p.pos.set(prevX + step.x * fT, p.pos.y - step.y * (1 - fT), prevZ + step.z * fT); p.mesh.position.copy(p.pos).addScaledVector(dirN, 0.12); }
+      if (p.pos.y < gy || tr || p.life <= 0) {
         p.done = true;
         if (p.pos.y < gy) p.pos.y = gy + 0.1;
         g.audio.impact(tr ? 'wood' : 'whiff', p.pos, 0.6);

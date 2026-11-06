@@ -6,10 +6,10 @@ import { mulberry32, clamp, lerp, smoothstep } from '../core/noise.js';
 import { WATER_STATE, groundHeight, waterAt } from './terrain.js';
 
 export const SEASONS = {
-  winter: { label: 'Winter', month: 'December', decl: -23, green: 0.45, rise: 0.0, hole: -0.1, turb: 2.6, haze: 0.2, wind: 0.3, weights: { clear: 0.55, mist: 0.3, cloudy: 0.12, rain: 0.03 }, morningMist: 1.0, temp: [6, 26] },
-  summer: { label: 'Summer', month: 'May', decl: 19, green: 0.06, rise: -0.7, hole: -0.75, turb: 7.5, haze: 0.9, wind: 0.45, weights: { clear: 0.5, hazy: 0.4, storm: 0.1 }, morningMist: 0.0, temp: [27, 45] },
-  monsoon: { label: 'Monsoon', month: 'August', decl: 14, green: 1.0, rise: 1.3, hole: 0.35, turb: 4.5, haze: 0.4, wind: 0.6, weights: { rain: 0.45, storm: 0.2, cloudy: 0.3, clear: 0.05 }, morningMist: 0.5, temp: [23, 33] },
-  post: { label: 'After the Rains', month: 'November', decl: -15, green: 0.85, rise: 0.35, hole: 0.15, turb: 3.0, haze: 0.25, wind: 0.25, weights: { clear: 0.55, mist: 0.35, cloudy: 0.1 }, morningMist: 1.0, temp: [12, 29] },
+  winter: { dry: 0.35, label: 'Winter', month: 'December', decl: -23, green: 0.45, rise: 0.0, hole: -0.1, turb: 2.6, haze: 0.2, wind: 0.3, weights: { clear: 0.55, mist: 0.3, cloudy: 0.12, rain: 0.03 }, morningMist: 1.0, temp: [6, 26] },
+  summer: { dry: 1.0, label: 'Summer', month: 'May', decl: 19, green: 0.06, rise: -0.7, hole: -0.75, turb: 7.5, haze: 0.9, wind: 0.45, weights: { clear: 0.5, hazy: 0.4, storm: 0.1 }, morningMist: 0.0, temp: [27, 45] },
+  monsoon: { dry: 0.0, label: 'Monsoon', month: 'August', decl: 14, green: 1.0, rise: 1.3, hole: 0.35, turb: 4.5, haze: 0.4, wind: 0.6, weights: { rain: 0.45, storm: 0.2, cloudy: 0.3, clear: 0.05 }, morningMist: 0.5, temp: [23, 33] },
+  post: { dry: 0.08, label: 'After the Rains', month: 'November', decl: -15, green: 0.85, rise: 0.35, hole: 0.15, turb: 3.0, haze: 0.25, wind: 0.25, weights: { clear: 0.55, mist: 0.35, cloudy: 0.1 }, morningMist: 1.0, temp: [12, 29] },
 };
 const WEATHER = {
   clear: { cloud: 0.12, rain: 0, fog: 1.0, wind: 1.0, lightning: 0 },
@@ -36,6 +36,7 @@ export class Weather {
     this.season = s;
     const cfg = SEASONS[s];
     G.uSeasonGreen.value = cfg.green;
+    G.uDry.value = cfg.dry;
     this.pick(forceState);
     this.env = { ...this.target }; // snap
   }

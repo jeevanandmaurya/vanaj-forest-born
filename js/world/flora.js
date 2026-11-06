@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { mulberry32, hash2, clamp, smoothstep } from '../core/noise.js';
 import { G, patch, WIND_VERTEX, NOISE_GLSL } from '../core/shaderlib.js';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { height, biomeAt, waterAt, CHUNK } from './terrain.js';
 
 // ------------------------------------------------------------------ geometry builder
@@ -26,7 +27,7 @@ class GB {
   }
 }
 
-function tube(gb, pts, rads, radial, windFn, rnd, uRep, colMul = 1) {
+function tube(gb, pts, rads, radial, windFn, rnd, uRep, colMul = 1, shape = null, aoFn = null) {
   const n = pts.length; const base = gb.p.length / 3; let len = 0;
   const ur = uRep || Math.max(1, Math.round(2 * Math.PI * rads[0] / 1.0));
   for (let s = 0; s < n; s++) {
@@ -40,11 +41,20 @@ function tube(gb, pts, rads, radial, windFn, rnd, uRep, colMul = 1) {
     if (s > 0) len += Math.hypot(p[0] - pts[s - 1][0], p[1] - pts[s - 1][1], p[2] - pts[s - 1][2]);
     const r = rads[s];
     const wv = windFn(p);
-    const ao = colMul * (p[1] < 0.5 ? 0.7 : 1);
+    const ao = colMul * (aoFn ? aoFn(p) : (p[1] < 0.5 ? 0.7 : 1));
     for (let k = 0; k <= radial; k++) {
       const a = k / radial * Math.PI * 2, c = Math.cos(a), sn = Math.sin(a);
-      const dx = Nx * c + Bx * sn, dy = Ny * c + By * sn, dz = Nz * c + Bz * sn;
-      gb.vert(p[0] + dx * r, p[1] + dy * r, p[2] + dz * r, dx, dy, dz, k / radial * ur, len / 2.4, ao, ao, ao, wv, rnd);
+      let dx = Nx * c + Bx * sn, dy = Ny * c + By * sn, dz = Nz * c + Bz * sn;
+      let rr = r, nx = dx, ny = dy, nz = dz;
+      if (shape) {
+        const m0 = shape(s, a, p), m1 = shape(s, a + 0.02, p);
+        rr = r * m0;
+        const dm = (m1 - m0) / 0.02 / Math.max(0.2, m0);        // d ln r / d angle -> tilt normal against the lobe slope
+        const tx2 = -Nx * sn + Bx * c, ty2 = -Ny * sn + By * c, tz2 = -Nz * sn + Bz * c;
+        nx = dx - tx2 * dm; ny = dy - ty2 * dm; nz = dz - tz2 * dm; const l2 = Math.hypot(nx, ny, nz) || 1; nx /= l2; ny /= l2; nz /= l2;
+      }
+      const aoL = shape ? ao * (0.78 + 0.22 * clamp(shape(s, a, p) - 0.6, 0, 1)) : ao;  // darker in the flute grooves
+      gb.vert(p[0] + dx * rr, p[1] + dy * rr, p[2] + dz * rr, nx, ny, nz, k / radial * ur, len / 2.4, aoL, aoL, aoL, wv, rnd);
     }
   }
   for (let s = 0; s < n - 1; s++) for (let k = 0; k < radial; k++) {
@@ -74,14 +84,21 @@ function card(gb, C, up, w, h, crownC, crownR, wind, rnd, rng, tint) {
 
 // ------------------------------------------------------------------ species specs
 const SPEC = {
-  teak: { H: [15, 21], r0: [0.28, 0.4], trunkFrac: 0.5, nB: [7, 10], ang: [0.65, 1.15], bLen: 1.0, crownR: 5.2, cardS: [2.4, 3.1], perTip: 3, sub: 2, leaf: 'teak', bark: 'teak', gnarl: 0.12, lean: 0.05, tint: [1, 1, 1] },
-  mahua: { H: [9, 13], r0: [0.45, 0.6], trunkFrac: 0.32, nB: [6, 8], ang: [0.85, 1.35], bLen: 1.15, crownR: 6.5, cardS: [1.6, 2.0], perTip: 4, sub: 3, leaf: 'mahua', bark: 'mahua', gnarl: 0.22, lean: 0.06, tint: [0.95, 1, 0.95] },
-  saja: { H: [17, 24], r0: [0.32, 0.42], trunkFrac: 0.62, nB: [5, 7], ang: [0.5, 0.9], bLen: 0.85, crownR: 4.2, cardS: [1.8, 2.2], perTip: 3, sub: 2, leaf: 'small', bark: 'saja', gnarl: 0.08, lean: 0.03, tint: [0.92, 1, 0.9] },
-  kulu: { H: [7, 12], r0: [0.22, 0.32], trunkFrac: 0.42, nB: [4, 5], ang: [0.6, 1.1], bLen: 0.9, crownR: 4.0, cardS: [1.5, 1.8], perTip: 2, sub: 2, leaf: 'kulu', bark: 'kulu', gnarl: 0.4, lean: 0.25, tint: [1, 1, 1] },
-  palash: { H: [5, 8.5], r0: [0.16, 0.24], trunkFrac: 0.38, nB: [4, 6], ang: [0.7, 1.25], bLen: 0.95, crownR: 3.4, cardS: [1.3, 1.6], perTip: 3, sub: 2, leaf: 'palash', bark: 'generic', gnarl: 0.45, lean: 0.15, tint: [1, 1, 1] },
-  small: { H: [7, 11], r0: [0.2, 0.3], trunkFrac: 0.42, nB: [5, 7], ang: [0.7, 1.15], bLen: 0.9, crownR: 4.0, cardS: [1.5, 1.8], perTip: 4, sub: 2, leaf: 'small', bark: 'generic', gnarl: 0.2, lean: 0.06, tint: [1, 1, 1] },
-  arjun: { H: [15, 20], r0: [0.5, 0.65], trunkFrac: 0.45, nB: [7, 9], ang: [0.8, 1.25], bLen: 1.1, crownR: 7.0, cardS: [2.0, 2.4], perTip: 4, sub: 3, leaf: 'small', bark: 'banyan', gnarl: 0.15, lean: 0.05, tint: [0.9, 1.0, 0.9] },
-  dead: { H: [10, 16], r0: [0.25, 0.35], trunkFrac: 0.5, nB: [4, 6], ang: [0.6, 1.1], bLen: 0.6, crownR: 4.0, cardS: [0, 0], perTip: 0, sub: 1, leaf: null, bark: 'teak', gnarl: 0.25, lean: 0.1, tint: [1, 1, 1] },
+  // teak: straight clean bole, fluted / low-buttressed base, fibrous grey-brown bark, open crown of huge leaves
+  teak: { H: [14, 22], r0: [0.26, 0.42], trunkFrac: 0.52, nB: [6, 10], ang: [0.6, 1.15], bLen: 1.0, crownR: 5.2, cardS: [2.4, 3.1], perTip: 3, sub: 2, leaf: 'teak', bark: 'teak', gnarl: 0.08, lean: 0.05, tint: [1, 1, 1], flute: { n: 6, amp: 0.2, h: 1.4 }, roots: 4, taper: 0.7, flare: 0.5 },
+  // mahua: short stout trunk forking low into a big rounded, dense crown; dark cracked bark
+  mahua: { H: [9, 14], r0: [0.42, 0.62], trunkFrac: 0.3, nB: [6, 9], ang: [0.85, 1.4], bLen: 1.2, crownR: 6.8, cardS: [1.6, 2.0], perTip: 4, sub: 3, leaf: 'mahua', bark: 'mahua', gnarl: 0.2, lean: 0.07, tint: [0.95, 1, 0.95], roots: 5, trunkTop: 0.55, taper: 0.6, flare: 0.6, flute: { n: 5, amp: 0.1, h: 1.0 } },
+  // saja / crocodile-bark: tall, very straight cylindrical stem, little taper, narrow crown
+  saja: { H: [17, 25], r0: [0.3, 0.44], trunkFrac: 0.64, nB: [5, 7], ang: [0.45, 0.85], bLen: 0.85, crownR: 4.2, cardS: [1.8, 2.2], perTip: 3, sub: 2, leaf: 'small', bark: 'saja', gnarl: 0.05, lean: 0.025, tint: [0.92, 1, 0.9], roots: 3, taper: 0.55, flare: 0.35, flute: { n: 4, amp: 0.07, h: 1.0 } },
+  // kulu / ghost tree: short crooked pale bole, big horizontally spreading limbs, on rocky slopes
+  kulu: { H: [7, 12], r0: [0.22, 0.34], trunkFrac: 0.35, nB: [3, 5], ang: [1.05, 1.45], bLen: 1.05, crownR: 4.4, cardS: [1.5, 1.8], perTip: 2, sub: 2, leaf: 'kulu', bark: 'kulu', gnarl: 0.35, lean: 0.28, tint: [1, 1, 1], bend: 0.9, roots: 2, taper: 0.6, flare: 0.45 },
+  // palash / flame of the forest: crooked, tortuous trunk and irregular branches, rough grey-brown bark
+  palash: { H: [5, 9], r0: [0.15, 0.25], trunkFrac: 0.4, nB: [4, 6], ang: [0.7, 1.3], bLen: 0.95, crownR: 3.4, cardS: [1.3, 1.6], perTip: 3, sub: 2, leaf: 'palash', bark: 'palash', gnarl: 0.5, lean: 0.22, tint: [1, 1, 1], bend: 0.7, roots: 2, taper: 0.65, flare: 0.4 },
+  small: { H: [7, 11], r0: [0.18, 0.3], trunkFrac: 0.42, nB: [5, 7], ang: [0.7, 1.15], bLen: 0.9, crownR: 4.0, cardS: [1.5, 1.8], perTip: 4, sub: 2, leaf: 'small', bark: 'generic', gnarl: 0.2, lean: 0.08, tint: [1, 1, 1], bend: 0.3, roots: 2, taper: 0.7, flare: 0.45 },
+  // arjun: riverside giant, buttressed uneven stem, smooth pale flaking bark
+  arjun: { H: [15, 21], r0: [0.48, 0.66], trunkFrac: 0.42, nB: [7, 9], ang: [0.8, 1.25], bLen: 1.1, crownR: 7.0, cardS: [2.0, 2.4], perTip: 4, sub: 3, leaf: 'small', bark: 'arjun', gnarl: 0.16, lean: 0.06, tint: [0.9, 1.0, 0.9], flute: { n: 5, amp: 0.55, h: 2.0 }, roots: 5, bend: 0.35, taper: 0.66, flare: 0.5 },
+  // dead snag: broken top, a few stubs
+  dead: { H: [8, 15], r0: [0.22, 0.36], trunkFrac: 0.5, nB: [3, 5], ang: [0.6, 1.1], bLen: 0.5, crownR: 4.0, cardS: [0, 0], perTip: 0, sub: 1, leaf: null, bark: 'teak', gnarl: 0.25, lean: 0.12, tint: [1, 1, 1], roots: 3, taper: 0.55, flare: 0.45, snag: true },
 };
 
 function windTrunk(H) { return (p) => Math.pow(clamp(p[1] / H, 0, 1), 2.2) * 0.22; }
@@ -133,17 +150,37 @@ function buildGeneric(specName, seed) {
   const ctx = { H, cardS };
   const lx = (rng() - 0.5) * 2 * spec.lean, lz = (rng() - 0.5) * 2 * spec.lean;
   const tp = [], tr = [];
-  const segs = 12;
-  const trunkTop = H * (specName === 'mahua' ? 0.62 : 0.92);
+  const segs = 14;
+  const trunkTop = H * (spec.trunkTop || (spec.snag ? 0.75 + rng() * 0.2 : 0.92));
+  const taper = spec.taper ?? 0.72, flare = spec.flare ?? 0.55;
+  const bend = (spec.bend || 0) * (0.6 + rng() * 0.8), bendF = 0.7 + rng() * 0.9, bendPh = rng() * 6.28, bA = rng() * 6.28;
+  const bdx = Math.cos(bA), bdz = Math.sin(bA);
   let wx = 0, wz = 0;
   for (let s = 0; s <= segs; s++) {
     const t = s / segs, y = -1.6 + t * (trunkTop + 1.6);
     wx += (rng() - 0.5) * spec.gnarl * 0.6; wz += (rng() - 0.5) * spec.gnarl * 0.6;
-    tp.push([lx * y + wx, y, lz * y + wz]);
+    const bo = bend * Math.sin(Math.max(0, y) / trunkTop * Math.PI * bendF + bendPh) * clamp(y / 2, 0, 1);
+    tp.push([lx * y + wx + bdx * bo, y, lz * y + wz + bdz * bo]);
     const tt = clamp(y / trunkTop, 0, 1);
-    tr.push(r0 * (1 - 0.72 * tt) * (1 + 0.55 * Math.exp(-Math.max(0, y) * 1.6)));
+    tr.push(r0 * (1 - taper * tt) * (1 + flare * Math.exp(-Math.max(0, y) * 1.5)));
   }
-  tube(gb, tp, tr, 10, windTrunk(H), rng(), null);
+  const fl = spec.flute, flPh = rng() * 6.28;
+  const shape = fl ? (si, a, p) => 1 + fl.amp * Math.pow(Math.max(0, Math.cos(a * fl.n + flPh + p[1] * 0.15)), 1.6) * Math.exp(-Math.max(0, p[1] + 0.3) / fl.h) - fl.amp * 0.25 * Math.exp(-Math.max(0, p[1]) / fl.h) : null;
+  tube(gb, tp, tr, fl ? 14 : 10, windTrunk(H), rng(), null, 1, shape, (p) => 0.62 + 0.38 * clamp((p[1] + 0.2) / 2.2, 0, 1));
+  // surface roots running out from the base into the litter
+  const nR = spec.roots || 0;
+  for (let k = 0; k < nR; k++) {
+    const a = (fl ? (k / nR) * 6.28 - flPh / fl.n : rng() * 6.28) + (rng() - 0.5) * 0.5;
+    const L = r0 * (3.5 + rng() * 4), rr = r0 * (0.32 + rng() * 0.18);
+    const ca = Math.cos(a), sa = Math.sin(a), b0x = tp[2][0], b0z = tp[2][2];
+    const pts = [], rads = [];
+    for (let q = 0; q <= 4; q++) { const t = q / 4; const d = r0 * 0.5 + t * L; pts.push([b0x + ca * d + (rng() - 0.5) * 0.08, 0.35 * (1 - t) * (1 - t) - 0.12 * t, b0z + sa * d + (rng() - 0.5) * 0.08]); rads.push(rr * (1 - 0.8 * t) + 0.015); }
+    tube(gb, pts, rads, 5, () => 0, rng(), 1, 0.8);
+  }
+  if (spec.snag) { // jagged broken top
+    const top = tp[segs], rt = tr[segs];
+    for (let k = 0; k < 4; k++) { const a = k * 1.57 + rng(); tube(gb, [top, [top[0] + Math.cos(a) * rt * 0.4, top[1] + 0.3 + rng() * 0.7, top[2] + Math.sin(a) * rt * 0.4]], [rt * 0.45, 0.02], 4, () => 0.05, rng(), 1); }
+  }
   // branches
   const leaves = [];
   const nB = spec.nB[0] + Math.floor(rng() * (spec.nB[1] - spec.nB[0] + 1));
@@ -159,7 +196,7 @@ function buildGeneric(specName, seed) {
     growBranch(gb, leaves, rng, sp, dir, L, tr[idx] * 0.6, 0, spec, ctx);
   }
   // top leader
-  if (spec.perTip > 0) growBranch(gb, leaves, rng, new THREE.Vector3(...tp[segs]), new THREE.Vector3(0, 1, 0), spec.crownR * 0.5, tr[segs] * 0.8, 0, spec, ctx);
+  if (spec.perTip > 0 && !spec.snag) growBranch(gb, leaves, rng, new THREE.Vector3(...tp[segs]), new THREE.Vector3(0, 1, 0), spec.crownR * 0.5, tr[segs] * 0.8, 0, spec, ctx);
   // crown centre
   const crownC = new THREE.Vector3(); for (const l of leaves) crownC.add(l.C); if (leaves.length) crownC.multiplyScalar(1 / leaves.length);
   let crownR = 0.1; for (const l of leaves) crownR = Math.max(crownR, l.C.distanceTo(crownC)); crownR *= 0.85;
@@ -171,7 +208,7 @@ function buildGeneric(specName, seed) {
   }
   // LOD1
   const lb = new GB(), ll = new GB();
-  const tp1 = [tp[0], tp[4], tp[8], tp[12]], tr1 = [tr[0], tr[4], tr[8], tr[12]];
+  const tp1 = [tp[0], tp[3], tp[7], tp[10], tp[14]], tr1 = [tr[0], tr[3], tr[7], tr[10], tr[14]];
   tube(lb, tp1, tr1, 5, windTrunk(H), 0.5, null);
   if (leaves.length) {
     const k = Math.max(1, Math.round(leaves.length / 9));
@@ -183,7 +220,7 @@ function buildGeneric(specName, seed) {
       card(ll, l.C.clone().addScaledVector(up, -s * 0.3), up, s, s, crownC, crownR, 0.5, rng(), rng, spec.tint);
     }
   }
-  return { bark: gb.geo(), leaf: leaves.length ? leavesG.geo() : null, bark1: lb.geo(), leaf1: leaves.length ? ll.geo() : null, H, trunkR: r0 * 1.2, crownY: crownC.y, crownR, barkKind: spec.bark, leafKind: spec.leaf };
+  return { bark: gb.geo(), leaf: leaves.length ? leavesG.geo() : null, bark1: lb.geo(), leaf1: leaves.length ? ll.geo() : null, H, trunkR: r0 * (1.3 + (fl ? fl.amp * 0.5 : 0)), crownY: crownC.y, crownR, barkKind: spec.bark, leafKind: spec.leaf };
 }
 
 function buildBamboo(seed) {
@@ -271,6 +308,51 @@ function buildLantana(seed) {
   return { bark: gb.geo(), leaf: lg.geo(), bark1: new GB().geo(), leaf1: ll.geo(), H: 1.6, trunkR: 0, crownY: 0.7, crownR: 1.2, barkKind: 'generic', leafKind: 'lantana' };
 }
 
+// fallen branch / old log lying in the litter
+function buildDeadfall(seed) {
+  const rng = mulberry32(seed); const gb = new GB();
+  const L = 2.2 + rng() * 3.6, r0 = 0.08 + rng() * 0.16, a = rng() * 0.3;
+  const pts = [], rads = [];
+  for (let s = 0; s <= 6; s++) { const t = s / 6; pts.push([(t - 0.5) * L, r0 * 0.55 + Math.sin(t * 3 + a) * 0.05, Math.sin(t * 2.2 + a * 5) * 0.25]); rads.push(r0 * (1 - 0.45 * t)); }
+  tube(gb, pts, rads, 6, () => 0, rng(), 1, 0.85, null, () => 0.75);
+  const nb = 2 + Math.floor(rng() * 3);
+  for (let k = 0; k < nb; k++) {
+    const t = 0.25 + rng() * 0.6, p = pts[Math.round(t * 6)], side = rng() < 0.5 ? -1 : 1;
+    const l = 0.4 + rng() * 1.2, up = 0.15 + rng() * 0.5;
+    tube(gb, [p, [p[0] + (rng() - 0.5) * 0.4, p[1] + up * l, p[2] + side * l]], [r0 * 0.45, 0.012], 4, () => 0, rng(), 1, 0.85);
+  }
+  return { bark: gb.geo(), leaf: null, bark1: new GB().geo(), leaf1: null, H: 0.5, trunkR: 0, crownY: 0.2, crownR: 0, barkKind: 'teak', leafKind: null, debris: true };
+}
+// a cluster of weathered gneiss / basalt stones, rounded and half sunk in the soil
+function buildStones(seed) {
+  const rng = mulberry32(seed); const gb = new GB();
+  const n = 3 + Math.floor(rng() * 5); let big = 0;
+  for (let k = 0; k < n; k++) {
+    const sz = k === 0 ? 0.28 + rng() * 0.34 : 0.07 + Math.pow(rng(), 1.6) * 0.26; big = Math.max(big, sz);
+    const cx = k === 0 ? 0 : (rng() - 0.5) * 2.4, cz = k === 0 ? 0 : (rng() - 0.5) * 2.4;
+    let g = mergeVertices(new THREE.IcosahedronGeometry(1, 2).deleteAttribute('normal').deleteAttribute('uv'));
+    const pa = g.attributes.position;
+    const sx = sz * (0.85 + rng() * 0.5), sy = sz * (0.55 + rng() * 0.35), szz = sz * (0.85 + rng() * 0.45);
+    const waves = []; for (let w = 0; w < 6; w++) { const a = rng() * 6.28, b = Math.acos(rng() * 2 - 1); waves.push([Math.sin(b) * Math.cos(a), Math.cos(b), Math.sin(b) * Math.sin(a), 1.5 + rng() * (w < 3 ? 1.5 : 5), rng() * 6.28, w < 3 ? 0.11 : 0.035]); }
+    for (let i = 0; i < pa.count; i++) {
+      let x = pa.getX(i), y = pa.getY(i), z = pa.getZ(i);
+      let j = 1; for (const [dx, dy, dz, f, ph, amp] of waves) j += amp * Math.sin((x * dx + y * dy + z * dz) * f + ph);
+      if (y > 0.35) y = 0.35 + (y - 0.35) * 0.75;                 // weathered, slightly flattened crown
+      pa.setXYZ(i, cx + x * sx * j, (y - 0.3) * sy * j, cz + z * szz * j);
+    }
+    g.computeVertexNormals();
+    const base = gb.p.length / 3, nn = g.attributes.normal;
+    for (let i = 0; i < pa.count; i++) {
+      const x = pa.getX(i), y = pa.getY(i), z = pa.getZ(i);
+      const ao = clamp(0.5 + (y / Math.max(0.05, sy) + 0.3) * 0.55, 0.38, 1.05);
+      gb.vert(x, y, z, nn.getX(i), nn.getY(i), nn.getZ(i), (x + z) * 0.9, y * 0.9 + cx, ao, ao * 0.98, ao * 0.95, 0, rng());
+    }
+    for (let i = 0; i < g.index.count; i++) gb.i.push(base + g.index.getX(i));
+    g.dispose();
+  }
+  return { bark: gb.geo(), leaf: null, bark1: new GB().geo(), leaf1: null, H: big, trunkR: big > 0.45 ? big * 0.95 : 0, aoR: big, crownY: 0.2, crownR: 0, barkKind: 'rock', leafKind: null, debris: true };
+}
+
 // ------------------------------------------------------------------ materials
 export const FOLIAGE_SEASON = {
   winter: { teak: [0.22, [1.08, 0.98, 0.72]], kulu: [0.55, [1.1, 1.0, 0.75]], palash: [0.25, [1, 1, 0.85]], mahua: [0.05, [1, 1, 0.95]], saja: [0.12, [1.05, 1, 0.85]], small: [0.06, [1, 1, 0.9]], arjun: [0.0, [1, 1, 0.95]], bamboo: [0.12, [1.1, 1.05, 0.8]], banyan: [0, [1, 1, 1]], lantana: [0.05, [1, 1, 0.9]] },
@@ -285,22 +367,28 @@ function leafMaterial(map, key) {
   patch(m, 'leaf-' + key, (s) => {
     s.uniforms.uLeafDrop = m.userData.drop; s.uniforms.uLeafTint = m.userData.tint;
     s.vertexShader = s.vertexShader.replace('#include <common>', `#include <common>
-      attribute float aWind; attribute float aRand; varying float vRand; varying vec3 vWP2; uniform float uTime; uniform vec2 uWind; uniform float uWindStrength;`)
+      attribute float aWind; attribute float aRand; varying float vRand; varying vec3 vWP2; varying vec3 vIPl; uniform float uTime; uniform vec2 uWind; uniform float uWindStrength;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>\n${WIND_VERTEX}\n vRand = aRand;`)
       .replace('#include <fog_vertex>', `#include <fog_vertex>
         vec4 wq = vec4(transformed, 1.0);
         #ifdef USE_INSTANCING
-          wq = instanceMatrix * wq;
+          wq = instanceMatrix * wq; vIPl = instanceMatrix[3].xyz;
+        #else
+          vIPl = vec3(0.0);
         #endif
         vWP2 = (modelMatrix * wq).xyz;`);
     s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>
-      uniform float uLeafDrop; uniform vec3 uLeafTint; uniform vec3 uSunCol; uniform vec3 uSunDir; uniform float uSunVis; varying float vRand; varying vec3 vWP2;`)
+      uniform float uLeafDrop; uniform vec3 uLeafTint; uniform vec3 uSunCol; uniform vec3 uSunDir; uniform float uSunVis; varying float vRand; varying vec3 vWP2; varying vec3 vIPl;
+      float lhash(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }`)
       .replace('#include <map_fragment>', `#include <map_fragment>
         if (vRand < uLeafDrop) discard;
         { vec2 ddx = dFdx(vMapUv * 512.0), ddy = dFdy(vMapUv * 512.0);
           float mip = max(0.0, 0.5 * log2(max(dot(ddx, ddx), dot(ddy, ddy))));
           diffuseColor.a *= 1.0 + mip * 0.3; }
-        diffuseColor.rgb *= uLeafTint * (0.92 + 0.16 * fract(vRand * 13.7));`)
+        float lh = lhash(vIPl.xz * 0.37 + 5.1);
+        diffuseColor.rgb *= uLeafTint * (0.92 + 0.16 * fract(vRand * 13.7)) * mix(vec3(1.07, 1.03, 0.84), vec3(0.88, 1.0, 1.05), lh) * (0.9 + 0.2 * fract(lh * 5.7));`)
+      .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
+        normal = normalize(vNormal);   // both faces share the crown's spherical normal (no back-face flip)`)
       .replace('#include <opaque_fragment>', `
         { vec3 vd = normalize(vWP2 - cameraPosition);
           float bl = pow(max(dot(vd, uSunDir), 0.0), 4.0) * 0.9 + 0.12;
@@ -321,31 +409,55 @@ function leafDepthMaterial(map, key, dropRef) {
   });
   return m;
 }
-function barkMaterial(map, key, tint = 0xffffff) {
+function barkMaterial(map, key, tint = 0xffffff, moss = 1) {
   const m = new THREE.MeshStandardMaterial({ map, color: tint, roughness: 0.95, metalness: 0, vertexColors: true });
+  m.userData.moss = { value: moss };
   patch(m, 'bark-' + key, (s) => {
+    s.uniforms.uBarkMoss = m.userData.moss;
     s.vertexShader = s.vertexShader.replace('#include <common>', `#include <common>
-      attribute float aWind; attribute float aRand; uniform float uTime; uniform vec2 uWind; uniform float uWindStrength;`)
-      .replace('#include <begin_vertex>', `#include <begin_vertex>\n${WIND_VERTEX}`);
-    s.fragmentShader = s.fragmentShader.replace('#include <map_fragment>', `#include <map_fragment>
-      diffuseColor.rgb *= mix(1.0, 0.75, uWetness);`).replace('#include <common>', '#include <common>\n uniform float uWetness;');
+      attribute float aWind; attribute float aRand; uniform float uTime; uniform vec2 uWind; uniform float uWindStrength;
+      varying vec3 vIPb; varying vec3 vWPb; varying vec3 vWNb; varying float vLYb;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\n vLYb = position.y;\n${WIND_VERTEX}`)
+      .replace('#include <fog_vertex>', `#include <fog_vertex>
+        vec4 wqb = vec4(transformed, 1.0); vec3 nWb = objectNormal;
+        #ifdef USE_INSTANCING
+          wqb = instanceMatrix * wqb; nWb = mat3(instanceMatrix) * nWb; vIPb = instanceMatrix[3].xyz;
+        #else
+          vIPb = vec3(0.0);
+        #endif
+        vWPb = (modelMatrix * wqb).xyz; vWNb = normalize(mat3(modelMatrix) * nWb);`);
+    s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>
+      ${NOISE_GLSL}
+      uniform float uWetness, uSeasonGreen, uBarkMoss; varying vec3 vIPb; varying vec3 vWPb; varying vec3 vWNb; varying float vLYb;`)
+      .replace('#include <map_fragment>', `#include <map_fragment>
+      {
+        float ih = hash12(vIPb.xz * 0.37 + 1.3);
+        diffuseColor.rgb *= (0.84 + 0.32 * ih) * mix(vec3(1.05, 1.0, 0.93), vec3(0.93, 0.98, 1.05), fract(ih * 7.3));
+        diffuseColor.rgb *= mix(0.6, 1.0, smoothstep(-0.3, 1.5, vLYb));
+        float lich = smoothstep(0.52, 0.74, vnoise(vec2(vWPb.x * 0.7 + vWPb.z * 0.7, vWPb.y * 1.4) * 1.6 + ih * 10.0)) * (0.35 + 0.65 * smoothstep(-0.3, 0.7, -vWNb.z));
+        vec3 lc = mix(vec3(0.6, 0.62, 0.52), vec3(0.3, 0.4, 0.15), uSeasonGreen);
+        diffuseColor.rgb = mix(diffuseColor.rgb, lc * (0.8 + 0.4 * ih), lich * 0.42 * uBarkMoss);
+        diffuseColor.rgb *= mix(1.0, 0.72, uWetness);
+      }`);
   });
   return m;
 }
 
 // ------------------------------------------------------------------ vegetation manager
 const SPECIES_LIST = [
-  { name: 'teak', variants: 3, build: (s) => buildGeneric('teak', s) },
-  { name: 'mahua', variants: 2, build: (s) => buildGeneric('mahua', s) },
-  { name: 'saja', variants: 2, build: (s) => buildGeneric('saja', s) },
-  { name: 'kulu', variants: 2, build: (s) => buildGeneric('kulu', s) },
-  { name: 'palash', variants: 2, build: (s) => buildGeneric('palash', s) },
-  { name: 'small', variants: 2, build: (s) => buildGeneric('small', s) },
-  { name: 'arjun', variants: 1, build: (s) => buildGeneric('arjun', s) },
-  { name: 'dead', variants: 1, build: (s) => buildGeneric('dead', s) },
-  { name: 'bamboo', variants: 2, build: (s) => buildBamboo(s) },
+  { name: 'teak', variants: 5, build: (s) => buildGeneric('teak', s) },
+  { name: 'mahua', variants: 3, build: (s) => buildGeneric('mahua', s) },
+  { name: 'saja', variants: 3, build: (s) => buildGeneric('saja', s) },
+  { name: 'kulu', variants: 3, build: (s) => buildGeneric('kulu', s) },
+  { name: 'palash', variants: 3, build: (s) => buildGeneric('palash', s) },
+  { name: 'small', variants: 3, build: (s) => buildGeneric('small', s) },
+  { name: 'arjun', variants: 2, build: (s) => buildGeneric('arjun', s) },
+  { name: 'dead', variants: 2, build: (s) => buildGeneric('dead', s) },
+  { name: 'bamboo', variants: 3, build: (s) => buildBamboo(s) },
   { name: 'banyan', variants: 1, build: (s) => buildBanyan(s) },
   { name: 'lantana', variants: 2, build: (s) => buildLantana(s) },
+  { name: 'deadfall', variants: 3, build: (s) => buildDeadfall(s) },
+  { name: 'stones', variants: 3, build: (s) => buildStones(s) },
 ];
 export const SP = {}; SPECIES_LIST.forEach((s, i) => (SP[s.name] = i));
 const STRIDE = 7; // x y z rot scale species variant
@@ -358,7 +470,7 @@ export class Vegetation {
     this.templates = [];
     this.leafMats = {}; this.barkMats = {};
     this.lastPos = new THREE.Vector3(1e9, 0, 1e9);
-    this.colliders = []; this.perches = [];
+    this.colliders = []; this.rocks = []; this.perches = []; this.aoTrees = [];
     this.season = 'winter';
     for (const sp of SPECIES_LIST) {
       const arr = [];
@@ -366,12 +478,14 @@ export class Vegetation {
       this.templates.push(arr);
     }
     // materials per species
-    const barkTint = { arjun: 0xe8d6cc, dead: 0x9a9088, kulu: 0xffffff };
+    const barkTint = { dead: 0x9a9088, deadfall: 0x8c8478, stones: 0xd2c8ba };
+    const barkMoss = { kulu: 0.25, arjun: 0.45, bamboo: 0.2, stones: 1.3, deadfall: 1.4, saja: 1.1, teak: 0.9 };
     for (const sp of SPECIES_LIST) {
       const t0 = this.templates[SP[sp.name]][0];
-      this.barkMats[sp.name] = barkMaterial(T.bark[t0.barkKind], sp.name, barkTint[sp.name] || 0xffffff);
+      this.barkMats[sp.name] = barkMaterial(T.bark[t0.barkKind], sp.name, barkTint[sp.name] || 0xffffff, barkMoss[sp.name] ?? 0.7);
       if (t0.leafKind) {
         this.leafMats[sp.name] = leafMaterial(T.leaf[t0.leafKind], sp.name);
+        if (quality.aa) this.leafMats[sp.name].alphaToCoverage = true;
         this.leafMats[sp.name].userData.depth = leafDepthMaterial(T.leaf[t0.leafKind], sp.name, this.leafMats[sp.name].userData.drop);
       }
     }
@@ -383,7 +497,8 @@ export class Vegetation {
       const per = [];
       for (let v = 0; v < SPECIES_LIST[s].variants; v++) {
         const t = this.templates[s][v];
-        const capMul = name === 'teak' ? 1.0 : name === 'banyan' ? 0.1 : 0.5;
+        const nv = SPECIES_LIST[s].variants;
+        const capMul = (name === 'teak' ? 1.0 : name === 'banyan' ? 0.1 : name === 'deadfall' || name === 'stones' ? 0.45 : 0.5) * Math.min(1, 1.9 / nv);
         const c0 = Math.ceil(cap0 * capMul), c1 = Math.ceil(cap1 * capMul);
         const mk = (geo, mat, cap, shadow, depth) => {
           if (!geo || !geo.attributes.position || geo.attributes.position.count === 0) return null;
@@ -444,10 +559,14 @@ export class Vegetation {
       } else if (r1 < dens + 0.06 + b.open * 0.1 + b.grass * 0.03) {
         sp = SP.lantana; scale = 0.7 + r3 * 0.8;
         if (b.village > 0.3 || b.field > 0.2) sp = -1;
+      } else if (r1 < dens + 0.06 + b.open * 0.1 + b.grass * 0.03 + 0.02 + b.teak * 0.05 + b.riparian * 0.04 + b.rock * 0.14 + b.sand * 0.25) {
+        const stoneShare = clamp(0.3 + b.rock * 0.6 + b.sand * 0.6 + b.riparian * 0.2 - b.teak * 0.12, 0, 0.95);
+        sp = r2 < stoneShare ? SP.stones : SP.deadfall; scale = 0.75 + r3 * 0.7;
+        if (b.village > 0.3 || b.field > 0.2) sp = -1;
       } else if (b.village > 0.2 && b.field > 0.3 && r1 > 0.997) { sp = SP.mahua; scale = 1.1; }  // mahua kept in fields
       if (sp < 0) continue;
       const y = height(x, z);
-      if (waterAt(x, z) > y - 0.2) continue;
+      if (sp === SP.stones ? waterAt(x, z) > y + 0.55 : waterAt(x, z) > y - 0.2) continue;
       const nv = SPECIES_LIST[sp].variants;
       out.push(x, y, z, r4 * 6.283, scale, sp, Math.floor(rng() * nv));
     }
@@ -460,7 +579,7 @@ export class Vegetation {
     const r = Math.ceil(R1 / CHUNK);
     const pcx = Math.floor(cam.x / CHUNK), pcz = Math.floor(cam.z / CHUNK);
     for (const per of this.meshes) for (const m of per) { m.n0 = 0; m.n1 = 0; }
-    this.colliders.length = 0; this.perches.length = 0;
+    this.colliders.length = 0; this.rocks.length = 0; this.perches.length = 0; this.aoTrees.length = 0;
     const R0s = R0 * R0, R1s = R1 * R1;
     let gen = 0;
     for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
@@ -478,30 +597,46 @@ export class Vegetation {
         if (dist2 > R1s) continue;
         const sp = d[i + 5], va = d[i + 6], m = this.meshes[sp][va];
         const tmpl = this.templates[sp][va];
-        const s = d[i + 4];
-        if (near && tmpl.trunkR > 0) this.colliders.push(x, z, tmpl.trunkR * s * 0.9);
-        if (near && sp !== SP.lantana && sp !== SP.bamboo && dist2 < 70 * 70) this.perches.push(x, y + tmpl.crownY * s * 0.85, z, sp);
+        const s = d[i + 4], deb = tmpl.debris;
+        const gth = deb ? 1 : girthOf(x, z);
+        if (near && tmpl.trunkR > 0) (deb ? this.rocks : this.colliders).push(x, z, tmpl.trunkR * s * gth * 0.92);
+        if (near) this.aoTrees.push(x, z, deb ? (tmpl.aoR || 0) * s : tmpl.trunkR * s * gth * 0.8, tmpl.crownR * s * 0.8);
+        if (near && !deb && sp !== SP.lantana && sp !== SP.bamboo && dist2 < 70 * 70) this.perches.push(x, y + tmpl.crownY * s * 0.85, z, sp);
         if (dist2 < R0s) {
-          if (m.n0 < m.c0) { writeMat(m.b0, m.l0, m.n0, x, y, z, d[i + 3], s); m.n0++; }
-        } else if (sp !== SP.lantana || dist2 < R1s * 0.25) {
-          if (m.n1 < m.c1) { writeMat(m.b1, m.l1, m.n1, x, y - 0.6, z, d[i + 3], s); m.n1++; }
+          if (deb && dist2 > R0s * 0.6) continue;
+          if (m.n0 < m.c0) { writeMat(m.b0, m.l0, m.n0, x, y, z, d[i + 3], s, gth, deb); m.n0++; }
+        } else if (!deb && (sp !== SP.lantana || dist2 < R1s * 0.25)) {
+          if (m.n1 < m.c1) { writeMat(m.b1, m.l1, m.n1, x, y - 0.6, z, d[i + 3], s, gth, false); m.n1++; }
         }
       }
     }
     for (const per of this.meshes) for (const m of per) {
       for (const [mesh, n] of [[m.b0, m.n0], [m.l0, m.n0], [m.b1, m.n1], [m.l1, m.n1]]) if (mesh) { mesh.count = n; mesh.instanceMatrix.needsUpdate = true; }
     }
+    if (this.onRebuild) this.onRebuild({ x0: (pcx - 1) * CHUNK, z0: (pcz - 1) * CHUNK, size: 3 * CHUNK }, this.aoTrees);
     // prune far cells
     if (this.cells.size > 1600) for (const [k, c] of this.cells) { if (Math.abs(c.cx - pcx) > r + 3 || Math.abs(c.cz - pcz) > r + 3) this.cells.delete(k); }
   }
   collide(pos, radius) {
-    const c = this.colliders; let hit = false;
-    for (let i = 0; i < c.length; i += 3) {
-      const dx = pos.x - c[i], dz = pos.z - c[i + 1], rr = c[i + 2] + radius;
-      const d2 = dx * dx + dz * dz;
+    let hit = false;
+    for (const c of [this.colliders, this.rocks]) for (let i = 0; i < c.length; i += 3) {
+      const dx = pos.x - c[i]; if (dx > 8 || dx < -8) continue;
+      const dz = pos.z - c[i + 1]; if (dz > 8 || dz < -8) continue;
+      const rr = c[i + 2] + radius, d2 = dx * dx + dz * dz;
       if (d2 < rr * rr && d2 > 1e-6) { const d = Math.sqrt(d2); pos.x = c[i] + dx / d * rr; pos.z = c[i + 1] + dz / d * rr; hit = true; }
     }
     return hit;
+  }
+  // first trunk hit along a horizontal segment (for camera booms and projectiles); returns fraction 0..1 or 1
+  segmentHit(ax, az, bx, bz, pad = 0.1) {
+    let best = 1; const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz; if (L2 < 1e-6) return 1;
+    for (const c of [this.colliders, this.rocks]) for (let i = 0; i < c.length; i += 3) {
+      const ox = c[i] - ax, oz = c[i + 1] - az, r = c[i + 2] + pad;
+      if (ox * ox + oz * oz < r * r) continue; // the segment starts inside (standing against it): not a blocker
+      const t = clamp((ox * dx + oz * dz) / L2, 0, 1), px = dx * t - ox, pz = dz * t - oz;
+      if (px * px + pz * pz < r * r) { const back = Math.sqrt(Math.max(0, r * r - (px * px + pz * pz))) / Math.sqrt(L2); best = Math.min(best, Math.max(0, t - back)); }
+    }
+    return best;
   }
   nearestTree(x, z, maxD = 3, species) {
     let best = null, bd = maxD * maxD;
@@ -525,15 +660,24 @@ export class Vegetation {
   }
 }
 
-function writeMat(bm, lm, idx, x, y, z, rot, s) {
-  const c = Math.cos(rot) * s, sn = Math.sin(rot) * s;
+const girthOf = (x, z) => { const h = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453; return 0.84 + 0.34 * (h - Math.floor(h)); };
+const _wm = new THREE.Matrix4(), _wq = new THREE.Quaternion(), _wq2 = new THREE.Quaternion(), _we = new THREE.Euler(), _wp = new THREE.Vector3(), _ws = new THREE.Vector3(), _wn = new THREE.Vector3(), _wup = new THREE.Vector3(0, 1, 0);
+function writeMat(bm, lm, idx, x, y, z, rot, s, g = 1, slopeAlign = false) {
+  const h = Math.sin(x * 4.898 + z * 7.23) * 1458.5453, f = h - Math.floor(h);
+  if (slopeAlign) {
+    const e = 0.8, hx = height(x + e, z) - height(x - e, z), hz = height(x, z + e) - height(x, z - e);
+    _wn.set(-hx, 2 * e, -hz).normalize();
+    _wq2.setFromUnitVectors(_wup, _wn); _wq.setFromAxisAngle(_wup, rot); _wq.premultiply(_wq2);
+    y -= 0.05;
+  } else {
+    _we.set((f - 0.5) * 0.07, rot, (((f * 7.13) % 1) - 0.5) * 0.07, 'YXZ'); _wq.setFromEuler(_we);
+  }
+  _wm.compose(_wp.set(x, y, z), _wq, _ws.set(s * g, s * (1.06 - (g - 0.84) * 0.25), s * g));
+  const src = _wm.elements;
   for (const m of [bm, lm]) {
     if (!m) continue;
     const e = m.instanceMatrix.array, o = idx * 16;
-    e[o] = c; e[o + 1] = 0; e[o + 2] = -sn; e[o + 3] = 0;
-    e[o + 4] = 0; e[o + 5] = s; e[o + 6] = 0; e[o + 7] = 0;
-    e[o + 8] = sn; e[o + 9] = 0; e[o + 10] = c; e[o + 11] = 0;
-    e[o + 12] = x; e[o + 13] = y; e[o + 14] = z; e[o + 15] = 1;
+    for (let k = 0; k < 16; k++) e[o + k] = src[k];
   }
 }
 
@@ -619,12 +763,16 @@ export class Grass {
       s.uniforms.uGrassH = this.heightMul; s.uniforms.uGrassR = this.radius;
       s.vertexShader = s.vertexShader.replace('#include <common>', `#include <common>
         attribute float aWind; attribute float aRand; uniform float uTime; uniform vec2 uWind; uniform float uWindStrength; uniform vec3 uPlayerPos; uniform float uGrassH; uniform float uGrassR;
-        varying float vGT; varying vec3 vGW;`)
+        uniform sampler2D tGroundAO; uniform vec4 uAORect;
+        varying float vGT; varying vec3 vGW; varying float vGShade;`)
         .replace('#include <begin_vertex>', `#include <begin_vertex>
           vec3 gip = vec3(instanceMatrix[3][0], instanceMatrix[3][1], instanceMatrix[3][2]);
           float gd = distance(gip.xz, cameraPosition.xz);
           float fade = 1.0 - smoothstep(uGrassR * 0.65, uGrassR, gd);
-          transformed.y *= uGrassH * fade;
+          vec2 gaUV = (gip.xz - uAORect.xy) * uAORect.z;
+          vec3 gao = (gaUV.x > 0.0 && gaUV.y > 0.0 && gaUV.x < 1.0 && gaUV.y < 1.0) ? texture2D(tGroundAO, gaUV).rgb * uAORect.w : vec3(0.0);
+          vGShade = clamp(gao.g * 1.6, 0.0, 1.0);
+          transformed.y *= uGrassH * fade * (1.0 - clamp(gao.r * 1.3, 0.0, 0.85)) * (1.0 - vGShade * 0.35);   // thin and short at trunk bases, under shade
           transformed.xz *= mix(0.3, 1.0, fade);
           ${WIND_VERTEX}
           // trample away from player
@@ -635,7 +783,7 @@ export class Grass {
           vGT = aWind; vGW = gip;`);
       s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>
         ${NOISE_GLSL}
-        uniform float uSeasonGreen; varying float vGT; varying vec3 vGW;`)
+        uniform float uSeasonGreen; varying float vGT; varying vec3 vGW; varying float vGShade;`)
         .replace('#include <color_fragment>', `#include <color_fragment>
           float gn = vnoise(vGW.xz * 0.05) * 0.6 + vnoise(vGW.xz * 0.4) * 0.4;
           float green = clamp(uSeasonGreen * (0.7 + 0.6 * gn), 0.0, 1.0);
@@ -643,8 +791,10 @@ export class Grass {
           vec3 lush = mix(vec3(0.24, 0.40, 0.12), vec3(0.42, 0.56, 0.2), gn);
           vec3 gc = mix(dry, lush, green);
           gc = mix(gc, gc * vec3(1.2, 1.15, 0.8), vGT * 0.6);
-          diffuseColor.rgb *= gc * 1.25;
-          { vec2 ddx = dFdx(vMapUv * 256.0), ddy = dFdy(vMapUv * 256.0); float mip = max(0.0, 0.5 * log2(max(dot(ddx, ddx), dot(ddy, ddy)))); diffuseColor.a *= 1.0 + mip * 0.35; }`);
+          diffuseColor.rgb *= gc * 1.25 * (1.0 - vGShade * 0.22);
+          { vec2 ddx = dFdx(vMapUv * 256.0), ddy = dFdy(vMapUv * 256.0); float mip = max(0.0, 0.5 * log2(max(dot(ddx, ddx), dot(ddy, ddy)))); diffuseColor.a *= 1.0 + mip * 0.35; }`)
+        .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
+          normal = normalize(vNormal);`);
     });
     return mat; };
     this.mat = mkMat(grassTexture(false), 'grass-s'); this.matT = mkMat(grassTexture(true), 'grass-t');

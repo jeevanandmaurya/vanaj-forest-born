@@ -497,7 +497,13 @@ export class Animal {
     else { this.pos.x = nx; this.pos.z = nz; }
     if (Math.abs(this.pos.x) > HALF - 40) this.pos.x = Math.sign(this.pos.x) * (HALF - 40);
     if (Math.abs(this.pos.z) > HALF - 40) this.pos.z = Math.sign(this.pos.z) * (HALF - 40);
-    if (W.veg && this.dist2(W.player.pos) < 90 * 90 && !this.perch) W.veg.collide(this.pos, this.radius * 0.6);
+    if (!this.perch && this.dist2(W.player.pos) < 90 * 90) {
+      const hv = W.veg ? W.veg.collide(this.pos, this.radius * 0.6) : false;
+      const hp = W.props && W.props.collide ? W.props.collide(this.pos, this.radius * 0.7) : false;
+      // slide round the obstacle instead of grinding into it
+      if ((hv || hp) && this.speed > 0.3) { if (!this.avoidT || this.avoidT <= 0) { this.avoidSide = Math.random() < 0.5 ? -1 : 1; } this.avoidT = 0.8; }
+      if (this.avoidT > 0) { this.avoidT -= dt; this.yaw += this.avoidSide * 2.2 * dt * clamp(this.speed / 3, 0.4, 1.4); }
+    }
     const g2 = groundHeight(this.pos.x, this.pos.z);
     if (this.air > 0) {
       this.vy -= 22 * dt; this.pos.y += this.vy * dt;
@@ -891,6 +897,20 @@ export class Animal {
     this.crouchS = lerp(this.crouchS || 0, cr, dt * 4);
     by -= this.crouchS * legLen * 0.3;
     by -= A.lie * legLen * 0.75; by -= A.sit * legLen * (d.primate ? 0.5 : 0.25);
+    // slope: pitch the body with the ground but keep the legs plumb, and let each pair reach its own footing
+    const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw), hl = d.L * 0.5 * this.scale;
+    let slopeP = 0, legDF = 0, legDH = 0;
+    if (!this.perch && !this.hop) {
+      const hf = groundHeight(this.pos.x + fx * hl, this.pos.z + fz * hl), hb = groundHeight(this.pos.x - fx * hl, this.pos.z - fz * hl);
+      slopeP = -Math.atan2(hf - hb, hl * 2) * 0.8;
+      const mid = (hf + hb) / 2, resid = (hf - hb) / 2 * 0.2;
+      legDF = clamp(resid / (legLen * this.scale), -0.3, 0.3); legDH = -legDF;
+      by += (mid - this.pos.y) / this.scale * 0.5;
+    }
+    const plumb = (this.dead ? 0 : 1) * (1 - A.lie) * (1 - A.sit * 0.7);
+    // leaning into turns at speed
+    const yawRate = (this.yaw - (this.prevYaw ?? this.yaw)) / Math.max(dt, 1e-3); this.prevYaw = this.yaw;
+    this.leanS = lerp(this.leanS || 0, clamp(-yawRate * sp * 0.035, -0.28, 0.28), Math.min(1, dt * 5));
     for (const n of ['LF', 'RF', 'LH', 'RH']) {
       const hip = J['hip' + n], knee = J['knee' + n], ank = J['ankle' + n];
       if (!hip) continue;
@@ -907,6 +927,10 @@ export class Animal {
       if (A.rear > 0.01 && front) { u = lerp(u, -1.3, A.rear); l = lerp(l, -0.6, A.rear); }
       if (this.dead) { const k = Math.min(1, this.deadT * 1.5); u = lerp(u, (front ? -0.6 : 0.5) + Math.sin(this.id + n.length) * 0.3, k); l = lerp(l, 0.3, k); a = lerp(a, 0, k); }
       if (this.limp && n === 'LH') u *= 0.4;
+      // shorten or lengthen the leg for its footing by folding the knee
+      const ext = front ? legDF : legDH;
+      if (ext < 0) l += -ext * 2.2 * plumb;
+      u -= slopeP * plumb;
       hip.rotation.x = u; knee.rotation.x = l; ank.rotation.x = a + (front ? -l * 0.5 : 0.1);
     }
     by -= Math.abs(Math.cos(this.phase * Math.PI * 4)) * 0.03 * moving * legLen;
@@ -914,9 +938,11 @@ export class Animal {
     bpitch -= A.pounce * 0.35; bpitch -= A.rear * 1.05;
     if (d.primate) bpitch -= A.sit * 1.25;
     else bpitch -= A.sit * 0.45;
-    // slope alignment
-    const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw), hl = d.L * 0.5 * this.scale;
-    if (!this.perch && !this.hop) { const hf = groundHeight(this.pos.x + fx * hl, this.pos.z + fz * hl), hb = groundHeight(this.pos.x - fx * hl, this.pos.z - fz * hl); bpitch += -Math.atan2(hf - hb, hl * 2) * 0.8; }
+    bpitch += slopeP;
+    broll += this.leanS * (1 - A.lie);
+    // breathing
+    const breath = Math.sin(this.t * (this.state === 'flee' || runK > 0.5 ? 5.5 : 1.6)) * (runK > 0.5 ? 0.012 : 0.006);
+    by += breath * legLen * (1 - runK * 0.5);
     if (this.dead) {
       const k = Math.min(1, this.deadT * 1.4);
       broll = lerp(0, this.rollDir * Math.PI * 0.48, k * k); by = lerp(by, d.R * 0.9 + d.W * 0.4, k);
@@ -935,6 +961,7 @@ export class Animal {
       const look = this.lookAt || (this.state === 'alert' ? this.threat : null) || ((this.state === 'stalk' || this.state === 'attack' || this.state === 'warn') && W ? (this.target === 'player' ? W.player.pos : this.target?.pos) : null);
       if (look && !this.dead) { const want = Math.atan2(look.x - this.pos.x, look.z - this.pos.z); let diff = want - this.yaw; while (diff > Math.PI) diff -= 2 * Math.PI; while (diff < -Math.PI) diff += 2 * Math.PI; ny = clamp(diff, -0.9, 0.9); }
       this.neckY = lerp(this.neckY || 0, ny, dt * 5);
+      if (!d.cat && !d.primate && !this.dead) nx += Math.sin(this.phase * Math.PI * 4 + 0.6) * 0.07 * moving * (1 - runK) * (1 - A.graze); // walking head nod
       neck.rotation.set(nx - bpitch * 0.6, this.neckY, 0);
       if (head) head.rotation.set(-nx * 0.5 + (A.graze * 0.3), this.neckY * 0.3, Math.sin(this.t * 0.7) * 0.03);
       if (jaw) jaw.rotation.x = A.bite * 0.55 + (this.state === 'attack' || this.state === 'warn' ? 0.12 + Math.sin(this.t * 8) * 0.06 : 0) + (this.dead ? 0.2 : 0);
@@ -1089,6 +1116,24 @@ export class Ecosystem {
       const sh = d2 < 55 * 55;
       if (sh !== a.shadowOn) { a.shadowOn = sh; for (const m of a.meshes) m.castShadow = sh; }
       a.root.visible = d2 < 420 * 420;
+    }
+    this.separate(P);
+  }
+  // keep bodies from overlapping: herd members, pack hunters and the companion push apart instead of interpenetrating
+  separate(P) {
+    const A = this.animals, n = A.length;
+    for (let i = 0; i < n; i++) {
+      const a = A[i]; if (a.dead || a.perch || a.air > 0 || a.sp === 'peafowl') continue;
+      if (a.dist2(P) > 90 * 90) continue;
+      for (let j = i + 1; j < n; j++) {
+        const b = A[j]; if (b.dead || b.perch || b.air > 0 || b.sp === 'peafowl') continue;
+        if (a.target === b || b.target === a || a.grabbed === b || b.grabbed === a) continue; // contact is the point
+        const dx = b.pos.x - a.pos.x, dz = b.pos.z - a.pos.z, rr = (a.radius + b.radius) * 0.9;
+        const d2 = dx * dx + dz * dz; if (d2 >= rr * rr || d2 < 1e-6) continue;
+        const d = Math.sqrt(d2), push = (rr - d) * 0.5, ux = dx / d, uz = dz / d;
+        const ma = a.d.mass || 100, mb = b.d.mass || 100, wa = mb / (ma + mb), wb = 1 - wa;
+        a.pos.x -= ux * push * 2 * wa; a.pos.z -= uz * push * 2 * wa; b.pos.x += ux * push * 2 * wb; b.pos.z += uz * push * 2 * wb;
+      }
     }
   }
   nearestPredator(an, range) {

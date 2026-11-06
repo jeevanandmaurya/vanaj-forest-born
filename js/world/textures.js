@@ -157,6 +157,66 @@ function makeSand() {
   return tex(c);
 }
 
+// Moist, half-rotted litter of the nullah banks and bamboo brakes: darker, broken leaves, humus, moss
+function makeLitterMoist() {
+  const S = 512, c = canvas(S, S), ctx = c.getContext('2d'), r = mulberry32(13);
+  noiseFill(ctx, S, S, 23, (a, b) => { const v = 0.45 + 0.7 * (a - 0.5) + 0.4 * (b - 0.5); return [74 * v + 18, 58 * v + 14, 40 * v + 10]; });
+  const cols = [[112, 80, 50], [96, 70, 44], [130, 96, 58], [84, 62, 40], [120, 100, 62], [100, 86, 52]];
+  for (let i = 0; i < 1300; i++) {
+    const x = r() * S, y = r() * S, len = 10 + r() * 30, w = len * (0.3 + r() * 0.15);
+    const col = cols[(r() * cols.length) | 0];
+    wrapDraw(S, x, y, len, (xx, yy) => {
+      ctx.globalAlpha = 0.55 + r() * 0.35;
+      drawLeaf(ctx, r, xx, yy, r() * 6.28, len, w, col, { widest: 0.5, veins: 4, veinA: 0.18, holes: true, edge: false });
+      ctx.globalAlpha = 1;
+    });
+  }
+  // humus crumbs and dark gaps
+  for (let i = 0; i < 2200; i++) { const v = r(); ctx.fillStyle = v < 0.6 ? `rgba(28,20,14,${0.35 + r() * 0.3})` : `rgba(120,96,70,${0.25 + r() * 0.2})`; ctx.beginPath(); ctx.arc(r() * S, r() * S, 0.6 + r() * 2.2, 0, 6.28); ctx.fill(); }
+  // moss cushions
+  for (let i = 0; i < 60; i++) { const x = r() * S, y = r() * S, rr = 4 + r() * 16; wrapDraw(S, x, y, rr, (xx, yy) => { const g = ctx.createRadialGradient(xx, yy, 0, xx, yy, rr); g.addColorStop(0, 'rgba(78,96,38,0.55)'); g.addColorStop(1, 'rgba(78,96,38,0)'); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(xx, yy, rr, 0, 6.28); ctx.fill(); }); }
+  for (let i = 0; i < 40; i++) { const x = r() * S, y = r() * S, a = r() * 6.28, l = 16 + r() * 50; wrapDraw(S, x, y, l, (xx, yy) => twig(ctx, xx, yy, xx + Math.cos(a) * l, yy + Math.sin(a) * l, 1.2 + r() * 2.5, [44 + r() * 20, 34 + r() * 14, 24])); }
+  return tex(c);
+}
+// Red lateritic soil with ironstone gravel and quartz grit (ridges, paths, eroded slopes)
+function makeRedSoil() {
+  const S = 512, c = canvas(S, S), ctx = c.getContext('2d'), r = mulberry32(27);
+  noiseFill(ctx, S, S, 29, (a, b) => { const v = 0.62 + 0.55 * (a - 0.5) + 0.35 * (b - 0.5); return [168 * v + 22, 92 * v + 12, 58 * v + 8]; });
+  for (let i = 0; i < 1500; i++) {
+    const x = r() * S, y = r() * S, rr = 0.8 + Math.pow(r(), 2.5) * 6, k = r();
+    const col = k < 0.55 ? [92, 42, 26] : k < 0.8 ? [150, 80, 48] : k < 0.93 ? [208, 196, 178] : [60, 52, 46];
+    ctx.fillStyle = rgb(...col); ctx.beginPath(); ctx.ellipse(x, y, rr, rr * (0.6 + r() * 0.4), r() * 3, 0, 6.28); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.ellipse(x + rr * 0.35, y + rr * 0.45, rr, rr * 0.7, 0, 0, 6.28); ctx.fill();
+    ctx.fillStyle = 'rgba(255,230,200,0.18)'; ctx.beginPath(); ctx.arc(x - rr * 0.3, y - rr * 0.3, rr * 0.45, 0, 6.28); ctx.fill();
+  }
+  // rill wash lines
+  ctx.strokeStyle = 'rgba(70,30,18,0.35)';
+  for (let i = 0; i < 18; i++) { let x = r() * S, y = r() * S; ctx.lineWidth = 0.8 + r() * 1.4; ctx.beginPath(); ctx.moveTo(x, y); for (let k = 0; k < 10; k++) { x += (r() - 0.5) * 14; y += 6 + r() * 10; ctx.lineTo(x, y); } ctx.stroke(); }
+  return tex(c);
+}
+// Dark basalt-derived soil that cracks into polygons in the dry months
+function makeBlackSoil() {
+  const S = 512, c = canvas(S, S), ctx = c.getContext('2d'), r = mulberry32(33);
+  noiseFill(ctx, S, S, 37, (a, b) => { const v = 0.55 + 0.5 * (a - 0.5) + 0.3 * (b - 0.5); return [92 * v + 18, 80 * v + 15, 66 * v + 12]; });
+  // Voronoi crack network (tileable via wrapped seeds)
+  const N = 46, pts = []; for (let i = 0; i < N; i++) pts.push([r() * S, r() * S]);
+  const img = ctx.getImageData(0, 0, S, S), d = img.data;
+  for (let y = 0; y < S; y += 1) for (let x = 0; x < S; x += 1) {
+    let d1 = 1e9, d2 = 1e9;
+    for (const [px, py] of pts) {
+      let dx = Math.abs(x - px), dy = Math.abs(y - py); if (dx > S / 2) dx = S - dx; if (dy > S / 2) dy = S - dy;
+      const dd = dx * dx + dy * dy; if (dd < d1) { d2 = d1; d1 = dd; } else if (dd < d2) d2 = dd;
+    }
+    const e = Math.sqrt(d2) - Math.sqrt(d1);
+    const o = (y * S + x) * 4;
+    if (e < 2.2) { const k = 0.25 + e * 0.2; d[o] *= k; d[o + 1] *= k; d[o + 2] *= k; }
+    else if (e < 5) { const k = 1.12; d[o] = Math.min(255, d[o] * k); d[o + 1] = Math.min(255, d[o + 1] * k); d[o + 2] = Math.min(255, d[o + 2] * k); }
+  }
+  ctx.putImageData(img, 0, 0);
+  for (let i = 0; i < 700; i++) { const v = 0.5 + r() * 0.7; ctx.fillStyle = rgb(110 * v, 100 * v, 88 * v); ctx.beginPath(); ctx.arc(r() * S, r() * S, 0.6 + r() * 1.8, 0, 6.28); ctx.fill(); }
+  return tex(c);
+}
+
 // ---------------- Barks ----------------
 function makeBark(kind) {
   const W = 256, H = 512, c = canvas(W, H), ctx = c.getContext('2d'), r = mulberry32(kind.length * 97 + 3);
@@ -176,21 +236,42 @@ function makeBark(kind) {
     });
     for (let i = 0; i < 160; i++) { ctx.fillStyle = 'rgba(120,110,95,0.35)'; ctx.fillRect(r() * W, r() * H, 4 + r() * 10, 1.2); }
     for (let i = 0; i < 26; i++) { ctx.fillStyle = r() < 0.5 ? 'rgba(205,170,150,0.45)' : 'rgba(170,180,150,0.4)'; ctx.beginPath(); ctx.ellipse(r() * W, r() * H, 8 + r() * 22, 10 + r() * 30, 0, 0, 6.28); ctx.fill(); }
-  } else if (kind === 'saja') {
-    noiseFill(ctx, W, H, 63, (a, b) => { const t = 0.5 + 0.5 * (a - 0.5) + 0.2 * (b - 0.5); return [70 * t + 12, 66 * t + 10, 60 * t + 8]; });
-    // tessellated plates (crocodile bark)
-    let y = 0; ctx.strokeStyle = 'rgba(8,6,5,0.9)';
-    while (y < H) {
-      const ph = 22 + r() * 18; let x = -r() * 20;
-      while (x < W) {
-        const pw = 16 + r() * 14;
-        ctx.fillStyle = rgba(95 + r() * 40, 90 + r() * 35, 80 + r() * 30, 0.5);
-        ctx.fillRect(x + 2, y + 2, pw - 4, ph - 4);
-        ctx.lineWidth = 2 + r() * 2.5; ctx.strokeRect(x, y, pw, ph);
-        x += pw;
+    // papery flakes peeling in peach-to-copper sheets, with a shadowed lifted edge
+    for (let i = 0; i < 34; i++) {
+      const x = r() * W, y = r() * H, rw = 10 + r() * 26, rh = 14 + r() * 40, k = r();
+      const col = k < 0.4 ? [222, 176, 140] : k < 0.7 ? [196, 132, 92] : [232, 214, 188];
+      for (const ox of [-W, 0, W]) {
+        ctx.beginPath(); ctx.moveTo(x + ox, y);
+        for (let a = 0; a < 6.28; a += 0.7) ctx.lineTo(x + ox + Math.cos(a) * rw * (0.7 + r() * 0.4), y + Math.sin(a) * rh * (0.7 + r() * 0.4));
+        ctx.closePath(); ctx.fillStyle = rgba(col[0], col[1], col[2], 0.55); ctx.fill();
+        ctx.strokeStyle = 'rgba(90,70,55,0.35)'; ctx.lineWidth = 1.2; ctx.stroke();
       }
-      y += ph;
     }
+  } else if (kind === 'saja') {
+    // crocodile bark: grey-black, deep vertical fissures broken by horizontal cracks into thick irregular plates
+    noiseFill(ctx, W, H, 63, (a, b) => { const t = 0.5 + 0.5 * (a - 0.5) + 0.2 * (b - 0.5); return [40 * t + 10, 37 * t + 9, 34 * t + 8]; });
+    const cols = 9; const cw = W / cols;
+    for (let ci = 0; ci < cols; ci++) {
+      let y = -r() * 30;
+      const x0 = ci * cw + (r() - 0.5) * 6;
+      while (y < H + 30) {
+        const ph = 18 + r() * 34, pw = cw * (0.74 + r() * 0.2), jx = (r() - 0.5) * 5;
+        const v = 0.75 + r() * 0.5, x = x0 + jx;
+        const pts = [[x + r() * 3, y + r() * 3], [x + pw - r() * 3, y + r() * 4], [x + pw + (r() - 0.5) * 4, y + ph * 0.5], [x + pw - r() * 3, y + ph - r() * 3], [x + r() * 3, y + ph - r() * 4], [x + (r() - 0.5) * 4, y + ph * 0.5]];
+        for (const ox of [-W, 0, W]) {
+          ctx.beginPath(); ctx.moveTo(pts[0][0] + ox, pts[0][1]); for (const q of pts) ctx.lineTo(q[0] + ox, q[1]); ctx.closePath();
+          const g = ctx.createLinearGradient(x + ox, y, x + pw + ox, y);
+          g.addColorStop(0, rgb(70 * v, 66 * v, 60 * v)); g.addColorStop(0.5, rgb(104 * v, 98 * v, 88 * v)); g.addColorStop(1, rgb(62 * v, 58 * v, 52 * v));
+          ctx.fillStyle = g; ctx.fill();
+          ctx.strokeStyle = 'rgba(10,8,6,0.85)'; ctx.lineWidth = 1.5 + r() * 2; ctx.stroke();
+          // fine vertical checks on the plate
+          ctx.strokeStyle = 'rgba(20,16,12,0.35)'; ctx.lineWidth = 1;
+          for (let k = 0; k < 2; k++) { const xx = x + ox + pw * (0.25 + r() * 0.5); ctx.beginPath(); ctx.moveTo(xx, y + 3); ctx.lineTo(xx + (r() - 0.5) * 3, y + ph - 3); ctx.stroke(); }
+        }
+        y += ph + 1 + r() * 2;
+      }
+    }
+    for (let i = 0; i < 40; i++) { ctx.fillStyle = r() < 0.5 ? 'rgba(150,160,130,0.18)' : 'rgba(200,190,160,0.14)'; ctx.beginPath(); ctx.ellipse(r() * W, r() * H, 6 + r() * 16, 8 + r() * 26, 0, 0, 6.28); ctx.fill(); }
   } else if (kind === 'mahua') {
     noiseFill(ctx, W, H, 64, (a, b, u, v) => {
       const f = Math.abs(Math.sin((u * 26 + fiss(u, v * 0.6) * 3) * 3.14159));
@@ -218,6 +299,23 @@ function makeBark(kind) {
       return [140 * t, 134 * t, 120 * t];
     });
     for (let i = 0; i < 300; i++) { ctx.fillStyle = 'rgba(60,55,45,0.35)'; ctx.fillRect(r() * W, r() * H, 3 + r() * 5, 1.5); }
+  } else if (kind === 'arjun') {
+    // smooth, pale, guava-like bark shedding in mottled cream / grey / pink patches
+    noiseFill(ctx, W, H, 68, (a, b) => { const t = 0.9 + 0.2 * (a - 0.5) + 0.1 * (b - 0.5); return [214 * t, 204 * t, 190 * t]; });
+    for (let i = 0; i < 70; i++) {
+      const x = r() * W, y = r() * H, rw = 8 + r() * 26, rh = 10 + r() * 36, k = r();
+      const col = k < 0.35 ? [170, 160, 146] : k < 0.6 ? [210, 176, 160] : k < 0.85 ? [236, 228, 212] : [140, 136, 120];
+      for (const ox of [-W, 0, W]) { ctx.fillStyle = rgba(col[0], col[1], col[2], 0.6); ctx.beginPath(); ctx.ellipse(x + ox, y, rw, rh, (r() - 0.5) * 0.4, 0, 6.28); ctx.fill(); }
+    }
+    for (let i = 0; i < 120; i++) { ctx.fillStyle = 'rgba(90,80,70,0.25)'; ctx.fillRect(r() * W, r() * H, 3 + r() * 8, 1); }
+  } else if (kind === 'palash') {
+    // rough grey-brown fibrous bark with reddish kino exudate
+    noiseFill(ctx, W, H, 69, (a, b, u, v) => {
+      const f = Math.abs(Math.sin((u * 22 + fiss(u, v * 0.5) * 3.2) * 3.14159));
+      const t = 0.5 + 0.5 * (a - 0.5) + 0.25 * (b - 0.5); const dd = Math.pow(f, 0.45);
+      return [(104 * dd + 26) * t + 22, (94 * dd + 22) * t + 18, (82 * dd + 18) * t + 14];
+    });
+    for (let i = 0; i < 22; i++) { const x = r() * W, y = r() * H, l = 10 + r() * 40; const g = ctx.createLinearGradient(x, y, x, y + l); g.addColorStop(0, 'rgba(120,24,14,0.75)'); g.addColorStop(1, 'rgba(120,24,14,0)'); ctx.fillStyle = g; ctx.fillRect(x, y, 2 + r() * 3, l); }
   } else { // generic
     noiseFill(ctx, W, H, 67, (a, b, u, v) => {
       const f = Math.abs(Math.sin((u * 14 + fiss(u, v * 0.4) * 2) * 3.14159));
@@ -454,9 +552,10 @@ function makeCloth(col) {
 
 export function buildTextures() {
   const T = {};
-  T.litter = makeLitter(); T.soil = makeSoil(); T.grassGround = makeGrassGround(); T.rock = makeRock(); T.sand = makeSand();
+  T.litter = makeLitter(); T.litterMoist = makeLitterMoist(); T.redSoil = makeRedSoil(); T.blackSoil = makeBlackSoil(); T.soil = makeSoil(); T.grassGround = makeGrassGround(); T.rock = makeRock(); T.sand = makeSand();
   T.bark = {};
-  for (const k of ['teak', 'kulu', 'saja', 'mahua', 'bamboo', 'banyan', 'generic']) T.bark[k] = makeBark(k);
+  for (const k of ['teak', 'kulu', 'saja', 'mahua', 'bamboo', 'banyan', 'arjun', 'palash', 'generic']) T.bark[k] = makeBark(k);
+  T.bark.rock = T.rock;
   T.leaf = {};
   for (const k of ['teak', 'mahua', 'kulu', 'palash', 'bamboo', 'banyan', 'lantana', 'small']) T.leaf[k] = leafCard(k);
   T.leaf.palashFlower = leafCard('palash', true);

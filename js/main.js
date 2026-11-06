@@ -1,5 +1,8 @@
 // VANAJ — main: boot, renderer + post-processing, game loop, interactions, crafting, sleep, save/load, menus.
 import * as THREE from 'three';
+import { GodRaysShader } from './core/godrays.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { GroundAO } from './world/groundao.js';
 import { PerfOverlay } from './core/perf.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -24,6 +27,7 @@ import { Inventory, Pickups, ITEMS, RECIPES } from './game/items.js';
 import { Story } from './game/story.js';
 import { UI } from './game/ui.js';
 
+const _grv = new THREE.Vector3(), _grd = new THREE.Vector3(), _grc = new THREE.Color();
 const QUALITY = {
   low: { name: 'Low', pr: 0.7, shadow: 1024, shadowDist: 40, treeNear: 65, treeFar: 360, grassR: 26, grassDensity: 0.45, grassCap: 4000, bloom: false, chunkR: 3, env: false, treeCap0: 900, treeCap1: 4000, rainDrops: 2500, aa: false },
   medium: { name: 'Medium', pr: 1.0, shadow: 2048, shadowDist: 55, treeNear: 95, treeFar: 520, grassR: 38, grassDensity: 0.75, grassCap: 7000, bloom: true, chunkR: 4, env: true, treeCap0: 1300, treeCap1: 6500, rainDrops: 4000, aa: false },
@@ -126,6 +130,8 @@ class Game {
     this.grass = new Grass(this.scene, q);
     await prog(0.5, 'Placing rocks, termite mounds, the den, the shrine and the village');
     this.props = new Props(this.scene, this.T, this.veg); this.props.build();
+    this.groundAO = new GroundAO(256);
+    this.veg.onRebuild = (rect, trees) => this.groundAO.update(rect, trees, this.props.colliders || []);
     await prog(0.62, 'Filling the Pench river and Totladoh');
     this.water = new Water(this.scene);
     this.sky = new SkySystem(this.scene, renderer, q); if (this.noRender) this.sky.sampleOk = false;
@@ -163,10 +169,33 @@ class Game {
     const rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: this.q.aa ? 4 : 0 });
     this.composer = new EffectComposer(r, rt);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
+    if (this.q.name !== 'Low') {
+      this.godrays = new ShaderPass(GodRaysShader);
+      this.godrays.material.defines.GR_SAMPLES = this.q.name === 'Medium' ? 20 : 30;
+      this.composer.addPass(this.godrays);
+    }
     const vm = new RenderPass(this.player.vmScene, this.player.vmCam); vm.clear = false; vm.clearDepth = true; this.composer.addPass(vm);
     if (this.q.bloom) { this.bloom = new UnrealBloomPass(new THREE.Vector2(w / 2, h / 2), 0.32, 0.55, 0.92); this.composer.addPass(this.bloom); }
     this.grade = new ShaderPass(GradeShader); this.composer.addPass(this.grade);
     this.composer.addPass(new OutputPass());
+    if (!this.q.aa && this.q.name !== 'Low') { this.smaa = new SMAAPass(w * r.getPixelRatio(), h * r.getPixelRatio()); this.composer.addPass(this.smaa); }
+  }
+  updateGodRays() {
+    const gp = this.godrays; if (!gp) return;
+    const u = gp.uniforms, sd = this.sky.sunDir;
+    const cam = this.camera;
+    _grv.copy(sd).multiplyScalar(1000).add(cam.position).project(cam);
+    u.uSun.value.set(_grv.x * 0.5 + 0.5, _grv.y * 0.5 + 0.5);
+    cam.getWorldDirection(_grd);
+    const facing = smoothstep(0.05, 0.75, _grd.dot(sd)) * (_grv.z < 1 ? 1 : 0);
+    const el = smoothstep(-0.02, 0.12, sd.y) * (1 - smoothstep(0.75, 0.97, sd.y));
+    const canopy = clamp(biomeAt(this.player.pos.x, this.player.pos.z).teak + 0.3, 0.3, 1.2);
+    const haze = clamp(G.uFogDensity.value / 0.0012, 0.4, 2.2);
+    const env = this.weather.env;
+    u.uStrength.value = facing * el * G.uSunVis.value * canopy * haze * (1 - env.cloud * 0.6) * (1 - env.rain) * 2.4;
+    const hz = this.sky.horizon; u.uThreshold.value = Math.max(0.05, (hz.r * 0.3 + hz.g * 0.59 + hz.b * 0.11) * 0.85);
+    u.uAspect.value = cam.aspect;
+    u.uTint.value.copy(G.uSunCol.value).lerp(_grc.setRGB(1, 0.85, 0.6), 0.4);
   }
   resize() {
     const w = window.innerWidth, h = window.innerHeight;
@@ -192,7 +221,7 @@ class Game {
   // -------------------------------------------------------------------------------- world state
   setSeason(s, weatherState) {
     this.season = s; this.seasonCfg = SEASONS[s];
-    this.weather.setSeason(s, weatherState); this.veg.setSeason(s); this.grass.setSeason(s); this.pickups.setSeason(s); this.props.setSeason(s);
+    this.weather.setSeason(s, weatherState); this.veg.setSeason(s); this.grass.setSeason(s); this.pickups.setSeason(s); this.props.setSeason(s); this.water.setSeason(s);
     this.pickups.update(this.player.pos, true);
   }
   setTime(h) { this.time.hour = ((h % 24) + 24) % 24; }
@@ -701,6 +730,7 @@ class Game {
     gr.uUnder.value = this.playing && waterAt(this.camera.position.x, this.camera.position.z) > this.camera.position.y ? 1 : 0;
     gr.uHeat.value = this.season === 'summer' ? smoothstep(10, 13, this.time.hour) * (1 - smoothstep(16, 18, this.time.hour)) : 0;
     gr.uBlur.value = this.uiBlocking && this.playing ? 1 : (P.drunk > 0.4 ? (P.drunk - 0.4) : 0);
+    this.updateGodRays();
     if (!this.noRender) { this.perf.gpuBegin(); this.composer.render(rdt); this.perf.gpuEnd(); }
     this.perf.mark('render');
   }

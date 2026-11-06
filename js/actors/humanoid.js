@@ -145,6 +145,7 @@ const _e = new THREE.Euler();
 function setR(g, x, y, z) { g.rotation.set(x, y, z); }
 const lerp = (a, b, t) => a + (b - a) * t;
 const ease = (t) => t * t * (3 - 2 * t);
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
 // anim: { speed, crouch, air, vy, swim, action:{type,t}, weapon, aim, draw, lookPitch, dead, kneel }
 export function animateHumanoid(h, dt, a) {
@@ -175,10 +176,14 @@ export function animateHumanoid(h, dt, a) {
     setR(j['foot' + side], -(th + kn) * 0.55 + 0.1, 0, 0);
   }
   // hips / torso
-  const bob = Math.abs(Math.cos(c)) * 0.03 * mv * (1 + h.blendRun);
-  j.hips.position.y = 0.93 * S - bob - cr * 0.33 * S - (a.kneel || 0) * 0.38 * S + h.airS * 0.05;
-  j.hips.rotation.set(-h.swimS * 1.35, Math.sin(c) * 0.12 * mv, 0);
-  j.spine.rotation.set(0.05 + h.blendRun * 0.22 + cr * 0.35 + br, -Math.sin(c) * 0.16 * mv, 0);
+  // walking vaults over a straight stance leg (pelvis highest as the legs pass); running compresses into it
+  const pass = Math.abs(Math.cos(c)) - 0.5;
+  const bob = lerp(pass * 0.034, -pass * 0.06, h.blendRun) * mv * (1 - cr * 0.6);
+  const idleSway = Math.sin(h.t * 0.45) * (1 - mv);
+  j.hips.position.y = 0.93 * S + bob - 0.012 * S * mv - cr * 0.33 * S - (a.kneel || 0) * 0.38 * S + h.airS * 0.05;
+  j.hips.position.x = idleSway * 0.012 * S;
+  j.hips.rotation.set(-h.swimS * 1.35 + h.blendRun * 0.06, Math.sin(c) * lerp(0.12, 0.17, h.blendRun) * mv, Math.sin(c) * 0.045 * mv + idleSway * 0.025);
+  j.spine.rotation.set(0.05 + h.blendRun * 0.22 + cr * 0.35 + br, -Math.sin(c) * lerp(0.16, 0.24, h.blendRun) * mv, -Math.sin(c) * 0.03 * mv - idleSway * 0.02);
   j.chest.rotation.set(br * 2, 0, 0);
   const lp = (a.lookPitch || 0);
   j.neck.rotation.set(-lp * 0.35 - cr * 0.2 - h.blendRun * 0.1 + h.swimS * 0.9, 0, 0);
@@ -256,6 +261,8 @@ export function animateHumanoid(h, dt, a) {
   setR(j.upperArmL, uaL, yL, zL); setR(j.upperArmR, uaR, yR, zR);
   setR(j.foreArmL, elL, 0, 0); setR(j.foreArmR, elR, 0, 0);
   setR(j.handL, -0.2, 0, 0); setR(j.handR, -0.2, 0, 0);
+  // feet on the ground: two-bone IK per leg against the terrain under each foot, pelvis drops for the lower foot
+  if (a.ground && !a.dead) footIK(h, a, dt);
   // cloth flaps
   if (j.flapF) { j.flapF.rotation.x = -Math.max(0, -j.thighL.rotation.x, -j.thighR.rotation.x) * 0.7 - spd * 0.03; j.flapB.rotation.x = Math.max(0, j.thighL.rotation.x, j.thighR.rotation.x) * 0.5 + spd * 0.04; }
   // death
@@ -265,6 +272,41 @@ export function animateHumanoid(h, dt, a) {
     j.hips.rotation.x = lerp(j.hips.rotation.x, -1.5, d); j.hips.position.y = lerp(j.hips.position.y, 0.18 * S, d);
     for (const sd of ['L', 'R']) { j['thigh' + sd].rotation.x = lerp(j['thigh' + sd].rotation.x, -0.1, d); j['shin' + sd].rotation.x = lerp(j['shin' + sd].rotation.x, 0.2, d); j['upperArm' + sd].rotation.x = lerp(j['upperArm' + sd].rotation.x, -2.6, d); }
   } else h.dead = 0;
+}
+
+const L1 = 0.43, L2 = 0.425;
+function footIK(h, a, dt) {
+  const j = h.j, S = h.S, l1 = L1 * S, l2 = L2 * S;
+  const w = (1 - h.airS) * (1 - h.swimS);
+  if (w < 0.02) return;
+  h.ikOff = h.ikOff || { L: 0, R: 0, drop: 0 };
+  const hipY = j.hips.position.y - 0.03 * S;
+  const fk = {};
+  for (const side of ['L', 'R']) {
+    const th = j['thigh' + side].rotation.x, kn = j['shin' + side].rotation.x;
+    const kz = -Math.sin(th) * l1, ky = -Math.cos(th) * l1;
+    const az = kz - Math.sin(th + kn) * l2, ay = ky - Math.cos(th + kn) * l2;
+    const x = j['thigh' + side].position.x;
+    const g = clamp(a.ground(x, az + 0.05 * S), -0.6, 0.6);     // ground under the foot, relative to the root
+    const ao = h.ikOff[side] = lerp(h.ikOff[side], g, Math.min(1, dt * 14));
+    fk[side] = { az, ay, x, g: ao, shinA: th + kn, foot: j['foot' + side].rotation.x };
+  }
+  const drop = h.ikOff.drop = lerp(h.ikOff.drop, Math.max(0, -Math.min(fk.L.g, fk.R.g, 0.0)) * w, Math.min(1, dt * 10));
+  j.hips.position.y -= drop;
+  for (const side of ['L', 'R']) {
+    const f = fk[side];
+    // ankle target in hip-joint space: FK pose shifted by the ground offset, plus the pelvis drop
+    const tz = f.az, ty = f.ay + (f.g + drop) * w;
+    const D = clamp(Math.hypot(tz, ty), 0.15 * S, (l1 + l2) * 0.999);
+    const phi = Math.atan2(tz, -ty);
+    const cb = clamp((l1 * l1 + D * D - l2 * l2) / (2 * l1 * D), -1, 1), ck = clamp((l1 * l1 + l2 * l2 - D * D) / (2 * l1 * l2), -1, 1);
+    const th = -(phi + Math.acos(cb)), kn = Math.PI - Math.acos(ck);
+    j['thigh' + side].rotation.x = th; j['shin' + side].rotation.x = kn;
+    // foot flat to the local slope
+    const gs = a.ground(f.x, tz + 0.12 * S) - a.ground(f.x, tz - 0.08 * S);
+    // keep the gait's heel-strike / toe-off, re-expressed for the new shin angle, then tip it to the slope
+    j['foot' + side].rotation.x = f.foot + (f.shinA - (th + kn)) + clamp(-Math.atan2(gs, 0.2 * S), -0.5, 0.5) * w;
+  }
 }
 
 // ----------------------------------------------------------------------------------------- weapons

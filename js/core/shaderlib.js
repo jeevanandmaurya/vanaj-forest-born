@@ -18,6 +18,9 @@ export const G = {
   uFlash: { value: 0 },
   uSeasonGreen: { value: 0.5 }, // 0 = dry gold, 1 = lush green
   uWaterRise: { value: 0 },
+  uDry: { value: 0.3 },        // 0 = wet season, 1 = peak dry summer (litter bleach, burn scars, cracked soil)
+  tGroundAO: { value: (() => { const t = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1); t.needsUpdate = true; return t; })() },
+  uAORect: { value: new THREE.Vector4(0, 0, 0, 0) }, // x0, z0, 1/size, enabled
 };
 G.uSunDirF = G.uSunDir;
 

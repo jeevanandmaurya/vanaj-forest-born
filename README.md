@@ -6,6 +6,9 @@ A boy who was lost in a flood at three has grown up alone in the jungle. He does
 
 Everything is generated in code at load time: terrain, trees, animals, people, textures, sound and music. There are no downloaded models, images or audio files.
 
+![Morning light shafts through the teak canopy](docs/screenshots/morning-light-shafts.jpg)
+![Forest floor in winter: teak litter, roots, fallen branches](docs/screenshots/forest-floor-winter.jpg)
+![A waterhole after the rains](docs/screenshots/waterhole-after-rains.jpg)
 ![Tiger and chital, first person](docs/screenshots/tiger-and-chital-fpp.jpg)
 ![Monsoon rain at a waterhole](docs/screenshots/monsoon-waterhole-tpp.jpg)
 ![Night, carrying a torch](docs/screenshots/night-torch-tpp.jpg)
@@ -61,9 +64,13 @@ The fight with Torn-Ear, the old tiger, ends with a choice to kill him or spare 
 ## What's in it
 
 - **World**: a 4 km × 4 km landscape built from the real place: the Pench river, a reservoir, waterholes, rocky ridges, open grassland, bamboo brakes, termite mounds and a village. It streams in 64 m chunks with distance-based detail.
-- **Plants**: teak, mahua, saja, kulu, palash, arjun, banyan, bamboo and lantana. Each is grown procedurally and drawn with instancing, with wind sway, seasonal leaf fall and flowering.
+- **Ground**: the forest floor changes as you walk: dry teak litter in golden, grey and russet drifts; damp, half-rotted litter near water and bamboo; red laterite gravel on ridges and slopes; dark basalt soil that cracks in summer; sheet rock on the ridge tops; summer burn scars; rain puddles. Fallen branches and stone clusters lie in the litter, and the soil darkens around trunk bases and under crowns.
+- **Plants**: teak, mahua, saja, kulu, palash, arjun, banyan, bamboo and lantana, each with its real trunk and bark: teak's fluted base and fibrous bark, saja's tall straight stem in crocodile-skin plates, the ghost tree's crooked pale bole with peeling papery bark, mahua's short stout trunk, arjun's pale buttressed riverside trunk, palash's twisted stem. Surface roots run into the litter; every tree gets its own girth, lean and bark tint. Wind sway, seasonal leaf fall and flowering.
+- **Water**: the light path through the water decides what you see: the bed shows in the shallows, deep pools go dark. The surrounding forest reflects in the surface. Seasons change the water: clear green winter pools, algae and floating leaves on stagnant summer pools, muddy ochre monsoon spate.
+- **Light**: sun shafts through the canopy, dappled sun flecks on the forest floor, ground occlusion at tree bases and rocks, SMAA anti-aliasing (Medium) or MSAA with alpha-to-coverage foliage (High/Ultra).
 - **Sky and weather**: the sun follows its real path at 21.7° N for each season. There are clouds, a moon and stars, height fog, haze, mist, rain, storms and lightning; streams and waterholes rise in the monsoon.
-- **Animals**: tiger, leopard, dhole, wolf, sloth bear, gaur, sambar, chital, wild boar, grey langur, peafowl, mugger crocodile, village cows and dogs. Each species has its own procedural body and coat shader. Behaviour includes herds, packs that circle their prey, langur troops in the trees, an alarm-call network, ambushes from the water and a companion who follows you.
+- **Animals**: tiger, leopard, dhole, wolf, sloth bear, gaur, sambar, chital, wild boar, grey langur, peafowl, mugger crocodile, village cows and dogs. Each species has its own procedural body and coat shader. Behaviour includes herds, packs that circle their prey, langur troops in the trees, an alarm-call network, ambushes from the water and a companion who follows you. Animals steer round trunks and rocks and don't walk through each other; on slopes their legs stay plumb, ungulates nod as they walk, and runners lean into turns.
+- **Movement**: feet plant on uneven ground (two-bone leg IK with pelvis drop), the walk vaults over the stance leg while the run compresses into it, and the third-person camera won't pass through trunks or walls.
 - **Survival and combat**: hunger, thirst, bleeding, sickness and fire. You craft a knife, club, spear, bow, arrows, torch and flute. Fighting includes blocking, parrying, dodging and finishing moves; arrows and spears stay stuck in whatever they hit; there are blood decals, limping animals and skinning.
 - **Sound**: Web Audio with spatial (HRTF) panning and reverb. Birds, animal calls, footsteps for each surface, impacts and thunder are all synthesised.
 - **Music**: models of real instruments, with no synth pads: bansuri flute, tanpura with its buzzing *jawari* bridge, the Pardhan *bana* fiddle, and the Baiga *mandar* drum, plus timki and manjira. Exploration music follows the raga cycle of the day (Bhairav at dawn through Malkauns past midnight, Megh in the monsoon). Fights switch to a Keherwa drum cycle.

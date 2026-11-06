@@ -351,13 +351,26 @@ export class Props {
     if (this.cropMat) this.cropMat.color.set(s === 'post' ? 0xc0a848 : s === 'monsoon' ? 0x5a8a30 : s === 'summer' ? 0x8a7050 : 0x9a9050);
   }
   collide(pos, radius) {
-    const c = this.colliders;
+    const c = this.colliders; let hit = false;
     for (let i = 0; i < c.length; i += 3) {
       const dx = pos.x - c[i]; if (dx > 12 || dx < -12) continue;
       const dz = pos.z - c[i + 1]; if (dz > 12 || dz < -12) continue;
       const rr = c[i + 2] + radius, d2 = dx * dx + dz * dz;
-      if (d2 < rr * rr && d2 > 1e-6) { const d = Math.sqrt(d2); pos.x = c[i] + dx / d * rr; pos.z = c[i + 1] + dz / d * rr; }
+      if (d2 < rr * rr && d2 > 1e-6) { const d = Math.sqrt(d2); pos.x = c[i] + dx / d * rr; pos.z = c[i + 1] + dz / d * rr; hit = true; }
     }
+    return hit;
+  }
+  segmentHit(ax, az, bx, bz, pad = 0.1) {
+    const c = this.colliders; let best = 1; const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz; if (L2 < 1e-6) return 1;
+    const mx = Math.min(ax, bx) - 14, Mx = Math.max(ax, bx) + 14, mz = Math.min(az, bz) - 14, Mz = Math.max(az, bz) + 14;
+    for (let i = 0; i < c.length; i += 3) {
+      if (c[i] < mx || c[i] > Mx || c[i + 1] < mz || c[i + 1] > Mz) continue;
+      const ox = c[i] - ax, oz = c[i + 1] - az, r = c[i + 2] + pad;
+      if (ox * ox + oz * oz < r * r) continue; // the segment starts inside (standing against it): not a blocker
+      const t = Math.max(0, Math.min(1, (ox * dx + oz * dz) / L2)), px = dx * t - ox, pz = dz * t - oz;
+      if (px * px + pz * pz < r * r) { const back = Math.sqrt(Math.max(0, r * r - (px * px + pz * pz))) / Math.sqrt(L2); best = Math.min(best, Math.max(0, t - back)); }
+    }
+    return best;
   }
   platformHeight(p) {
     if (!this.towerTop) return -1e9;
