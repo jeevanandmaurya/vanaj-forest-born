@@ -6,6 +6,7 @@ import { G, NOISE_GLSL } from '../core/shaderlib.js';
 import { mulberry32, clamp, smoothstep, lerp } from '../core/noise.js';
 
 const LAT = 21.7 * Math.PI / 180;
+const _sv = new THREE.Vector3(), _sr = new THREE.Vector3(), _su = new THREE.Vector3(), _sa = new THREE.Vector3(), _sUp = new THREE.Vector3(0, 1, 0);
 
 function kelvin(k) {
   // approx blackbody to linear RGB
@@ -180,11 +181,21 @@ export class SkySystem {
       this.sun.color.copy(this.sunColor);
       this.sun.intensity = 3.2 * smoothstep(-0.05, 0.12, el) * cloudDim;
     }
-    // shadow follows focus, texel snapped
+    // Shadows hold still. The sun moves every frame (a game minute per second), and re-drawing the shadow map
+    // from a new angle each frame made the self-shadowed edges of trunks crawl and flicker. So the shadow
+    // direction only steps once the sun has moved ~0.25 degrees, and the shadow camera is snapped to whole
+    // shadow-map texels in the light's own frame (snapping in world x/z while following the player's height
+    // let the grid slide under the trees).
+    const L = this._shadowDir || (this._shadowDir = new THREE.Vector3());
+    const want = _sv.set(ldir.x, Math.max(ldir.y, 0.08), ldir.z).normalize();
+    if (L.lengthSq() === 0 || L.angleTo(want) > 0.0045) L.copy(want);
     const sdist = this.q.shadowDist, tex = (2 * sdist) / this.q.shadow;
-    const fx = Math.round(focus.x / tex) * tex, fz = Math.round(focus.z / tex) * tex;
-    this.sun.target.position.set(fx, focus.y, fz);
-    this.sun.position.set(fx + ldir.x * 300, focus.y + Math.max(ldir.y, 0.08) * 300, fz + ldir.z * 300);
+    const right = _sr.crossVectors(_sUp, L); if (right.lengthSq() < 1e-6) right.set(1, 0, 0); right.normalize();
+    const up = _su.crossVectors(L, right).normalize();
+    const a = Math.round(focus.dot(right) / tex) * tex, b = Math.round(focus.dot(up) / tex) * tex, c = focus.dot(L);
+    const anchor = _sa.copy(right).multiplyScalar(a).addScaledVector(up, b).addScaledVector(L, c);
+    this.sun.target.position.copy(anchor);
+    this.sun.position.copy(anchor).addScaledVector(L, 300);
     this.sun.target.updateMatrixWorld();
     // hemisphere
     this.hemi.color.setRGB(lerp(0.05, 0.55, day), lerp(0.07, 0.66, day), lerp(0.14, 0.85, day)).multiplyScalar(1 - this.cloudCover * 0.25);

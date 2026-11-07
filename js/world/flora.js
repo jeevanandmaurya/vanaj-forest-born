@@ -511,9 +511,12 @@ function barkMaterial(map, key, tint = 0xffffff, moss = 1, normalMap = null) {
         float ih = hash12(vIPb.xz * 0.37 + 1.3);
         diffuseColor.rgb *= (0.84 + 0.32 * ih) * mix(vec3(1.05, 1.0, 0.93), vec3(0.93, 0.98, 1.05), fract(ih * 7.3));
         diffuseColor.rgb *= mix(0.6, 1.0, smoothstep(-0.3, 1.5, vLYb));
-        float lich = smoothstep(0.52, 0.74, vnoise(vec2(vWPb.x * 0.7 + vWPb.z * 0.7, vWPb.y * 1.4) * 1.6 + ih * 10.0)) * (0.35 + 0.65 * smoothstep(-0.3, 0.7, -vWNb.z));
-        vec3 lc = mix(vec3(0.6, 0.62, 0.52), vec3(0.3, 0.4, 0.15), uSeasonGreen);
-        diffuseColor.rgb = mix(diffuseColor.rgb, lc * (0.8 + 0.4 * ih), lich * 0.42 * uBarkMoss);
+        // lichen in irregular soft-edged patches, mostly on the shaded (north) side. The old pattern was one
+        // noise stretched round the trunk with a hard cut-off, which drew sharp pale rings, worst in summer.
+        float ln = vnoise3(vWPb * vec3(2.2, 1.3, 2.2) + ih * 10.0) * 0.65 + vnoise3(vWPb * 6.0 + 3.0) * 0.35;
+        float lich = smoothstep(0.55, 0.85, ln) * (0.25 + 0.75 * smoothstep(-0.2, 0.8, -vWNb.z));
+        vec3 lc = mix(vec3(0.46, 0.47, 0.4), vec3(0.28, 0.36, 0.15), uSeasonGreen);
+        diffuseColor.rgb = mix(diffuseColor.rgb, lc * (0.85 + 0.3 * ih), lich * 0.3 * uBarkMoss);
         diffuseColor.rgb *= mix(1.0, 0.72, uWetness);
       }`);
   });
