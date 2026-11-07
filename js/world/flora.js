@@ -255,12 +255,20 @@ function buildGeneric(specName, seed) {
   meshSkeleton(lb, sk, P, mulberry32(seed + 7), 1, H);
   // surface roots running out from the base into the litter
   const r0 = sk.r0;
-  for (let k = 0; k < (P.roots || 0); k++) {
-    const a = (k / P.roots) * 6.28 + (rng() - 0.5) * 0.6;
-    const L = r0 * (3.5 + rng() * 4), rr = r0 * (0.32 + rng() * 0.18), ca = Math.cos(a), sa = Math.sin(a);
+  // they rise out of the flare, meander a little, run half-buried and dive under the litter within a few trunk
+  // widths, tapering fast; shorter secondary roots between the main ones. Bark at its true scale (it used to be
+  // wrapped once round each root, which stretched it smooth and plastic), darker where they meet the soil.
+  const nR = P.roots || 0;
+  for (let k = 0; k < nR * 2; k++) {
+    const main = k < nR, a = main ? (k / nR) * 6.28 + (rng() - 0.5) * 0.6 : ((k - nR + 0.5) / nR) * 6.28 + (rng() - 0.5) * 0.4;
+    const L = r0 * (main ? 2.2 + rng() * 1.8 : 1.0 + rng() * 0.9), rr = r0 * (main ? 0.34 + rng() * 0.14 : 0.17 + rng() * 0.08), wob = (rng() - 0.5) * 0.5;
     const pts = [], rads = [];
-    for (let q = 0; q <= 4; q++) { const t = q / 4, d = r0 * 0.5 + t * L; pts.push([ca * d, 0.35 * (1 - t) * (1 - t) - 0.12 * t, sa * d]); rads.push(rr * (1 - 0.8 * t) + 0.015); }
-    tube(gb, pts, rads, 5, () => 0, rng(), 1, 0.8);
+    for (let q = 0; q <= 8; q++) {
+      const t = q / 8, d = r0 * 0.45 + t * L, aa = a + wob * Math.sin(t * 3 + k), rad = rr * (1 - 0.82 * t) + 0.012;
+      pts.push([Math.cos(aa) * d, 0.55 * r0 * (1 - t) * (1 - t) + rad * 0.3 - t * t * rad * 1.7, Math.sin(aa) * d]); rads.push(rad);
+    }
+    // (the bark shader already darkens wood near the ground, so only a light contact shade here)
+    tube(gb, pts, rads, 8, () => 0, rng(), Math.max(1, Math.round(2 * Math.PI * rr / 0.9)), 1, null, (p) => 0.82 + 0.18 * clamp(p[1] / 0.3, 0, 1));
   }
   if (P.snag) { const top = sk.branches[0].sections.at(-1); for (let k = 0; k < 4; k++) { const a = k * 1.57 + rng(); tube(gb, [[top.p.x, top.p.y, top.p.z], [top.p.x + Math.cos(a) * top.r * 0.5, top.p.y + 0.3 + rng() * 0.8, top.p.z + Math.sin(a) * top.r * 0.5]], [top.r * 0.5, 0.02], 4, () => 0.05, rng(), 1); } }
   // leaves: crossed cards at each twig, normals from the crown centre (soft, rounded canopy shading)

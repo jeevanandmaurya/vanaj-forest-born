@@ -63,7 +63,7 @@ class Input {
 }
 
 const GradeShader = {
-  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uVig: { value: 0.9 }, uGrain: { value: 0.035 }, uHurt: { value: 0 }, uLow: { value: 0 }, uFlash: { value: 0 }, uUnder: { value: 0 }, uNight: { value: 0 }, uTint: { value: new THREE.Vector3(1, 1, 1) }, uSat: { value: 1.05 }, uHeat: { value: 0 }, uBlur: { value: 0 } },
+  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uVig: { value: 0.9 }, uGrain: { value: 0.012 }, uHurt: { value: 0 }, uLow: { value: 0 }, uFlash: { value: 0 }, uUnder: { value: 0 }, uNight: { value: 0 }, uTint: { value: new THREE.Vector3(1, 1, 1) }, uSat: { value: 1.05 }, uHeat: { value: 0 }, uBlur: { value: 0 } },
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: `uniform sampler2D tDiffuse; uniform float uTime, uVig, uGrain, uHurt, uLow, uFlash, uUnder, uNight, uSat, uHeat, uBlur; uniform vec3 uTint; varying vec2 vUv;
     float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }

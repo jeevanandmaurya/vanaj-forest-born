@@ -122,7 +122,9 @@ export const WIND_VERTEX = /* glsl */`
   float wPh = uTime * 1.1 + dot(iPos.xz, vec2(0.061, 0.047));
   float gust = 0.55 + 0.45 * sin(uTime * 0.31 + iPos.x * 0.004) * sin(uTime * 0.17 + iPos.z * 0.005);
   float sway = (sin(wPh) * 0.65 + sin(wPh * 2.37 + 1.7) * 0.35) * uWindStrength * gust;
-  float flut = sin(uTime * (6.0 + aRand * 4.0) + position.x * 2.1 + position.y * 1.7 + aRand * 40.0) * (0.03 + 0.09 * uWindStrength);
+  // leaf flutter: slow and small. Fast, large flutter made leaf edges flick on and off against the sky
+  // every frame (alpha-tested cards), which read as shimmering; the sway above still moves whole branches.
+  float flut = sin(uTime * (2.6 + aRand * 1.8) + position.x * 1.3 + position.y * 1.1 + aRand * 40.0) * (0.008 + 0.03 * uWindStrength);
   transformed.x += (lw.x * sway * 0.5 + flut) * aWind;
   transformed.z += (lw.y * sway * 0.5 + flut * 0.7) * aWind;
   transformed.y += flut * 0.4 * aWind;
