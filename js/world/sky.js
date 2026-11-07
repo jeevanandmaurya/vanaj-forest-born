@@ -15,6 +15,31 @@ function kelvin(k) {
   return new THREE.Color(clamp(r, 0, 255) / 255, clamp(g, 0, 255) / 255, clamp(b, 0, 255) / 255).convertSRGBToLinear();
 }
 
+// The Preetham sky of lib/addons/objects/Sky.js, evaluated on the CPU for one view direction (unit vectors
+// d and sun, uniforms U); returns linear [r, g, b] as the shader writes it (no tone mapping, no sun disc).
+function preetham(d, sun, U) {
+  const e = Math.E, pi = Math.PI, EE = 1000, cutoff = 1.6110731556870734, steep = 1.5;
+  const totalRayleigh = [5.804542996261093e-6, 1.3562911419845635e-5, 3.0265902468824876e-5];
+  const MieConst = [1.8399918514433978e14, 2.7798023919660528e14, 4.0790479543861094e14];
+  const sunE = EE * Math.max(0, 1 - Math.pow(e, -((cutoff - Math.acos(clamp(sun.y, -1, 1))) / steep)));
+  const sunfade = 1 - clamp(1 - Math.exp(U.sunPosition.value.y / 450000), 0, 1);
+  const rc = U.rayleigh.value - (1 - sunfade), mc = 0.434 * (0.2 * U.turbidity.value) * 10e-18 * U.mieCoefficient.value;
+  const zen = Math.acos(Math.max(0, d.y)), inv = 1 / (Math.cos(zen) + 0.15 * Math.pow(93.885 - zen * 180 / pi, -1.253));
+  const sR = 8.4e3 * inv, sM = 1.25e3 * inv, cosT = d.x * sun.x + d.y * sun.y + d.z * sun.z;
+  const rPhase = 0.05968310365946075 * (1 + Math.pow(cosT * 0.5 + 0.5, 2));
+  const g = U.mieDirectionalG.value, mPhase = 0.07957747154594767 * ((1 - g * g) / Math.pow(1 - 2 * g * cosT + g * g, 1.5));
+  const horizonMix = clamp(Math.pow(1 - sun.y, 5), 0, 1), out = [0, 0, 0];
+  for (let c = 0; c < 3; c++) {
+    const bR = totalRayleigh[c] * rc, bM = MieConst[c] * mc, Fex = Math.exp(-(bR * sR + bM * sM));
+    const ratio = (bR * rPhase + bM * mPhase) / (bR + bM);
+    let Lin = Math.pow(Math.max(0, sunE * ratio * (1 - Fex)), 1.5);
+    Lin *= lerp(1, Math.pow(Math.max(0, sunE * ratio * Fex), 0.5), horizonMix);
+    const tex = (Lin + 0.1 * Fex) * 0.04 + [0, 0.0003, 0.00075][c];
+    out[c] = Math.pow(tex, 1 / (1.2 + 1.2 * sunfade));
+  }
+  return out;
+}
+
 export class SkySystem {
   constructor(scene, renderer, quality) {
     this.scene = scene; this.renderer = renderer; this.q = quality;
@@ -184,7 +209,7 @@ export class SkySystem {
     this.sky.position.copy(camera.position);
     // sample fog colours from the rendered sky
     this.sampleTimer -= dt;
-    if (this.sampleTimer <= 0) { this.sampleTimer = 0.5; this.sampleFog(sd, camera); }
+    if (this.sampleTimer <= 0) { this.sampleTimer = 0.5; this.sampleFog(sd); }
     G.uFogColor.value.lerp(this.fogA, Math.min(1, dt * 2));
     G.uFogSun.value.lerp(this.fogB, Math.min(1, dt * 2));
     // environment map
@@ -193,31 +218,59 @@ export class SkySystem {
       this.envTimer = 2; this.lastEnvSun.copy(sd); this.refreshEnv();
     }
   }
-  sampleFog(sd, camera) {
+  // Fog colour from the sky itself, computed on the CPU with the same Preetham model the sky shader draws
+  // (lib/addons/objects/Sky.js), a little above the horizon, away from and toward the sun, with cloud cover
+  // greying it. This used to render the sky into a tiny target and read the pixels back, but any GPU read-back
+  // (even the "async" one) waits for the GPU on Windows/ANGLE: a 15-50 ms hitch every half second.
+  sampleFog(sd) {
+    const U = this.u, az = new THREE.Vector3(sd.x, 0, sd.z); if (az.lengthSq() < 1e-4) az.set(1, 0, 0); az.normalize();
+    const sun = U.sunPosition.value.clone().normalize();
+    const look = (s, out) => {
+      out.setRGB(0, 0, 0);
+      for (const el of [0.03, 0.1, 0.2]) { const d = new THREE.Vector3(az.x * s, 0, az.z * s).multiplyScalar(Math.cos(el)).setY(Math.sin(el)); const c = preetham(d, sun, U); out.r += c[0] / 3; out.g += c[1] / 3; out.b += c[2] / 3; }
+      const l = out.r * 0.3 + out.g * 0.59 + out.b * 0.11, cc = clamp(this.cloudCover, 0, 1) * 0.6;
+      out.setRGB(lerp(out.r, l * 0.85, cc), lerp(out.g, l * 0.85, cc), lerp(out.b, l * 0.85, cc));
+      return out;
+    };
+    const tmpA = look(-1, new THREE.Color()), tmpB = look(1, new THREE.Color());
+    tmpB.multiplyScalar(lerp(1, 0.58, 1 - smoothstep(0.12, 0.5, sd.y)));   // a low sun shines through cloud and haze, not clear sky
+    if (!isFinite(tmpA.r) || !isFinite(tmpB.r)) return this.heuristicFog(sd);
+    this.fogA.copy(tmpA).multiplyScalar(0.92); this.fogB.copy(tmpB).multiplyScalar(0.92);
+    this.horizon.copy(tmpA);
+    this.zenith.copy(tmpA).multiplyScalar(0.7).lerp(new THREE.Color(0.12, 0.25, 0.6).multiplyScalar(this.day), 0.5);
+  }
+  // the old GPU sampler, kept for comparison/debugging (not called in play)
+  sampleFogGPU(sd, camera) {
     if (!this.sampleOk) return this.heuristicFog(sd);
+    if (this.sampling) return;
     try {
       const r = this.renderer, prevRT = r.getRenderTarget();
-      const prevTone = r.toneMapping;
       const az = new THREE.Vector3(sd.x, 0, sd.z); if (az.lengthSq() < 1e-4) az.set(1, 0, 0); az.normalize();
       const cam = this.sampleCam; cam.position.copy(camera.position);
-      const sampleDir = (dir, out) => {
-        cam.lookAt(cam.position.x + dir.x, cam.position.y + 0.04, cam.position.z + dir.z);
-        r.setRenderTarget(this.sampleRT); r.render(this.scene, cam);
-        r.readRenderTargetPixels(this.sampleRT, 0, 0, 8, 8, this.samplePix);
-        let R = 0, Gc = 0, B = 0;
-        for (let i = 0; i < 64; i++) { R += this.samplePix[i * 4]; Gc += this.samplePix[i * 4 + 1]; B += this.samplePix[i * 4 + 2]; }
-        out.setRGB(R / 64, Gc / 64, B / 64);
+      this.sampleRTs = this.sampleRTs || [this.sampleRT, this.sampleRT.clone()];
+      // these renders see only the sky, so they must not redraw the sun's shadow map for the whole forest or
+      // re-walk the scene's matrices (that was most of the cost: two full shadow passes every half second)
+      const shadowAuto = r.shadowMap.autoUpdate, matAuto = this.scene.matrixWorldAutoUpdate;
+      r.shadowMap.autoUpdate = false; this.scene.matrixWorldAutoUpdate = false;
+      const read = (dir, rt) => {
+        cam.lookAt(cam.position.x + dir.x, cam.position.y + 0.04, cam.position.z + dir.z); cam.updateMatrixWorld();
+        r.setRenderTarget(rt); r.render(this.scene, cam);
+        return r.readRenderTargetPixelsAsync(rt, 0, 0, 8, 8, new Float32Array(256));
       };
-      const tmpA = new THREE.Color(), tmpB = new THREE.Color();
-      sampleDir(az.clone().negate(), tmpA);
-      sampleDir(az, tmpB);
-      r.setRenderTarget(prevRT); r.toneMapping = prevTone;
-      if (!isFinite(tmpA.r) || !isFinite(tmpB.r)) throw new Error('nan');
-      if (this.day > 0.3 && tmpA.r + tmpA.g + tmpA.b < 1e-5) throw new Error('unreadable');
-      this.fogA.copy(tmpA).multiplyScalar(0.92); this.fogB.copy(tmpB).multiplyScalar(0.92);
-      this.horizon.copy(tmpA);
-      this.zenith.copy(tmpA).multiplyScalar(0.7).lerp(new THREE.Color(0.12, 0.25, 0.6).multiplyScalar(this.day), 0.5);
-    } catch (e) { this.sampleOk = false; this.heuristicFog(sd); }
+      let pa, pb;
+      try { pa = read(az.clone().negate(), this.sampleRTs[0]); pb = read(az, this.sampleRTs[1]); }
+      finally { r.shadowMap.autoUpdate = shadowAuto; this.scene.matrixWorldAutoUpdate = matAuto; r.setRenderTarget(prevRT); }
+      const avg = (px) => { let R = 0, Gc = 0, B = 0; for (let i = 0; i < 64; i++) { R += px[i * 4]; Gc += px[i * 4 + 1]; B += px[i * 4 + 2]; } return new THREE.Color(R / 64, Gc / 64, B / 64); };
+      this.sampling = true;
+      Promise.all([pa, pb]).then(([A, B]) => {
+        this.sampling = false;
+        const tmpA = avg(A), tmpB = avg(B);
+        if (!isFinite(tmpA.r) || !isFinite(tmpB.r) || (this.day > 0.3 && tmpA.r + tmpA.g + tmpA.b < 1e-5)) { this.sampleOk = false; this.heuristicFog(this.sunDir); return; }
+        this.fogA.copy(tmpA).multiplyScalar(0.92); this.fogB.copy(tmpB).multiplyScalar(0.92);
+        this.horizon.copy(tmpA);
+        this.zenith.copy(tmpA).multiplyScalar(0.7).lerp(new THREE.Color(0.12, 0.25, 0.6).multiplyScalar(this.day), 0.5);
+      }, () => { this.sampling = false; this.sampleOk = false; this.heuristicFog(this.sunDir); });
+    } catch (e) { this.sampling = false; this.sampleOk = false; this.heuristicFog(sd); }
   }
   heuristicFog(sd) {
     const day = this.day, el = sd.y;

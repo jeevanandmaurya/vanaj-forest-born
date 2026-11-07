@@ -205,17 +205,23 @@ function splatFor(x, z, h, ny, out, o, bio) {
   return b.field;
 }
 
+// Resumable: yields every few rows so a chunk can be built over several frames (a near chunk is 129 x 129
+// samples of height, biome and soil, ~20-60 ms in one go, which showed as a hitch each time you crossed into a
+// new chunk). buildGridGeometry runs it to the end at once.
 function buildGridGeometry(x0, z0, size, n, analytic, skirt, sink = 0) {
+  const it = buildGridGen(x0, z0, size, n, analytic, skirt, sink); let r; do r = it.next(); while (!r.done); return r.value;
+}
+function* buildGridGen(x0, z0, size, n, analytic, skirt, sink = 0) {
   const N = n + 1, step = size / n;
   // heights with 1-sample border for normals
   const NB = N + 2;
   const hb = new Float32Array(NB * NB);
-  for (let j = 0; j < NB; j++) for (let i = 0; i < NB; i++) hb[j * NB + i] = analytic(x0 + (i - 1) * step, z0 + (j - 1) * step);
+  for (let j = 0; j < NB; j++) { for (let i = 0; i < NB; i++) hb[j * NB + i] = analytic(x0 + (i - 1) * step, z0 + (j - 1) * step); if (j % 16 === 15) yield; }
   const vCount = N * N + (skirt ? 4 * n + 4 : 0) ;
   const pos = new Float32Array(vCount * 3), nor = new Float32Array(vCount * 3), spl = new Float32Array(vCount * 4), bio = new Float32Array(vCount * 4), fld = new Float32Array(vCount);
   const hgrid = new Float32Array(N * N);
   let v = 0;
-  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+  for (let j = 0; j < N; j++) { if (j % 6 === 5) yield; for (let i = 0; i < N; i++) {
     const x = x0 + i * step, z = z0 + j * step;
     const h = hb[(j + 1) * NB + i + 1];
     hgrid[j * N + i] = h;
@@ -226,7 +232,7 @@ function buildGridGeometry(x0, z0, size, n, analytic, skirt, sink = 0) {
     fld[v] = splatFor(x, z, h, ny, spl, v * 4, bio);
     { const wl = waterAt(x, z); if (wl > h) fld[v] = -Math.min(3, wl - h); }   // negative = submerged depth (river / pool bed)
     v++;
-  }
+  } }
   const idx = [];
   for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
     const a = j * N + i, b = a + 1, c = a + N, d = c + 1;
@@ -514,16 +520,20 @@ export class TerrainManager {
         if (!want.has(k)) { this.scene.remove(c.mesh); c.mesh.geometry.dispose(); this.chunks.delete(k); heightCache.delete(k); }
       }
       this.queue = [];
+      if (this.job && !(want.has(this.job.w.k) && want.get(this.job.w.k).segs === this.job.w.segs)) this.job = null;
       for (const [k, w] of want) {
+        if (this.job && this.job.w.k === k) continue;
         const c = this.chunks.get(k);
         if (!c || c.segs !== w.segs) this.queue.push({ k, ...w });
       }
       this.queue.sort((a, b) => a.d - b.d);
     }
+    // build chunks a slice at a time inside the frame budget (a forced update finishes everything now)
     const t0 = performance.now();
-    while (this.queue.length && (force || performance.now() - t0 < budgetMs)) {
-      const w = this.queue.shift();
-      this.buildChunk(w);
+    while ((this.job || this.queue.length) && (force || performance.now() - t0 < budgetMs)) {
+      if (!this.job) { const w = this.queue.shift(); this.job = { w, it: buildGridGen(w.kx * CHUNK, w.kz * CHUNK, CHUNK, w.segs, height, true) }; }
+      const r = this.job.it.next();
+      if (r.done) { this.buildChunk(this.job.w, r.value); this.job = null; }
     }
     // near rect for far mesh: largest fully-loaded square
     let r = 0;
@@ -540,9 +550,8 @@ export class TerrainManager {
     if (r >= 0) nr.set((cx - r) * CHUNK + 0.5, (cz - r) * CHUNK + 0.5, (cx + r + 1) * CHUNK - 0.5, (cz + r + 1) * CHUNK - 0.5);
     else nr.set(0, 0, 0, 0);
   }
-  buildChunk(w) {
+  buildChunk(w, res = buildGridGeometry(w.kx * CHUNK, w.kz * CHUNK, CHUNK, w.segs, height, true)) {
     const old = this.chunks.get(w.k);
-    const res = buildGridGeometry(w.kx * CHUNK, w.kz * CHUNK, CHUNK, w.segs, height, true);
     const mesh = new THREE.Mesh(res.geometry, this.mat);
     mesh.receiveShadow = true; mesh.castShadow = false;
     this.scene.add(mesh);
@@ -550,7 +559,7 @@ export class TerrainManager {
     this.chunks.set(w.k, { mesh, segs: w.segs });
     heightCache.set(w.k, { x0: w.kx * CHUNK, z0: w.kz * CHUNK, step: res.step, n: w.segs, h: res.hgrid });
   }
-  pending() { return this.queue.length; }
+  pending() { return this.queue.length + (this.job ? 1 : 0); }
 }
 
 // Map image for the in-game map
