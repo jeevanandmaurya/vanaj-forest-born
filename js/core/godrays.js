@@ -17,12 +17,15 @@ export const GodRaysShader = {
     float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     // This pass runs just before bloom, so it also cleans the image: a single NaN or infinite pixel from any
     // shader would otherwise be blurred by the bloom across the whole screen and flash the frame black.
-    vec3 clean(vec3 c){ return (any(isnan(c)) || any(isinf(c))) ? vec3(0.0) : min(c, vec3(1e4)); }
+    // and caps brightness: the sun disc is thousands of times brighter than anything else, and fed straight into
+    // the shafts and the bloom it washed the whole screen white whenever you looked toward the sun. 24 still
+    // glows hard and still reads as the sun.
+    vec3 clean(vec3 c){ if (any(isnan(c)) || any(isinf(c))) return vec3(0.0); float m = max(c.r, max(c.g, c.b)); return m > 12.0 ? c * (12.0 / m) : c; }
     void main(){
       vec4 base = vec4(clean(texture2D(tDiffuse, vUv).rgb), 1.0);
       if (uStrength < 0.002) { gl_FragColor = base; return; }
       vec2 delta = (vUv - uSun) * (uDensity / float(GR_SAMPLES));
-      vec2 uv = vUv - delta * h(vUv * 917.0);                // jitter hides banding
+      vec2 uv = vUv - delta * (0.5 + 0.35 * (h(vUv * 917.0) - 0.5));   // light jitter hides banding without speckle
       float illum = 1.0; vec3 acc = vec3(0.0);
       for (int i = 0; i < GR_SAMPLES; i++) {
         uv -= delta;

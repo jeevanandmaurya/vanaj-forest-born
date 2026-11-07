@@ -205,7 +205,7 @@ class Game {
     const canopy = clamp(biomeAt(this.player.pos.x, this.player.pos.z).teak + 0.3, 0.3, 1.2);
     const haze = clamp(G.uFogDensity.value / 0.0012, 0.4, 2.2);
     const env = this.weather.env;
-    u.uStrength.value = facing * el * G.uSunVis.value * canopy * haze * (1 - env.cloud * 0.6) * (1 - env.rain) * 2.4;
+    u.uStrength.value = Math.min(0.9, facing * el * G.uSunVis.value * canopy * haze * (1 - env.cloud * 0.6) * (1 - env.rain) * 2.4);   // capped: haze multiplied it to ~4 and whited out the view
     const hz = this.sky.horizon; u.uThreshold.value = Math.max(0.05, (hz.r * 0.3 + hz.g * 0.59 + hz.b * 0.11) * 0.85);
     u.uAspect.value = cam.aspect;
     u.uTint.value.copy(G.uSunCol.value).lerp(_grc.setRGB(1, 0.85, 0.6), 0.4);
