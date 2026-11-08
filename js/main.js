@@ -12,26 +12,30 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { G } from './core/shaderlib.js';
+import { PAINTED, setPaintedSeason } from './core/palette.js';
 import { clamp, lerp, smoothstep } from './core/noise.js';
 import { buildTextures } from './world/textures.js';
 import { TerrainManager, groundHeight, waterAt, renderMapCanvas, height, biomeAt, nearestWaterPoint } from './world/terrain.js';
 import { Vegetation, Grass, SP } from './world/flora.js';
+import { VineSystem } from './world/vines.js';
 import { SkySystem } from './world/sky.js';
 import { Weather, SEASONS } from './world/weather.js';
 import { Water } from './world/water.js';
 import { FX } from './world/fx.js';
 import { Props, SITES } from './world/props.js';
-import { Ecosystem } from './actors/animals.js';
+import { Ecosystem, DEF } from './actors/animals.js';
 import { Birds } from './world/birds.js';
 import { PlaceTracker } from './world/places.js';
 import { Tracks } from './world/tracks.js';
 import { GroundCover } from './world/groundcover.js';
 import { Player } from './actors/player.js';
+import { buildHumanoid } from './actors/humanoid.js';
 import { AudioEngine } from './audio/audio.js';
 import { Music } from './audio/music.js';
 import { Inventory, Pickups, ITEMS, RECIPES } from './game/items.js';
 import { Story } from './game/story.js';
 import { UI } from './game/ui.js';
+import { TouchControls, isTouchDevice } from './game/touch.js';
 
 const _grv = new THREE.Vector3(), _grd = new THREE.Vector3(), _grc = new THREE.Color();
 const QUALITY = {
@@ -41,6 +45,8 @@ const QUALITY = {
   ultra: { name: 'Ultra', pr: 2.0, shadow: 4096, shadowDist: 90, treeNear: 170, treeFar: 900, grassR: 68, grassDensity: 1.3, grassCap: 16000, bloom: true, chunkR: 6, env: true, treeCap0: 2600, treeCap1: 13000, rainDrops: 6000, aa: true },
 };
 const $ = (id) => document.getElementById(id);
+// one painted frame (a timer stands in when the tab is hidden and gets no animation frames)
+const nextFrame = () => new Promise((r) => { requestAnimationFrame(() => r()); setTimeout(r, 100); });
 const store = { get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { } } };
 
 class Input {
@@ -97,7 +103,10 @@ class Game {
     this.camps = []; this.flags = {}; this.npcs = [];
     this.settings = Object.assign({ quality: 'medium', sens: 1, invert: false, fov: 72, view: 'tpp', master: 0.9, music: 0.7, density: 1, perf: 'off' }, store.get('vanaj-settings') || {});
     const qp = new URLSearchParams(location.search);
-    this.q = { ...(QUALITY[qp.get('q') || this.settings.quality] || QUALITY.medium) };
+    // phones and tablets start on Low (unless a quality was chosen) and draw at CSS-pixel resolution
+    const touch = isTouchDevice(), chosen = (store.get('vanaj-settings') || {}).qualityChosen;
+    this.q = { ...(QUALITY[qp.get('q') || (touch && !chosen ? 'low' : this.settings.quality)] || QUALITY.medium) };
+    if (touch) this.q.pr = 1;
     if (qp.get('pr')) this.q.pr = +qp.get('pr');
     this.noRender = qp.has('norender'); if (this.noRender) { this.q.env = false; }
     this.cooldowns = new Map();
@@ -118,7 +127,8 @@ class Game {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, q.pr));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.9;
+    // the painted look keeps its palette's colours as painted: neutral tone mapping, not filmic
+    renderer.toneMapping = PAINTED ? THREE.NeutralToneMapping : THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = PAINTED ? 1 : 0.9;
     renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     $('app').prepend(renderer.domElement); renderer.domElement.id = 'gl';
     this.perf = new PerfOverlay(renderer, { mode: new URLSearchParams(location.search).get('perf') || this.settings.perf, onChange: (m) => { this.settings.perf = m; store.set('vanaj-settings', this.settings); const sel = $('set-perf'); if (sel) sel.value = m; } });
@@ -128,6 +138,7 @@ class Game {
     this.input = new Input(renderer.domElement);
     this.audio = new AudioEngine();
     this.ui = new UI(this); this.ui.init();
+    if (isTouchDevice()) this.touchUI = new TouchControls(this);
     await prog(0.06, 'Painting bark, leaves and leaf litter');
     this.T = buildTextures();
     await prog(0.25, 'Raising the Satpura hills');
@@ -135,7 +146,9 @@ class Game {
     await prog(0.35, 'Growing teak, mahua, saja, kulu, palash and bamboo');
     this.veg = new Vegetation(this.scene, this.T, q);
     this.grass = new Grass(this.scene, q);
+    this.vines = new VineSystem(this.scene, this.veg);
     this.cover = new GroundCover(this.scene, this.T || T, q);
+    if (PAINTED) this.cover.leaves.visible = false;   // the painted ground draws its own fallen leaves
     await prog(0.5, 'Placing rocks, termite mounds, the den, the shrine and the village');
     this.props = new Props(this.scene, this.T, this.veg); this.props.build();
     this.groundAO = new GroundAO(256);
@@ -167,7 +180,7 @@ class Game {
     this.buildComposer();
     this.setSeason('winter', 'mist'); this.setTime(6.5);
     await prog(0.92, 'Compiling shaders');
-    try { this.sky.update(0.016, this.time.hour, this.seasonCfg.decl, this.weather.env, this.camera, this.player.pos); if (!this.noRender) renderer.compile(this.scene, this.camera); } catch (e) { console.warn(e); }
+    try { this.sky.update(0.016, this.time.hour, this.seasonCfg.decl, this.weather.env, this.camera, this.player.pos, this.season); if (!this.noRender) this.warmShaders(); } catch (e) { console.warn(e); }
     await prog(1, 'Ready');
     window.addEventListener('resize', () => this.resize());
     this.setupMenus();
@@ -177,12 +190,33 @@ class Game {
     this.last = performance.now();
     requestAnimationFrame((t) => this.frame(t));
   }
+  // Build every shader program the game will need before play. Three keys a program on the render target it
+  // draws to (colour space, tone mapping), so compiling against the screen, as before, made programs the
+  // composer never uses. A program first needed mid-game (an animal or villager spawning) stalled that frame
+  // for up to two seconds. So: put one of every animal (both sexes, for the rigged ones' two models) and a
+  // villager in view, compile against the composer's own target, then draw one real frame so the shadow-map
+  // variants build too, and take them away again.
+  warmShaders() {
+    const r = this.renderer, P = this.player.pos, cam = this.camera, extra = [];
+    cam.position.set(P.x, P.y + 4, P.z + 10); cam.lookAt(P.x, P.y + 1, P.z); cam.updateMatrixWorld();
+    let i = 0;
+    for (const sp of Object.keys(DEF)) for (const male of [false, true]) {
+      const a = this.eco.spawnOne(sp, new THREE.Vector3(P.x + ((i % 8) - 3.5) * 2.4, 0, P.z - 2 - Math.floor(i / 8) * 3), { persistent: true, male });
+      a.root.updateMatrixWorld(true); extra.push(a); i++;
+    }
+    const npc = buildHumanoid({ skinColor: 0x9a6a4a, hair: 'short', cloth: 'dhoti', clothTex: this.T.clothRed, topTex: this.T.clothKhaki, turban: this.T.clothRed, skinKey: 'skin-npc' });
+    npc.root.position.set(P.x + 3, P.y, P.z); this.scene.add(npc.root); npc.root.updateMatrixWorld(true);
+    r.setRenderTarget(this.composer.renderTarget1); r.compile(this.scene, cam); r.setRenderTarget(null);
+    this.composer.render(0.016);
+    for (const a of extra) this.eco.remove(a);
+    this.scene.remove(npc.root);
+  }
   buildComposer() {
     const r = this.renderer, w = window.innerWidth, h = window.innerHeight;
     const rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: this.q.aa ? 4 : 0 });
     this.composer = new EffectComposer(r, rt);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    if (this.q.name !== 'Low') {
+    if (this.q.name !== 'Low' && !PAINTED) {
       this.godrays = new ShaderPass(GodRaysShader);
       this.godrays.material.defines.GR_SAMPLES = this.q.name === 'Medium' ? 20 : 30;
       this.composer.addPass(this.godrays);
@@ -190,6 +224,7 @@ class Game {
     const vm = new RenderPass(this.player.vmScene, this.player.vmCam); vm.clear = false; vm.clearDepth = true; this.composer.addPass(vm);
     if (this.q.bloom) { this.bloom = new UnrealBloomPass(new THREE.Vector2(w / 2, h / 2), 0.32, 0.55, 0.92); this.composer.addPass(this.bloom); }
     this.grade = new ShaderPass(GradeShader); this.composer.addPass(this.grade);
+    if (PAINTED) { this.grade.uniforms.uGrain.value = 0; this.grade.uniforms.uVig.value = 0.45; }
     this.composer.addPass(new OutputPass());
     if (!this.q.aa && this.q.name !== 'Low') { this.smaa = new SMAAPass(w * r.getPixelRatio(), h * r.getPixelRatio()); this.composer.addPass(this.smaa); }
   }
@@ -253,6 +288,7 @@ class Game {
   // -------------------------------------------------------------------------------- world state
   setSeason(s, weatherState) {
     this.season = s; this.seasonCfg = SEASONS[s];
+    if (PAINTED) setPaintedSeason(s);
     this.weather.setSeason(s, weatherState); this.veg.setSeason(s); this.grass.setSeason(s); this.cover.setSeason(s); this.pickups.setSeason(s); this.props.setSeason(s); this.water.setSeason(s);
     this.pickups.update(this.player.pos, true);
   }
@@ -305,7 +341,7 @@ class Game {
     $('btn-resume').onclick = () => g.resume();
     $('btn-save').onclick = () => { g.save(); g.ui.toast('Saved'); };
     $('btn-psettings').onclick = () => g.openSettings();
-    $('btn-quit').onclick = () => { g.save(); location.reload(); };
+    $('btn-quit').onclick = () => g.toTitle();
     $('btn-respawn').onclick = () => g.respawn();
     $('btn-restart-ch').onclick = () => { g.ui.hideDeath(); g.player.respawn(); g.story.start(g.story.chIndex); g.requestLock(); };
     $('prologue-skip').onclick = () => g.skipPrologue && g.skipPrologue();
@@ -319,7 +355,7 @@ class Game {
     bindRange('set-sens', 'sens', (v) => v.toFixed(2)); bindRange('set-fov', 'fov'); bindRange('set-master', 'master', (v) => Math.round(v * 100) + '%'); bindRange('set-music', 'music', (v) => Math.round(v * 100) + '%');
     $('set-perf').value = g.perf.mode; $('set-perf').onchange = (e) => g.perf.setMode(e.target.value);
     $('set-invert').checked = S.invert; $('set-invert').onchange = (e) => { S.invert = e.target.checked; g.applySettings(); };
-    $('set-quality').value = S.quality; $('set-quality').onchange = (e) => { S.quality = e.target.value; g.applySettings(); $('set-quality-note').textContent = 'Reload to fully apply view distance and shadow quality.'; };
+    $('set-quality').value = S.quality; $('set-quality').onchange = (e) => { S.quality = e.target.value; S.qualityChosen = true; g.applySettings(); $('set-quality-note').textContent = 'Reload to fully apply view distance and shadow quality.'; };
     $('set-view').value = S.view; $('set-view').onchange = (e) => { S.view = e.target.value; g.player.setView(S.view); g.applySettings(); };
   }
   anyPanel() { return !!document.querySelector('.panel.show'); }
@@ -327,11 +363,12 @@ class Game {
   applySettings() {
     const S = this.settings; store.set('vanaj-settings', S);
     this.player.fov = S.fov;
-    if (this.audio.ready) { this.audio.master.gain.value = S.master; this.audio.music.gain.value = S.music; }
+    if (this.audio.ready) { const t = this.audio.ctx.currentTime; this.audio.master.gain.setTargetAtTime(S.master, t, 0.015); this.audio.music.gain.setTargetAtTime(S.music, t, 0.015); }   // ramped: a jump clicks
     else { this.audio.vol.master = S.master; this.audio.vol.music = S.music; }
   }
   startAudio() { this.audio.init(); this.audio.resume(); if (!this.music && this.audio.ready) { this.music = new Music(this.audio); } this.applySettings(); }
   requestLock() {
+    if (this.touch) return;   // touch play looks by dragging, not pointer lock
     const el = this.renderer.domElement;
     try { const p = el.requestPointerLock && el.requestPointerLock(); if (p && p.catch) p.catch(() => { this.dragLook = true; }); } catch (e) { this.dragLook = true; }
   }
@@ -380,13 +417,19 @@ class Game {
       setTimeout(show, 1200);
     });
   }
-  startGame(ch, opts = {}) {
+  // The click is answered at once with a fade to black; the teleport and streaming happen behind it, then the
+  // picture fades in. (It used to freeze on the title for ~3 s: 0.9 s of building, 1.9 s compiling shaders.)
+  async startGame(ch, opts = {}) {
+    this.requestLock();
+    await this.ui.fade(true, 250);
     $('title').classList.remove('show');
+    this.player.revive();
     this.playing = true; this.uiBlocking = false;
     $('hud').classList.add('show');
     if (opts.chapterSelect) this.giveChapterKit(ch);
     this.story.start(ch);
-    this.requestLock();
+    await nextFrame(); await nextFrame();
+    this.ui.fade(false, 900);
   }
   giveChapterKit(ch) {
     // sensible starting kit when jumping straight into a later chapter
@@ -402,7 +445,10 @@ class Game {
     if (ch >= 12) { inv.add('lota'); }
     this.player.equip(ch >= 4 ? 'spear' : ch >= 1 ? 'knife' : 'fists');
   }
-  freeRoam() {
+  async freeRoam() {
+    this.requestLock();
+    await this.ui.fade(true, 250);
+    this.player.revive();
     $('title').classList.remove('show');
     this.playing = true; this.uiBlocking = false; $('hud').classList.add('show');
     this.giveChapterKit(12); this.flags.chingari = true;
@@ -412,7 +458,23 @@ class Game {
     this.teleport(new THREE.Vector3(SITES.den.x, 0, SITES.den.z + 10));
     this.story.ensureChingari();
     this.ui.setObjective('Free roam', 'Press <b>N</b> to change season. Explore Pench.');
-    this.requestLock();
+    await nextFrame(); await nextFrame();
+    this.ui.fade(false, 900);
+  }
+  // back to the title without reloading: the world stays built, so the next start is instant
+  async toTitle() {
+    this.save();
+    await this.ui.fade(true, 300);
+    this.story.stop();
+    this.playing = false; this.paused = false; this.uiBlocking = true;
+    for (const id of ['pause', 'settings', 'hud', 'death']) { const e = $(id); if (e) e.classList.remove('show'); }
+    if (document.pointerLockElement) document.exitPointerLock();
+    this.ui.close(); this.ui.setObjective('', ''); this.ui.setPrompt('');
+    if (this.music) this.music.setCombat(0);
+    $('btn-continue').style.display = store.get('vanaj-save-v1') ? '' : 'none';
+    this.titleCam = 0;
+    $('title').classList.add('show');
+    this.ui.fade(false, 900);
   }
   pause() { if (this.paused) return; this.paused = true; this.uiBlocking = true; $('pause').classList.add('show'); }
   resume() { this.paused = false; this.uiBlocking = false; $('pause').classList.remove('show'); $('settings').classList.remove('show'); this.requestLock(); }
@@ -456,6 +518,9 @@ class Game {
     const eye = this.camera.position;
     const d2 = (p) => (p.x - pos.x) ** 2 + (p.z - pos.z) ** 2;
     for (const it of story.storyItems) if (!it.taken && d2(it.pos) < 2.5 * 2.5) return { prompt: it.prompt, act: () => { it.taken = true; this.scene.remove(it.mesh); this.inv.add(it.id, 1); this.audio.pickup(); this.ui.toast('+ ' + ITEMS[it.id].name); this.emit('pickup', { item: it.id }); } };
+    // an objective can offer its own interaction (share with Kaali, sit with her, ...)
+    const oi = story.obj && story.obj.interact;
+    if (oi && !oi._used) { const p = oi.at(this, story); if (p && d2(p) < (oi.r || 3) ** 2) return { prompt: oi.prompt, act: () => { oi._used = true; setTimeout(() => (oi._used = false), 20000); oi.act(this, story); } }; }
     if (story.chapter && story.chapter.id === 'ep' && story.objIndex === 2 && story.aaji && d2(story.aaji.pos) < 4 * 4) return { prompt: 'Set the lota on the ground', act: () => story.interact('aaji') };
     if (this.companionBody && story.chapter && story.chapter.id === 'c2' && story.objIndex === 3 && d2(this.companionBody.pos) < 3.2 * 3.2) {
       const n = this.inv.count('leaves');
@@ -668,6 +733,7 @@ class Game {
   update(dt, rdt) {
     const P = this.player;
     this.clock += dt;
+    if (this.touchUI) this.touchUI.show(this.playing && !this.paused && !this.player.dead);
     // timers
     if (dt > 0) for (let i = this.timers.length - 1; i >= 0; i--) { const tm = this.timers[i]; tm.t -= dt; if (tm.t <= 0) { this.timers.splice(i, 1); tm.res(); } }
     // time of day
@@ -700,10 +766,11 @@ class Game {
     // world streaming
     this.terrain.update(focus.x, focus.z, 4);
     this.veg.update(this.camera.position); this.grass.update(this.camera.position); this.cover.update(this.camera.position); this.pickups.update(focus);
+    this.vines.update(dt || rdt * 0.2, this.camera.position);
     pf.mark('streaming');
     // sky & weather
     const env = this.weather.env;
-    this.sky.update(dt || rdt * 0.2, this.time.hour, this.seasonCfg.decl, env, this.camera, focus);
+    this.sky.update(dt || rdt * 0.2, this.time.hour, this.seasonCfg.decl, env, this.camera, focus, this.season);
     this.weather.update(rdt, dt * this.time.rate / 3600, this.time.hour, this.camera.position, this.sky);
     this.water.update(this.sky, env.rain);
     pf.mark('sky');
@@ -756,10 +823,17 @@ class Game {
     const day = this.sky.day, night = this.sky.night;
     const el = this.sky.sunDir.y;
     const golden = (1 - smoothstep(0.0, 0.3, el)) * smoothstep(-0.1, 0.05, el);
-    this.renderer.toneMappingExposure = lerp(2.2, 0.9, day) * (1 - this.weather.env.cloud * 0.1) + this.weather.flash * 2;
-    gr.uTime.value += rdt; gr.uNight.value = night;
-    gr.uTint.value.set(1 + golden * 0.12 + (this.season === 'summer' ? 0.04 : 0), 1 + golden * 0.02, 1 - golden * 0.12 - (this.season === 'summer' ? 0.05 : 0));
-    gr.uSat.value = this.season === 'summer' ? 0.92 : this.season === 'monsoon' ? 1.08 : 1.02;
+    gr.uTime.value += rdt;
+    if (PAINTED) {
+      // the palette already sets the hour's colour; the grade lifts saturation a touch and cools the night
+      this.renderer.toneMappingExposure = 1 + this.weather.flash * 1.5;
+      gr.uNight.value = night * 0.6; gr.uTint.value.set(1, 1, 1); gr.uSat.value = 1.08;   // moonlight cools warm colours a little
+    } else {
+      this.renderer.toneMappingExposure = lerp(2.2, 0.9, day) * (1 - this.weather.env.cloud * 0.1) + this.weather.flash * 2;
+      gr.uNight.value = night;
+      gr.uTint.value.set(1 + golden * 0.12 + (this.season === 'summer' ? 0.04 : 0), 1 + golden * 0.02, 1 - golden * 0.12 - (this.season === 'summer' ? 0.05 : 0));
+      gr.uSat.value = this.season === 'summer' ? 0.92 : this.season === 'monsoon' ? 1.08 : 1.02;
+    }
     gr.uHurt.value = Math.min(1, P.hurtFlash * 1.2 + (P.hp < 30 ? (30 - P.hp) / 40 : 0));
     gr.uLow.value = P.hp < 25 ? (25 - P.hp) / 25 : 0;
     gr.uFlash.value = this.weather.flash;

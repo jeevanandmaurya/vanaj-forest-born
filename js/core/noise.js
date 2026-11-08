@@ -109,4 +109,13 @@ export function makeFbmTile(seed, basePeriod, octaves) {
 
 export const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 export const lerp = (a, b, t) => a + (b - a) * t;
+// Frame-rate independent smoothing (Daniel Holden, "Spring-It-On"): the blend factor that closes half the gap in
+// `halflife` seconds, whatever dt is. lerp(x, goal, damp(h, dt)) replaces lerp(x, goal, min(1, k * dt)).
+export const damp = (halflife, dt) => 1 - Math.pow(2, -dt / Math.max(halflife, 1e-5));
+// critically damped spring toward a goal (exact for any dt); s = { x, v }
+export function spring(s, goal, halflife, dt) {
+  const y = (4 * 0.69314718056) / (halflife + 1e-5) / 2, j0 = s.x - goal, j1 = s.v + j0 * y, e = Math.exp(-y * dt);
+  s.x = e * (j0 + j1 * dt) + goal; s.v = e * (s.v - j1 * y * dt);
+  return s.x;
+}
 export function smoothstep(a, b, x) { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); }

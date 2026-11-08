@@ -5,7 +5,9 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { height, groundHeight, riverX, RIVER_W, VILLAGE, ROCKS, MAIDAN, TERMITE, biomeAt, waterAt, HALF } from './terrain.js';
 import { mulberry32, clamp } from '../core/noise.js';
-import { patch } from '../core/shaderlib.js';
+import { patch, NOISE_GLSL } from '../core/shaderlib.js';
+import { PAINTED, PU } from '../core/palette.js';
+import { toon, toonify } from '../core/toon.js';
 
 export const SITES = {};
 function site(id, x, z, name, r = 6) { SITES[id] = { id, x, z, name, r, y: height(x, z) }; return SITES[id]; }
@@ -55,6 +57,7 @@ export class Props {
   build() {
     this.buildBoulders(); this.buildMounds(); this.buildDen(); this.buildHives(); this.buildMahuaClue();
     this.buildStumps(); this.buildCave(); this.buildDholeDen(); this.buildSandbar(); this.buildShrine(); this.buildTower(); this.buildVillage(); this.buildLogs();
+    if (PAINTED) { toonify(this.group, { outline: 0, rim: 0.3, soften: 3 }); if (this.crops) this.cropMat = this.crops.material; }   // other props: toon light, textures softened to painted patches
   }
   rockGeo(seed, r) {
     const g = new THREE.IcosahedronGeometry(r, 2), p = g.attributes.position, rng = mulberry32(seed);
@@ -116,6 +119,22 @@ export class Props {
   // the earth (baked into the vertex colour).
   deadwoodMaterial() {
     if (this._deadwood) return this._deadwood;
+    if (PAINTED) return (this._deadwood = toon({
+      color: 0x8f8272, vertexColors: true, rim: 0.4, key: 'deadwood', patch: (s) => {   // painted: flat wood, grain strokes, silver where bare
+        s.vertexShader = s.vertexShader.replace('#include <common>', `#include <common>
+          attribute float aBare; varying float vBare; varying vec2 vDUv;`)
+          .replace('#include <begin_vertex>', `#include <begin_vertex>
+          vBare = aBare; vDUv = uv;`);
+        s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>
+${NOISE_GLSL}
+ varying float vBare; varying vec2 vDUv;`)
+          .replace('#include <color_fragment>', `#include <color_fragment>
+            { float st = vnoise(vec2(vDUv.x * 6.0, vDUv.y * 0.7)), w = fwidth(st) + 1e-4;
+              diffuseColor.rgb *= 0.9 + 0.16 * smoothstep(0.6 - w, 0.6 + w, st) - 0.14 * smoothstep(0.68 - w, 0.68 + w, 1.0 - st);
+              float bare = smoothstep(0.45, 0.55, vBare + (vnoise(vDUv * vec2(10.0, 2.0)) - 0.5) * 0.4);
+              diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.42, 0.42, 0.42) * vColor, bare); }`);
+      },
+    }));
     const sc = this.T.scan && this.T.scan.pine, m = std({ map: sc ? sc.map : this.T.bark.saja, normalMap: sc ? sc.normal : null, color: 0x9a9088, vertexColors: true, roughness: 0.95 });
     if (sc) m.normalScale.set(1.6, 1.6);
     patch(m, 'deadwood', (s) => {
@@ -149,6 +168,11 @@ export class Props {
   // Earth: soil texture in world space, colour and damp baked per vertex (dug earth paler, dark under roots).
   earthMaterial() {
     if (this._earth) return this._earth;
+    if (PAINTED) return (this._earth = toon({ vertexColors: true, rim: 0, key: 'den-earth', patch: (s) => {
+      Object.assign(s.uniforms, PU);
+      s.fragmentShader = s.fragmentShader.replace('#include <common>', '#include <common>\n uniform vec3 uGround;')
+        .replace('#include <color_fragment>', '#include <color_fragment>\n diffuseColor.rgb *= uGround * 1.15;');
+    } }));
     const m = std({ map: this.T.soil, vertexColors: true, roughness: 1 });
     patch(m, 'den-earth', (s) => {
       s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\n varying vec3 vEW;').replace('#include <fog_vertex>', '#include <fog_vertex>\n vEW = (modelMatrix * vec4(transformed, 1.0)).xyz;');

@@ -3,6 +3,8 @@
 import * as THREE from 'three';
 import { Simplex, fbm, ridged, smoothstep, clamp, lerp } from '../core/noise.js';
 import { G, patch, NOISE_GLSL } from '../core/shaderlib.js';
+import { PAINTED, PU } from '../core/palette.js';
+import { toon } from '../core/toon.js';
 
 const S1 = new Simplex(1337), S2 = new Simplex(7331), S3 = new Simplex(4242), S4 = new Simplex(9001), S5 = new Simplex(555);
 
@@ -86,10 +88,15 @@ function heightNoWater(x, z) {
 }
 VILLAGE_H = baseHeight(VILLAGE.x, VILLAGE.z);
 MAIDAN_H = baseHeight(MAIDAN.x, MAIDAN.z) - 2;
-for (const w of WATERHOLES) w.level = heightNoWater(w.x, w.z) - 0.9;
+// a pool fills only to just under the lowest point of its rim: on a slope, the level taken from the centre stood
+// above the downhill rim, and the water spilled out as a floating sheet
+for (const w of WATERHOLES) {
+  let rim = Infinity; for (let a = 0; a < 48; a++) rim = Math.min(rim, heightNoWater(w.x + Math.cos(a * 0.1309) * w.r, w.z + Math.sin(a * 0.1309) * w.r));
+  w.level = Math.min(heightNoWater(w.x, w.z) - 0.9, rim - 0.3);
+}
 
 export function height(x, z) {
-  let h = heightNoWater(x, z);
+  let h = heightNoWater(x, z), bank = -1e9;
   for (let i = 0; i < WATERHOLES.length; i++) {
     const w = WATERHOLES[i];
     const dx = x - w.x, dz = z - w.z;
@@ -98,6 +105,9 @@ export function height(x, z) {
       const d = Math.sqrt(d2) * (1 + 0.15 * S5.noise2(x / 9, z / 9));
       const prof = d < w.r ? w.level - 1.7 * (1 - (d / w.r) ** 2) : w.level + (d - w.r) * 0.22;
       h = smin(h, prof, 3);
+      // A low earth bank round the pool. On a slope the carved bowl had no downhill rim, so the water stood
+      // above the ground beside it: a floating sheet you could see under, and water you could wade in mid-air.
+      if (d > w.r) bank = Math.max(bank, w.level + 0.3 + (d - w.r) * 0.06 - Math.max(0, d - w.r - 4) * 0.45);
     }
   }
   const rx = riverX(z), d = Math.abs(x - rx), ry = riverY(z);
@@ -113,7 +123,7 @@ export function height(x, z) {
   h += 0.9 * S3.noise2(x / 22, z / 22) + 0.25 * S1.noise2(x / 6.5, z / 6.5);
   // micro-relief you feel underfoot: hummocks, root bumps, hollows where leaves collect, cattle-trodden mud
   h += 0.11 * S4.noise2(x / 2.7, z / 2.7) + 0.045 * S5.noise2(x / 1.3 + 7, z / 1.3 - 3);
-  return h;
+  return bank > h ? bank : h;   // after the relief noise, so no hollow dips below the waterline
 }
 
 export function waterAt(x, z, season = 'winter') {
@@ -124,7 +134,7 @@ export function waterAt(x, z, season = 'winter') {
   for (let i = 0; i < WATERHOLES.length; i++) {
     const w = WATERHOLES[i];
     const dx = x - w.x, dz = z - w.z;
-    if (dx * dx + dz * dz < (w.r + 6) ** 2) lvl = Math.max(lvl, w.level + waterholeOffset());
+    if (dx * dx + dz * dz < (w.r + 2) ** 2) lvl = Math.max(lvl, w.level + waterholeOffset());   // inside the bank only
   }
   return lvl;
 }
@@ -485,12 +495,124 @@ export function createTerrainMaterial(tex, far, lq = false) {
   return m;
 }
 
+// The painted look's ground (docs/art-direction.md): the season's colours laid in broad patches with two-tone
+// brush strokes, crisp edges between ground types, a scatter of painted fallen leaves near the camera, cool
+// (never black) contact shadows, and sun flecks under the canopy. Same attributes as the realistic shader.
+export function createPaintedTerrainMaterial(far, lq = false) {
+  const m = toon({
+    key: (far ? 'terrain-far' : 'terrain') + (lq ? '-lq' : ''), rim: 0, patch: (s) => {
+      Object.assign(s.uniforms, PU);
+      s.uniforms.uNearRect = m.userData.near;
+      s.vertexShader = s.vertexShader
+        .replace('#include <common>', `#include <common>
+          attribute vec4 aSplat; attribute vec4 aBio; attribute float aField;
+          varying vec4 vSplat; varying vec4 vBio; varying float vField; varying vec3 vWP; varying vec3 vWN;`)
+        .replace('#include <fog_vertex>', `#include <fog_vertex>
+          vWP = (modelMatrix * vec4(transformed, 1.0)).xyz; vWN = normalize(mat3(modelMatrix) * objectNormal);
+          vSplat = aSplat; vBio = aBio; vField = aField;`);
+      s.fragmentShader = s.fragmentShader
+        .replace('#include <common>', `#include <common>
+          ${lq ? '#define TERRAIN_LQ' : ''}
+          ${NOISE_GLSL}
+          uniform sampler2D tGroundAO; uniform vec4 uNearRect, uAORect;
+          uniform float uSeasonGreen, uWetness, uDry, uTime; uniform vec2 uWind; uniform vec3 uSunDir;
+          uniform vec3 uGround, uGrassRoot, uGrassTip, uRock, uSand, uLaterite, uRiver;
+          varying vec4 vSplat; varying vec4 vBio; varying float vField; varying vec3 vWP; varying vec3 vWN;
+          float aaStep(float e, float x) { float w = fwidth(x) * 0.75 + 1e-4; return smoothstep(e - w, e + w, x); }
+          // one fallen leaf per lucky cell: a flat painted oval in teak-fall colours
+          vec4 leafDot(vec2 p, float dens, float dry) {
+            vec2 c = floor(p), f = fract(p) - 0.5;
+            if (hash12(c * 1.31) > dens) return vec4(0.0);
+            vec2 o = (vec2(hash12(c + 1.7), hash12(c + 3.1)) - 0.5) * 0.36;
+            float a = hash12(c + 5.3) * 6.2832, cs = cos(a), sn = sin(a);
+            vec2 q = f - o; q = vec2(cs * q.x - sn * q.y, sn * q.x + cs * q.y);
+            float e = length(q * vec2(1.0, 2.1));
+            float h = hash12(c + 9.7);
+            vec3 col = h < 0.35 ? vec3(0.62, 0.26, 0.07) : h < 0.65 ? vec3(0.7, 0.45, 0.1) : h < 0.85 ? vec3(0.4, 0.17, 0.08) : vec3(0.42, 0.27, 0.12);
+            col *= (0.8 + 0.4 * hash12(c + 13.1)) * mix(vec3(1.0), vec3(1.15, 1.05, 0.8), dry);
+            return vec4(col, 1.0 - aaStep(0.17, e));
+          }`)
+        .replace('#include <map_fragment>', `
+          ${far ? 'if (vWP.x > uNearRect.x && vWP.x < uNearRect.z && vWP.z > uNearRect.y && vWP.z < uNearRect.w) discard;' : ''}
+          vec2 uv = vWP.xz;
+          float slope = 1.0 - vWN.y, camD = length(vViewPosition);
+          vec4 bio = vBio;   // x moisture, y canopy, z laterite, w black soil
+          float fieldW = max(vField, 0.0), bedW = smoothstep(0.0, 0.6, -vField);
+          float big = fbm2(uv * 0.016), mid = vnoise(uv * 0.09 + 3.0);
+          // brush strokes: noise stretched along a slowly turning direction, cut into a light and a dark tone
+          float ang = vnoise(uv * 0.015 + 7.0) * 6.2832; vec2 sdir = vec2(cos(ang), sin(ang));
+          vec2 su = vec2(dot(uv, sdir), dot(uv, vec2(-sdir.y, sdir.x)));
+          float st = vnoise(vec2(su.x * 0.45, su.y * 0.9)) * 0.6 + vnoise(uv * 0.5 + 4.0) * 0.4;
+          float strokeW = 1.0 - smoothstep(60.0, 160.0, camD);
+          float sL = aaStep(0.66, st) * strokeW, sD = aaStep(0.68, 1.0 - st) * strokeW;
+          // forest floor: the season's ground colour in warm and cool patches, red laterite on ridges and
+          // slopes, dark black-cotton soil on the flats
+          vec3 gnd = uGround * mix(vec3(0.82, 0.78, 0.88), vec3(1.08, 1.0, 0.9), smoothstep(0.35, 0.65, big));
+          gnd = mix(gnd, gnd * vec3(1.14, 1.08, 0.94), sL * 0.4);
+          gnd = mix(gnd, gnd * vec3(0.86, 0.84, 0.92), sD * 0.35);
+          float latW = clamp(bio.z + slope * 1.2 - 0.25, 0.0, 1.0);
+          gnd = mix(gnd, uLaterite * (0.85 + 0.25 * mid), smoothstep(0.45, 0.85, latW) * 0.6);
+          gnd = mix(gnd, uGround * vec3(0.5, 0.48, 0.52), smoothstep(0.35, 0.7, bio.w) * (1.0 - latW) * 0.6);
+          vec3 grass = mix(uGrassRoot, uGrassTip, 0.25 + 0.5 * smoothstep(0.3, 0.7, big + (mid - 0.5) * 0.4));
+          grass = mix(grass, grass * vec3(1.12, 1.1, 0.9), sL * 0.7);
+          grass = mix(grass, grass * vec3(0.82, 0.86, 0.94), sD * 0.6);
+          vec3 rock = uRock * (0.8 + 0.3 * mid) * mix(vec3(1.0), vec3(1.08, 1.0, 0.9), sL);
+          vec3 sand = uSand * (0.9 + 0.15 * big);
+          // sharpened weights: patches meet at a painted edge, not a photographic blend
+          vec4 w = vSplat;
+          w.z = max(w.z, smoothstep(0.42, 0.6, slope + (mid - 0.5) * 0.15));
+          w.y *= 0.7 + 0.6 * vnoise(uv * 0.05);
+          w = w * w * w; w /= (w.x + w.y + w.z + w.w + 1e-5);
+          vec3 tcol = gnd * w.x + grass * w.y + rock * w.z + sand * w.w;
+          #ifndef TERRAIN_LQ
+          float nf = 1.0 - smoothstep(18.0, 34.0, camD);
+          if (nf > 0.001) {
+            float dens = (0.22 + 0.3 * bio.y) * w.x * (1.0 - bedW) * (1.0 - fieldW);
+            vec4 L1 = leafDot(uv / 0.85, dens, uDry), L2 = leafDot(uv / 1.15 + 17.3, dens * 0.8, uDry);
+            tcol = mix(tcol, L1.rgb, L1.a * nf); tcol = mix(tcol, L2.rgb, L2.a * nf);
+          }
+          #endif
+          vec3 fieldC = mix(uGround * vec3(1.0, 0.88, 0.7), uGrassRoot * 1.15, uSeasonGreen) * (0.88 + 0.22 * aaStep(0.5, 0.5 + 0.5 * sin(uv.x * 2.2)));
+          tcol = mix(tcol, fieldC, fieldW * 0.85);
+          float burn = uDry * smoothstep(0.64, 0.7, fbm2(uv * 0.006 + 9.0)) * bio.y * w.x * (1.0 - bedW) * (1.0 - fieldW);
+          tcol = mix(tcol, vec3(0.1, 0.09, 0.1), burn * 0.7);
+          vec3 bedC = mix(uRiver * vec3(0.35, 0.45, 0.4), uRock * 0.5, aaStep(0.55, vnoise(uv * 0.6)) * 0.6);
+          tcol = mix(tcol, bedC, bedW * 0.9);
+          // contact shadow round trunks and rocks, cool rather than black; canopy weight for the sun flecks
+          vec2 aoUV = (vWP.xz - uAORect.xy) * uAORect.z;
+          vec2 aoE = smoothstep(vec2(0.0), vec2(0.06), aoUV) * smoothstep(vec2(1.0), vec2(0.94), aoUV);
+          float aoIn = aoE.x * aoE.y * uAORect.w;
+          vec3 aoS = texture2D(tGroundAO, clamp(aoUV, 0.0, 1.0)).rgb * aoIn;
+          float contact = clamp(aoS.r, 0.0, 1.0);
+          float gCanopy = clamp(aoS.g * 1.7 + bio.y * 0.35 * (1.0 - aoIn), 0.0, 1.0);
+          tcol = mix(tcol, tcol * vec3(0.55, 0.55, 0.8), contact * 0.7);
+          float wet = clamp(uWetness * 0.7 + bedW, 0.0, 1.0);
+          tcol *= mix(1.0, 0.72, wet);
+          float puddle = clamp(uWetness * 1.4 - 0.3, 0.0, 1.0) * aaStep(0.64, vnoise(uv * 0.11 + 2.0) * 0.7 + vnoise(uv * 0.5) * 0.3) * smoothstep(0.06, 0.01, slope) * w.x * (1.0 - bedW);
+          tcol = mix(tcol, vec3(0.2, 0.28, 0.4), puddle * 0.8);
+          diffuseColor.rgb = tcol;
+        `)
+        .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
+          {
+            // sun flecks under the canopy: soft-edged painted patches, drifting slowly with the wind
+            vec2 sp = vWP.xz - uSunDir.xz / max(uSunDir.y, 0.25) * 9.0;
+            vec2 wo = uWind * uTime * 0.12;
+            float ck = vnoise(sp * 0.4 + wo) * 0.6 + vnoise(sp * 1.2 - wo * 1.5) * 0.4;
+            reflectedLight.directDiffuse *= mix(1.0, smoothstep(0.47, 0.56, ck), gCanopy * 0.7);
+            reflectedLight.indirectDiffuse *= 1.0 - contact * 0.3;
+          }`);
+    },
+  });
+  m.userData.near = { value: new THREE.Vector4(0, 0, 0, 0) };
+  return m;
+}
+
 export class TerrainManager {
   constructor(scene, tex, quality) {
     this.scene = scene; this.q = quality;
     const lq = quality.name === 'Low';
-    this.mat = createTerrainMaterial(tex, false, lq);
-    this.farMat = createTerrainMaterial(tex, true, lq);
+    this.mat = PAINTED ? createPaintedTerrainMaterial(false, lq) : createTerrainMaterial(tex, false, lq);
+    this.farMat = PAINTED ? createPaintedTerrainMaterial(true, lq) : createTerrainMaterial(tex, true, lq);
     this.chunks = new Map();
     this.queue = [];
     this.center = { cx: 1e9, cz: 1e9 };
@@ -562,29 +684,42 @@ export class TerrainManager {
   pending() { return this.queue.length + (this.job ? 1 : 0); }
 }
 
-// Map image for the in-game map
+// Map image for the in-game map: an illustrated parchment map in the painted palette. Forest, meadow, rock,
+// bamboo, fields and village as flat washes, soft hill shading from the north-west, a contour every 15 m, and
+// water in teal with a darker edge.
 export function renderMapCanvas(size = 384) {
   const cv = document.createElement('canvas'); cv.width = cv.height = size;
   const ctx = cv.getContext('2d'); const img = ctx.createImageData(size, size);
   const step = (HALF * 2) / size;
-  const hs = new Float32Array(size * size);
-  for (let j = 0; j < size; j++) for (let i = 0; i < size; i++) hs[j * size + i] = height(-HALF + i * step, -HALF + j * step);
+  const hs = new Float32Array(size * size), wet = new Uint8Array(size * size);
   for (let j = 0; j < size; j++) for (let i = 0; i < size; i++) {
-    const x = -HALF + i * step, z = -HALF + j * step;
-    const h = hs[j * size + i];
-    const hl = hs[j * size + Math.max(0, i - 1)], hu = hs[Math.max(0, j - 1) * size + i];
-    const shade = clamp(0.8 + (h - hl) * 0.08 + (h - hu) * 0.08, 0.4, 1.3);
+    const x = -HALF + i * step, z = -HALF + j * step, h = height(x, z);
+    hs[j * size + i] = h; wet[j * size + i] = waterAt(x, z) > h ? 1 : 0;
+  }
+  const mix = (c, d, k) => { c[0] += (d[0] - c[0]) * k; c[1] += (d[1] - c[1]) * k; c[2] += (d[2] - c[2]) * k; };
+  const c = [0, 0, 0];
+  for (let j = 0; j < size; j++) for (let i = 0; i < size; i++) {
+    const x = -HALF + i * step, z = -HALF + j * step, k = j * size + i, h = hs[k];
+    const o = k * 4;
+    if (wet[k]) {
+      const edge = (i > 0 && !wet[k - 1]) || (i < size - 1 && !wet[k + 1]) || (j > 0 && !wet[k - size]) || (j < size - 1 && !wet[k + size]);
+      const w = edge ? [52, 118, 138] : [96, 178, 186];
+      img.data[o] = w[0]; img.data[o + 1] = w[1]; img.data[o + 2] = w[2]; img.data[o + 3] = 255; continue;
+    }
     const b = biomeAt(x, z);
-    let r = 120, g = 108, bl = 70;
-    r = lerp(r, 92, b.teak); g = lerp(g, 96, b.teak); bl = lerp(bl, 58, b.teak);
-    r = lerp(r, 170, b.grass * 0.8); g = lerp(g, 150, b.grass * 0.8); bl = lerp(bl, 90, b.grass * 0.8);
-    r = lerp(r, 150, b.rock); g = lerp(g, 135, b.rock); bl = lerp(bl, 120, b.rock);
-    r = lerp(r, 80, b.bamboo * 0.6); g = lerp(g, 110, b.bamboo * 0.6); bl = lerp(bl, 60, b.bamboo * 0.6);
-    r = lerp(r, 190, b.village * 0.7); g = lerp(g, 160, b.village * 0.7); bl = lerp(bl, 120, b.village * 0.7);
-    const wl = waterAt(x, z);
-    let o = (j * size + i) * 4;
-    if (wl > h) { img.data[o] = 40; img.data[o + 1] = 70; img.data[o + 2] = 80; }
-    else { img.data[o] = r * shade; img.data[o + 1] = g * shade; img.data[o + 2] = bl * shade; }
+    c[0] = 214; c[1] = 192; c[2] = 146;                                   // bare earth on parchment
+    mix(c, [124, 160, 88], clamp(b.teak * 1.2, 0, 1));                  // teak forest
+    mix(c, [98, 138, 72], clamp((b.teak - 0.6) * 1.5, 0, 1) * 0.6);     // dense canopy
+    mix(c, [206, 198, 124], clamp(b.grass, 0, 1) * 0.85);               // meadow
+    mix(c, [142, 178, 98], clamp(b.bamboo, 0, 1) * 0.7);                // bamboo
+    mix(c, [186, 172, 156], clamp(b.rock, 0, 1));                       // rock
+    mix(c, [216, 192, 112], clamp(b.field, 0, 1) * 0.8);                // fields
+    mix(c, [224, 190, 146], clamp(b.village, 0, 1) * 0.8);              // village
+    const hl = hs[j * size + Math.max(0, i - 1)], hu = hs[Math.max(0, j - 1) * size + i];
+    const shade = clamp(1 + (h - hl) * 0.045 + (h - hu) * 0.045, 0.82, 1.14);
+    const ci = Math.floor(h / 15), contour = ci !== Math.floor(hl / 15) || ci !== Math.floor(hu / 15);
+    const grain = 1 + (Math.random() - 0.5) * 0.04;
+    for (let q = 0; q < 3; q++) img.data[o + q] = clamp(c[q] * shade * grain * (contour ? 0.86 : 1), 0, 255);
     img.data[o + 3] = 255;
   }
   ctx.putImageData(img, 0, 0);

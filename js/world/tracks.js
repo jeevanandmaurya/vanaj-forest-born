@@ -2,6 +2,8 @@
 // split hoof slots (deer, gaur, boar) and bear prints. Prints fade over a few game hours and rain washes them out.
 // Crouch over fresh prints to read them: who made them, how big, how old, which way they went.
 import * as THREE from 'three';
+import { PAINTED } from '../core/palette.js';
+import { RAMP } from '../core/toon.js';
 import { groundHeight, groundNormal, waterAt } from './terrain.js';
 
 const KIND = { tiger: 0, leopard: 0, dhole: 1, wolf: 1, dog: 1, jackal: 1, chital: 2, sambar: 2, gaur: 2, boar: 2, cow: 2, nilgai: 2, barking: 2, bear: 3 };
@@ -39,7 +41,8 @@ export class Tracks {
     // an impression, not a stain: compressed soil a little darker on the pad floor, a faint pushed-up rim,
     // and a bump map from the same depth atlas so low sun shades one wall of the print and lights the other
     const tex = atlas();
-    const mat = new THREE.MeshStandardMaterial({ color: 0x5e4a36, roughness: 1, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, alphaMap: tex, bumpMap: tex, bumpScale: -6 });
+    const prm = { color: 0x5e4a36, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, alphaMap: tex, bumpMap: tex, bumpScale: -6 };
+    const mat = PAINTED ? new THREE.MeshToonMaterial({ ...prm, gradientMap: RAMP }) : new THREE.MeshStandardMaterial({ ...prm, roughness: 1 });
     mat.onBeforeCompile = (s) => {
       s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\nattribute float aCell;')
         .replace('#include <uv_vertex>', '#include <uv_vertex>\nvec2 cellUv = vec2((uv.x + aCell) * 0.25, uv.y);\nvAlphaMapUv = cellUv; vBumpMapUv = cellUv;');

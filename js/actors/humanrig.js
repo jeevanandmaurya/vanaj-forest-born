@@ -449,6 +449,8 @@ export function animateRiggedHuman(h, dt, a) {
   const low = act && (act.type === 'gather' || act.type === 'drink' || act.type === 'eat');
   let clip = 'Idle_Loop', ts = 1, fade = 0.25;
   if (a.dead) { clip = 'Death01'; fade = 0.15; }
+  else if (a.canopy && a.canopy.mode === 'trunk') { clip = 'Crouch_Fwd_Loop'; ts = 0.0001; fade = 0.15; }
+  else if (a.canopy && a.canopy.mode === 'hang') { clip = 'Idle_Loop'; fade = 0.12; }
   else if (a.air) { clip = 'Jump_Start'; fade = 0.12; }
   else if (act && act.type === 'punch') { clip = 'Punch_Jab'; fade = 0.08; ts = 1.4; }
   else if (a.crouch || low || (a.kneel || 0) > 0.3) { clip = 'Crouch_Fwd_Loop'; ts = spd > 0.2 ? Math.min(1.6, Math.max(0.5, spd / 1.1)) : 0.0001; }
@@ -467,8 +469,32 @@ export function animateRiggedHuman(h, dt, a) {
   const rw = h.root.matrixWorld; _f.set(0, 0, 1).transformDirection(rw); _r.set(-1, 0, 0).transformDirection(rw);
   const uaR = Bn['DEF-upper_armR'], faR = Bn['DEF-forearmR'], hR = Bn['DEF-handR'], uaL = Bn['DEF-upper_armL'], faL = Bn['DEF-forearmL'], hL = Bn['DEF-handL'];
   const w = a.weapon || 'none', lp = a.lookPitch || 0;
+  // in the trees (no clips exist for this, so it is posed): hands on the hold, legs hanging and trailing the
+  // swing; on a trunk, hand over hand with the knees braced; in a leap, arms reaching up and ahead for the next hold
+  const C = a.canopy;
+  if (C && !a.dead && C.mode !== 'limb') {
+    const thL = Bn['DEF-thighL'], shL = Bn['DEF-shinL'], ftL = Bn['DEF-footL'], thR = Bn['DEF-thighR'], shR = Bn['DEF-shinR'], ftR = Bn['DEF-footR'];
+    const reach = (ua, fa, hb, target) => { ua.getWorldPosition(_v1); aim(ua, fa, _v2.subVectors(target, _v1).normalize(), 1); fa.getWorldPosition(_v1); aim(fa, hb, _v2.subVectors(target, _v1).normalize(), 1); };
+    if (C.mode === 'hang' || C.mode === 'trunk') { reach(uaR, faR, hR, C.gripR); reach(uaL, faL, hL, C.gripL); }
+    if (C.mode === 'hang') {
+      const down = _v3.copy(C.up).negate().addScaledVector(C.vel, -0.05).normalize(), kick = Math.sin(h.t * 3) * 0.12;
+      aim(thL, shL, _v4.copy(down).addScaledVector(_r, -0.12).addScaledVector(_f, kick).normalize(), 1); aim(shL, ftL, _v4.copy(down).addScaledVector(_f, -0.15).normalize(), 1);
+      aim(thR, shR, _v4.copy(down).addScaledVector(_r, 0.12).addScaledVector(_f, -kick).normalize(), 1); aim(shR, ftR, _v4.copy(down).addScaledVector(_f, -0.15).normalize(), 1);
+    } else if (C.mode === 'trunk') {
+      const inn = _v3.copy(C.out).negate(), ph = C.phase * Math.PI;
+      for (const [th, sh, ft, s, o] of [[thL, shL, ftL, -1, 0], [thR, shR, ftR, 1, Math.PI]]) {
+        const lift = 0.35 + 0.3 * Math.sin(ph + o);
+        aim(th, sh, _v4.copy(inn).multiplyScalar(0.8).add(_v1.set(0, lift - 0.4, 0)).addScaledVector(_r, s * 0.25).normalize(), 1);
+        aim(sh, ft, _v4.set(0, -1, 0).addScaledVector(inn, 0.25).normalize(), 1);
+      }
+    } else if (C.mode === 'air') {
+      const ahead = _v3.copy(C.vel).setY(0).multiplyScalar(0.12).add(_v4.set(0, 1, 0)).normalize();
+      aim(uaR, faR, _v1.copy(ahead).addScaledVector(_r, 0.25).normalize(), 0.9); aim(faR, hR, ahead, 0.9);
+      aim(uaL, faL, _v1.copy(ahead).addScaledVector(_r, -0.25).normalize(), 0.9); aim(faL, hL, ahead, 0.9);
+    }
+  }
   const aimDir = _v4.copy(_f).applyAxisAngle(_r, -lp).normalize();
-  if (!a.dead && h.swimS < 0.5) {
+  if (!a.dead && h.swimS < 0.5 && !(C && C.mode !== 'limb')) {
     // carried weapon: right forearm held forward
     if (['spear', 'club', 'torch', 'knife'].includes(w) && !act) { aim(faR, hR, dirOf(_v1, 0.85, 0.15, -0.05), 0.7); }
     if (w === 'spear' && !act && !(a.aim > 0.01)) { aim(faL, hL, dirOf(_v1, 0.8, 0.3, 0.15), 0.6); }
@@ -530,6 +556,25 @@ export function animateRiggedHuman(h, dt, a) {
     h.root.updateMatrixWorld(); // grips are children of root: convert world -> local
     grip.parent.worldToLocal(grip.position);
     grip.quaternion.premultiply(_q.setFromRotationMatrix(_m.extractRotation(grip.parent.matrixWorld)).invert());
+  }
+  // the head turns toward something worth watching, smoothly and within a natural range (world-space, so it does
+  // not depend on the bone's own axes): right is negative yaw about the up axis, up is positive about body-right
+  const head = Bn['DEF-head'];
+  if (head && !a.dead) {
+    let wy = 0, wp = 0;
+    if (a.lookAt) {
+      head.getWorldPosition(_v1); _v2.subVectors(a.lookAt, _v1);
+      const fx = _v2.dot(_f), rx = _v2.dot(_r);
+      if (fx > -0.2) { wy = Math.max(-1.0, Math.min(1.0, Math.atan2(-rx, fx))); wp = Math.max(-0.45, Math.min(0.35, Math.atan2(_v2.y, Math.hypot(fx, rx)))); }
+    }
+    const k = 1 - Math.pow(2, -dt / 0.18);
+    h.lookY = (h.lookY || 0) + (wy - (h.lookY || 0)) * k; h.lookP = (h.lookP || 0) + (wp - (h.lookP || 0)) * k;
+    if (Math.abs(h.lookY) + Math.abs(h.lookP) > 0.005) {
+      head.getWorldQuaternion(_q2);
+      _q.setFromAxisAngle(_v3.set(0, 1, 0), h.lookY); _q2.premultiply(_q);
+      _q.setFromAxisAngle(_r, h.lookP); _q2.premultiply(_q);
+      head.parent.getWorldQuaternion(_q3).invert(); head.quaternion.copy(_q3.multiply(_q2)); head.updateMatrixWorld(true);
+    }
   }
   h.dead = a.dead ? Math.min(1, (h.dead || 0) + dt * 1.6) : 0;
 }

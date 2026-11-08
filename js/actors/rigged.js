@@ -5,6 +5,8 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { patch, NOISE_GLSL } from '../core/shaderlib.js';
+import { PAINTED } from '../core/palette.js';
+import { toon, toonify } from '../core/toon.js';
 
 // height = full height of the model in metres (top of head / antlers); walk/run = ground speed of the clip at that size
 export const RIG = {
@@ -42,10 +44,13 @@ function coatFor(srcMat, coat, role, box) {
   const bk = [box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z].map((v) => v.toFixed(2)).join(',');
   const key = srcMat.name + '|' + coat + '|' + role + '|' + bk;
   if (coatCache[key]) return coatCache[key];
-  const m = new THREE.MeshStandardMaterial({ color: srcMat.color.clone(), roughness: role === 3 ? 0.55 : 0.9, metalness: 0 });
+  // the painted look keeps each coat's colours and markings but drops the fur noise, on the toon material
+  const m = PAINTED ? toon({ color: srcMat.color.clone(), rim: 0.6, key: 'rigcoat' }) : new THREE.MeshStandardMaterial({ color: srcMat.color.clone(), roughness: role === 3 ? 0.55 : 0.9, metalness: 0 });
   if (role < 0) { coatCache[key] = m; return m; }
   const mn = box.min, sz = box.getSize(new THREE.Vector3());
-  patch(m, 'rigcoat-' + coat + '-' + role + '-' + bk, (s) => {
+  const prev = m.onBeforeCompile;
+  patch(m, 'rigcoat-' + (PAINTED ? 'p-' : '') + coat + '-' + role + '-' + bk, (s, r) => {
+    if (PAINTED) prev(s, r);
     s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\n varying vec3 vBind;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\n vBind = position;');
     s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>
@@ -93,7 +98,7 @@ function coatFor(srcMat, coat, role, box) {
           c = mix(c, vec3(0.06, 0.04, 0.03), smoothstep(0.12, 0.04, n.z) * smoothstep(0.3, 0.45, n.y));
           if (R == 1) c = vec3(0.86, 0.72, 0.5);
         }
-        c *= 0.84 + 0.32 * fur;
+        ${PAINTED ? '' : 'c *= 0.84 + 0.32 * fur;'}
         c = pow(max(c, vec3(0.0)), vec3(2.2));
         diffuseColor.rgb = c * mix(1.0, 0.7, uWetness);
       }`);
@@ -121,6 +126,7 @@ export function makeRigged(sp, male) {
     meshes.push(o);
   });
   const root = new THREE.Group(); root.add(inst);
+  if (PAINTED) toonify(root, { outline: 0.015 });
   const mixer = new THREE.AnimationMixer(inst);
   const actions = {};
   for (const c of T.clips) actions[c.name] = mixer.clipAction(c);

@@ -5,6 +5,8 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { patch, NOISE_GLSL } from '../core/shaderlib.js';
 import { mergeByMaterial } from '../core/merge.js';
+import { PAINTED } from '../core/palette.js';
+import { toon, toonify } from '../core/toon.js';
 import { hasRig, makeRigged, playClip } from './rigged.js';
 import { groundHeight, waterAt, biomeAt, height, HALF } from '../world/terrain.js';
 import { clamp, lerp, smoothstep, mulberry32 } from '../core/noise.js';
@@ -61,8 +63,11 @@ const COATS = {
 const coatCache = {};
 export function coatMaterial(kind, bellyY = 0.4, headC = [0, 0.65, 0.6]) {
   if (coatCache[kind]) return coatCache[kind];
-  const m = new THREE.MeshStandardMaterial({ roughness: kind === 'croc' ? 0.55 : kind === 'flayed' ? 0.35 : 0.88, metalness: 0, color: 0xffffff });
-  patch(m, 'coat-' + kind, (s) => {
+  // the painted look keeps every coat's markings (stripes, rosettes, spots) but drops the fur noise, on toon light
+  const m = PAINTED ? toon({ rim: 0.6, key: 'coat' }) : new THREE.MeshStandardMaterial({ roughness: kind === 'croc' ? 0.55 : kind === 'flayed' ? 0.35 : 0.88, metalness: 0, color: 0xffffff });
+  const prev = m.onBeforeCompile;
+  patch(m, (PAINTED ? 'coat-p-' : 'coat-') + kind, (s, r) => {
+    if (PAINTED) prev(s, r);
     s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\n attribute vec3 aRest; varying vec3 vR;').replace('#include <begin_vertex>', '#include <begin_vertex>\n vR = aRest;');
     s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>\n ${NOISE_GLSL}\n varying vec3 vR; uniform float uWetness;`)
       .replace('#include <color_fragment>', `#include <color_fragment>
@@ -159,16 +164,16 @@ export function coatMaterial(kind, bellyY = 0.4, headC = [0, 0.65, 0.6]) {
         } else { // flayed carcass
           c = mix(vec3(0.42, 0.04, 0.03), vec3(0.75, 0.55, 0.45), smoothstep(0.55, 0.7, fbm3(r * 20.0)));
         }
-        c *= 0.84 + 0.32 * fur;
+        ${PAINTED ? '' : 'c *= 0.84 + 0.32 * fur;'}
         c = pow(max(c, vec3(0.0)), vec3(2.2));
         diffuseColor.rgb = c * mix(1.0, 0.7, uWetness);`);
   });
   coatCache[kind] = m;
   return m;
 }
-const eyeMat = new THREE.MeshStandardMaterial({ color: 0x120c06, roughness: 0.15 });
-const hornMat = new THREE.MeshStandardMaterial({ color: 0x5a4a38, roughness: 0.6 });
-const clawMat = new THREE.MeshStandardMaterial({ color: 0xd8d0c0, roughness: 0.4 });
+const eyeMat = PAINTED ? toon({ color: 0x120c06, rim: 0 }) : new THREE.MeshStandardMaterial({ color: 0x120c06, roughness: 0.15 });
+const hornMat = PAINTED ? toon({ color: 0x8a7a64 }) : new THREE.MeshStandardMaterial({ color: 0x5a4a38, roughness: 0.6 });
+const clawMat = PAINTED ? toon({ color: 0xd8d0c0 }) : new THREE.MeshStandardMaterial({ color: 0xd8d0c0, roughness: 0.4 });
 
 // ------------------------------------------------------------------------------------------------ species definitions
 export const DEF = {
@@ -346,6 +351,7 @@ function getTemplate(sp) {
   if (!templates[sp]) {
     const d = DEF[sp];
     templates[sp] = sp === 'peafowl' ? buildPeafowl(d) : sp === 'mugger' ? buildCroc(d) : buildQuad(d);
+    if (PAINTED) toonify(templates[sp], { outline: 0.015 });   // every clone carries the template's ink
   }
   return templates[sp];
 }

@@ -3,8 +3,11 @@
 // dodge, projectiles that stick in flesh, finishing moves, survival stats, bleeding, sickness, animal calls.
 import * as THREE from 'three';
 import { buildHumanoid, animateHumanoid, buildWeapons, buildViewArms, skinMaterial } from './humanoid.js';
+import { PAINTED } from '../core/palette.js';
+import { toonify } from '../core/toon.js';
+import { Canopy } from './canopy.js';
 import { groundHeight, groundNormal, waterAt, biomeAt, HALF } from '../world/terrain.js';
-import { clamp, lerp } from '../core/noise.js';
+import { clamp, lerp, damp, spring } from '../core/noise.js';
 import { G } from '../core/shaderlib.js';
 
 export const WEAPONS = {
@@ -17,6 +20,7 @@ export const WEAPONS = {
 };
 
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _n = new THREE.Vector3();
+const _qt = new THREE.Quaternion(), _up0 = new THREE.Vector3(0, 1, 0);
 
 export class Player {
   constructor(game) {
@@ -32,10 +36,13 @@ export class Player {
     this.projectiles = []; this.stuck = [];
     this.spawn = new THREE.Vector3();
     // Vanaj is about fifteen: a lean, half-grown boy of ~1.55 m, not a grown man
-    this.body = buildHumanoid({ hair: 'matted', cloth: 'loin', clothTex: g.T.ragCloth, skinColor: 0x4a3022, mud: 0.4, dirt: 1, scars: 1, skinKey: 'skin-player', lean: 0.95, build: 'teen', sculpt: true, detail: g.q.name === 'Low' ? 1.5 : 1, scale: 0.9 });
+    this.body = buildHumanoid({ hair: 'matted', cloth: 'loin', clothTex: g.T.ragCloth, skinColor: PAINTED ? 0x7a4a30 : 0x4a3022, mud: 0.4, dirt: 1, scars: 1, skinKey: 'skin-player', lean: 0.95, build: 'teen', sculpt: true, detail: g.q.name === 'Low' ? 1.5 : 1, scale: 0.9 });
     g.scene.add(this.body.root);
     this.bodyMats = new Set(); this.body.root.traverse((o) => { if (o.isMesh) this.bodyMats.add(o.material); });
     this.W3 = buildWeapons(g.T);
+    this.canopy = new Canopy(this);   // climbing, hanging and swinging in the trees
+    this.dip = { x: 0, v: 0 }; this.lean = { x: 0, v: 0 }; this.look = { t: 0, target: null, pt: new THREE.Vector3() };
+    if (PAINTED) for (const k in this.W3) if (this.W3[k]) toonify(this.W3[k], { outline: 0.008, soften: 2 });
     // first-person viewmodel
     this.vmScene = new THREE.Scene();
     this.vmCam = new THREE.PerspectiveCamera(58, 1, 0.01, 20);
@@ -44,6 +51,7 @@ export class Player {
     this.vmFire = new THREE.PointLight(0xff8a3a, 0, 3, 1.5); this.vmScene.add(this.vmFire);
     this.vmSkin = skinMaterial(0x7a5038, 0.4, 'skin-vm');
     this.vm = buildViewArms(this.vmSkin); this.vmScene.add(this.vm.root);
+    if (PAINTED) toonify(this.vm.root, { outline: 0.004, soften: 2 });
     this.vmW = buildWeapons(g.T);
     this.vmFlame = this.makeVmFlame(); this.vmScene.add(this.vmFlame);
     this.equip('fists');
@@ -104,16 +112,18 @@ export class Player {
     // look
     const sens = g.settings.sens * 0.0022;
     if (!g.uiBlocking) {
-      if (g.dragLook && !document.pointerLockElement && input.cx !== undefined) { // no pointer lock (sandboxed frame): turn when the cursor rests near an edge
+      if (g.dragLook && !g.touch && !document.pointerLockElement && input.cx !== undefined) { // no pointer lock (sandboxed frame): turn when the cursor rests near an edge
         const ex = input.cx < 0.08 ? -(0.08 - input.cx) / 0.08 : input.cx > 0.92 ? (input.cx - 0.92) / 0.08 : 0;
         const ey = input.cy < 0.08 ? -(0.08 - input.cy) / 0.08 : input.cy > 0.92 ? (input.cy - 0.92) / 0.08 : 0;
         input.mdx += ex * 700 * dt; input.mdy += ey * 400 * dt;
       }
       this.yaw -= input.mdx * sens; this.pitch -= input.mdy * sens * (g.settings.invert ? -1 : 1);
       this.pitch = clamp(this.pitch, -1.45, 1.35);
+      this.camUserT = Math.abs(input.mdx) + Math.abs(input.mdy) > 0.5 ? 1.5 : Math.max(0, (this.camUserT || 0) - dt);
     }
     input.mdx = 0; input.mdy = 0;
     if (this.climb) { this.updateClimb(dt, input); this.postUpdate(dt, input); return; }
+    if (this.canopy.mode) { this.canopy.update(dt, input); this.postUpdate(dt, input); return; }
     // movement intent
     const k = g.uiBlocking ? {} : input.keys;
     let ix = (k.KeyD ? 1 : 0) - (k.KeyA ? 1 : 0), iz = (k.KeyW ? 1 : 0) - (k.KeyS ? 1 : 0);
@@ -145,14 +155,16 @@ export class Player {
     if (this.dodgeT > 0) { this.dodgeT -= dt; }
     else if (input.pressed('Space') && this.blocking && this.onGround && this.stamina > 15) { this.dodgeT = 0.3; this.iframes = 0.35; this.stamina -= 15; const dir = moving ? wish.clone() : fwd.clone().negate(); this.vel.x = dir.x * 9; this.vel.z = dir.z * 9; g.audio.swing(0.8); }
     // integrate horizontal
-    const accel = this.onGround || this.swimming ? 12 : 2.5;
+    const ka = damp(this.onGround || this.swimming ? 0.055 : 0.28, dt);   // ~0.06 s to close half the gap on foot
     if (this.dodgeT <= 0) {
-      this.vel.x += (wish.x * target - this.vel.x) * Math.min(1, accel * dt);
-      this.vel.z += (wish.z * target - this.vel.z) * Math.min(1, accel * dt);
+      this.vel.x += (wish.x * target - this.vel.x) * ka;
+      this.vel.z += (wish.z * target - this.vel.z) * ka;
     }
     // slope sliding
     groundNormal(this.pos.x, this.pos.z, _n);
     if (this.onGround && _n.y < 0.62 && !this.swimming) { this.vel.x += _n.x * 14 * dt; this.vel.z += _n.z * 14 * dt; }
+    // Space facing a trunk climbs it
+    if (input.pressed('Space') && this.onGround && !this.swimming && !this.blocking && !this.aim && !g.uiBlocking && this.canopy.tryTrunk()) { this.postUpdate(dt, input); return; }
     // jump / gravity
     if (this.swimming) {
       const ty = wl - 1.3;
@@ -176,17 +188,23 @@ export class Player {
     if (!this.swimming) {
       if (this.pos.y <= gy2) {
         if (!this.onGround && this.vel.y < -12) { const dmg = (-this.vel.y - 12) * 6; this.hurt(dmg, null, { kind: 'fall' }); }
-        if (!this.onGround) g.audio.footstep(this.surface(), 1.1);
+        if (!this.onGround) { g.audio.footstep(this.surface(), 1.1, null, 0.4); this.dip.v += Math.max(-4, this.vel.y * 0.16); }   // weight lands in the knees
         this.pos.y = gy2; this.vel.y = 0; this.onGround = true;
       } else if (this.onGround && this.pos.y - gy2 < 0.45 && this.vel.y <= 0) { this.pos.y = gy2; this.vel.y = 0; }
       else this.onGround = false;
     } else if (this.pos.y < gy2) this.pos.y = gy2;
+    // in the air with Space held: catch whatever branch, liana or trunk is in reach
+    if (!this.onGround && !this.swimming && input.keys.Space && !g.uiBlocking && this.vel.y < 3.5 && this.canopy.tryGrab(this.vel)) { this.postUpdate(dt, input); return; }
     const hs = Math.hypot(this.vel.x, this.vel.z);
     this.speed = hs;
     // facing (TPP): face move dir, or camera when aiming/attacking
     const faceCam = this.view === 'fpp' || this.aim > 0.1 || this.blocking || (this.action && this.action.type !== 'gather');
-    if (faceCam) this.bodyYaw = this.lerpAngle(this.bodyYaw, this.yaw, Math.min(1, dt * 14));
-    else if (hs > 0.3) this.bodyYaw = this.lerpAngle(this.bodyYaw, Math.atan2(-this.vel.x, -this.vel.z), Math.min(1, dt * 10));
+    const yaw0 = this.bodyYaw;
+    if (faceCam) this.bodyYaw = this.lerpAngle(this.bodyYaw, this.yaw, damp(0.05, dt));
+    else if (hs > 0.3) this.bodyYaw = this.lerpAngle(this.bodyYaw, Math.atan2(-this.vel.x, -this.vel.z), damp(0.07, dt));
+    // lean into turns at speed, on a spring
+    let dy = this.bodyYaw - yaw0; while (dy > Math.PI) dy -= Math.PI * 2; while (dy < -Math.PI) dy += Math.PI * 2;
+    spring(this.lean, clamp(dy / Math.max(dt, 1e-3) * hs * 0.018, -0.22, 0.22), 0.12, dt);
     // stamina
     const usingStam = this.sprinting || (this.swimming && this.sprinting);
     if (this.sprinting) this.stamina -= 13 * dt;
@@ -199,6 +217,23 @@ export class Player {
     // combat input
     this.combat(dt, input);
     this.postUpdate(dt, input);
+  }
+  // true on the frame a foot plants. Each foot's height (from the animation, relative to the body root) is tracked
+  // against its own recent low and high, so it works for any clip, speed and body size. Without a rig: a timer at
+  // a real stride length (0.9 m walking .. 2.1 m sprinting).
+  stepFeet(dt) {
+    const R = this.body.rig;
+    if (!R) { this.footPhase += dt * this.speed / (0.6 + this.speed * 0.21); if (this.footPhase > 1) { this.footPhase -= 1; return true; } return false; }
+    const F = this._feet || (this._feet = ['DEF-footL', 'DEF-footR'].map((n) => ({ b: R.bones[n], lo: 1, hi: -1, up: false })));
+    const ry = this.body.root.matrixWorld.elements[13]; let hit = false;
+    for (const f of F) {
+      const y = f.b.getWorldPosition(_v1).y - ry;
+      f.lo = Math.min(y, f.lo + dt * 0.05); f.hi = Math.max(y, f.hi - dt * 0.05);
+      const span = f.hi - f.lo; if (span < 0.015) continue;
+      if (y > f.lo + span * 0.5) f.up = true;
+      else if (f.up && y < f.lo + span * 0.2) { f.up = false; hit = true; }
+    }
+    return hit;
   }
   lerpAngle(a, b, t) { let d = b - a; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; return a + d * t; }
   surface() {
@@ -229,18 +264,37 @@ export class Player {
       kneel: a && (a.type === 'harvest' || a.type === 'finish') ? Math.sin(Math.min(1, a.t / a.dur) * Math.PI) : 0,
     };
     if (this.climb) { anim.speed = 2; anim.air = false; }
+    const cm = this.canopy.mode;
+    if (cm) { anim.canopy = this.canopy.pose; anim.air = cm === 'air'; anim.speed = cm === 'limb' ? this.speed : 0; anim.crouch = 0; }
+    // something to watch: the nearest animal ahead, or Kaali when standing about (picked a few times a second)
+    this.look.t -= dt;
+    if (this.look.t <= 0) {
+      this.look.t = 0.3; this.look.target = null; let bd = 16 * 16;
+      const fx = -Math.sin(this.bodyYaw), fz = -Math.cos(this.bodyYaw);
+      for (const an of g.eco.animals) {
+        if (an.dead) continue;
+        const dx = an.pos.x - this.pos.x, dz = an.pos.z - this.pos.z, d2 = dx * dx + dz * dz;
+        if (d2 < bd && dx * fx + dz * fz > -0.2 * Math.sqrt(d2) && (!an.companion || this.speed < 0.5)) { bd = d2; this.look.target = an; }
+      }
+    }
+    const lt = this.look.target;
+    if (lt && !this.view.startsWith('f') && !this.aim) anim.lookAt = lt.headPos ? lt.headPos(this.look.pt) : this.look.pt.copy(lt.pos).setY(lt.pos.y + 0.6);
     if (this.onGround && !this.swimming && !this.climb && this.pos.y - groundHeight(this.pos.x, this.pos.z) < 0.25) {
       const yawR = this.bodyYaw + Math.PI, cy = Math.cos(yawR), sy = Math.sin(yawR), px = this.pos.x, pz = this.pos.z, py = this.pos.y;
       anim.ground = (lx, lz) => groundHeight(px + lx * cy + lz * sy, pz - lx * sy + lz * cy) - py;
     }
-    animateHumanoid(this.body, dt, anim);
+    // place the body first, so poses aimed at world points (a grip on a branch) land this frame, not last frame's
     this.body.root.position.copy(this.pos);
     if (this.swimming) this.body.root.position.y += 0.6;
-    this.body.root.rotation.y = this.bodyYaw + Math.PI;
-    // footsteps
-    if (this.onGround && this.speed > 0.6) {
-      this.footPhase += dt * this.speed / (this.sprinting ? 1.15 : 0.7);
-      if (this.footPhase > 1) { this.footPhase = 0; g.audio.footstep(this.surface(), this.crouch ? 0.35 : this.sprinting ? 1.2 : 0.75); if (this.sprinting && Math.random() < 0.3) g.fx.dust(this.pos, 0.5); }
+    this.body.root.position.y += Math.min(0, spring(this.dip, 0, 0.09, dt));
+    this.body.root.rotation.set(0, this.bodyYaw + Math.PI, cm ? 0 : this.lean.x);
+    if (cm === 'hang') { _qt.setFromUnitVectors(_up0, this.canopy.pose.up); this.body.root.quaternion.premultiply(_qt); }   // hang along the arm
+    this.body.root.updateMatrixWorld(true);
+    animateHumanoid(this.body, dt, anim);
+    // footsteps land when a foot does (the old timer ran at speed/0.7 a second: twice a real cadence, out of step)
+    if (this.onGround && !this.climb && !this.canopy.mode && this.speed > 0.6) {
+      const run = clamp((this.speed - 3) / 4, 0, 1);
+      if (this.stepFeet(dt)) { g.audio.footstep(this.surface(), this.crouch ? 0.35 : 0.6 + run * 0.5, null, run); if (this.sprinting && Math.random() < 0.3) g.fx.dust(this.pos, 0.5); }
     } else if (this.swimming && this.speed > 0.3) { this.footPhase += dt * 0.8; if (this.footPhase > 1) { this.footPhase = 0; g.audio.footstep('water', 0.6); } }
     // survival
     this.survival(dt);
@@ -275,7 +329,7 @@ export class Player {
     const sh = this.shake * this.shake;
     const sx = (Math.random() - 0.5) * sh * 0.25, sy = (Math.random() - 0.5) * sh * 0.25;
     const targetFov = this.fov + (this.sprinting ? 7 : 0) - (this.weapon === 'bow' ? this.aim * this.draw * 22 : 0) - (this.weapon === 'spear' ? this.aim * 8 : 0);
-    cam.fov = lerp(cam.fov, targetFov, Math.min(1, dt * 6)); cam.updateProjectionMatrix();
+    cam.fov = lerp(cam.fov, targetFov + (this.canopy.mode === 'hang' || this.canopy.mode === 'air' ? Math.min(8, this.vel.length() * 0.6) : 0), damp(0.12, dt)); cam.updateProjectionMatrix();
     const eyeH = this.swimming ? 0.25 : (this.crouch ? 1.0 : 1.55) * (this.body.S || 1);   // eye height follows body size
     if (this.view === 'fpp') {
       this.bob += dt * this.speed * (this.onGround ? 1.4 : 0);
@@ -287,7 +341,7 @@ export class Player {
       cam.rotation.set(this.pitch + sy, this.yaw + sx, (this.drunk > 0.2 ? Math.sin(performance.now() * 0.0015) * this.drunk * 0.12 : 0) - this.vel.dot(_v2.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw))) * 0.006, 'YXZ');
     } else {
       const aimK = Math.max(this.aim, this.blocking ? 0.3 : 0);
-      const dist = lerp(this.camDist, 1.7, aimK) * (this.swimming ? 1.2 : 1);
+      const dist = lerp(this.camDist, 1.7, aimK) * (this.swimming ? 1.2 : 1) * (this.canopy.mode === 'hang' || this.canopy.mode === 'air' ? 1.25 : 1);
       const sideOff = lerp(0.45, 0.6, aimK);
       const tgt = _v1.set(this.pos.x, this.pos.y + eyeH + 0.05 + (this.swimming ? 0.6 : 0), this.pos.z);
       tgt.x += Math.cos(this.yaw) * sideOff; tgt.z += -Math.sin(this.yaw) * sideOff;
@@ -304,8 +358,8 @@ export class Player {
         if (f < 1) d = Math.max(0.35, d * f); }
       const want = _v3.copy(tgt).addScaledVector(dir, d);
       const gyc = groundHeight(want.x, want.z) + 0.3; if (want.y < gyc) want.y = gyc;
-      this.camPos.lerp(want, Math.min(1, dt * 18));
-      if (this.camPos.distanceTo(want) > 4) this.camPos.copy(want);
+      this.camPos.lerp(want, damp(this.canopy.mode ? 0.06 : 0.035, dt));
+      if (this.camPos.distanceTo(want) > 14) this.camPos.copy(want);
       cam.position.copy(this.camPos);
       cam.rotation.set(this.pitch + sy, this.yaw + sx, 0, 'YXZ');
     }
@@ -628,7 +682,14 @@ export class Player {
     cam.lookAt(this.pos.x, this.pos.y + 0.3, this.pos.z);
     this.vm.root.visible = false;
   }
+  // a fresh start (new game or chapter from the title): whole and rested, nothing in hand from before
+  revive() {
+    this.dead = false; this.hp = this.maxHp; this.bleed = 0; this.stamina = 100; this.hunger = 85; this.thirst = 85; this.sick = 0; this.drunk = 0;
+    this.vel.set(0, 0, 0); this.action = null; this.grabbed = null; this.climb = null; this.canopy.drop(); this.body.dead = 0; this.exhausted = false;
+    this.setView(this.g.settings.view);
+  }
   respawn(at) {
+    this.canopy.drop();
     this.dead = false; this.hp = 70; this.bleed = 0; this.stamina = 100; this.hunger = Math.max(this.hunger, 45); this.thirst = Math.max(this.thirst, 45); this.sick = 0;
     this.pos.copy(at || this.spawn); this.pos.y = groundHeight(this.pos.x, this.pos.z); this.vel.set(0, 0, 0);
     this.action = null; this.grabbed = null; this.body.dead = 0;

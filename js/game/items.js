@@ -1,6 +1,8 @@
 // Inventory, crafting recipes, food effects and world pickups (sticks, stones, flint, mahua flowers,
 // ber/tendu fruit, monsoon mushrooms, feathers) scattered deterministically by biome and season.
 import * as THREE from 'three';
+import { PAINTED } from '../core/palette.js';
+import { toonify } from '../core/toon.js';
 import { mulberry32 } from '../core/noise.js';
 import { biomeAt, groundHeight, waterAt } from '../world/terrain.js';
 
@@ -107,7 +109,7 @@ export class Pickups {
       leaves: { geo: leaves, mat: std({ map: T.leaf.teak, alphaTest: 0.5, side: THREE.DoubleSide }) },
     };
     this.meshes = {};
-    for (const k of TYPES) { const d = this.defs[k]; const m = new THREE.InstancedMesh(d.geo, d.mat, 400); m.count = 0; m.castShadow = true; m.receiveShadow = true; m.frustumCulled = false; scene.add(m); this.meshes[k] = m; }
+    for (const k of TYPES) { const d = this.defs[k]; const m = new THREE.InstancedMesh(d.geo, d.mat, 400); m.count = 0; m.castShadow = true; m.receiveShadow = true; m.frustumCulled = false; if (PAINTED) toonify(m, { outline: 0, rim: 0.3, soften: 3 }); scene.add(m); this.meshes[k] = m; }
     this.active = []; // {key, type, x,y,z}
   }
   genCell(cx, cz) {

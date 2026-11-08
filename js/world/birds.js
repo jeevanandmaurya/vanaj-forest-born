@@ -3,6 +3,8 @@
 // flights; and white-rumped vultures that gather and circle over a kill, an old sign of a tiger's meal.
 import * as THREE from 'three';
 import { G, patch } from '../core/shaderlib.js';
+import { PAINTED } from '../core/palette.js';
+import { toon, patchMore } from '../core/toon.js';
 import { groundHeight } from './terrain.js';
 
 const KINDS = {
@@ -38,8 +40,8 @@ export class Birds {
     const geo = birdGeometry();
     this.phase = new Float32Array(this.max * 2); // phase, flap amount
     geo.setAttribute('aFlap', new THREE.InstancedBufferAttribute(this.phase, 2));
-    const mat = new THREE.MeshStandardMaterial({ roughness: 0.9, side: THREE.DoubleSide });
-    patch(mat, 'birds', (s) => {
+    const mat = PAINTED ? toon({ side: THREE.DoubleSide, rim: 0.3, key: 'birds' }) : new THREE.MeshStandardMaterial({ roughness: 0.9, side: THREE.DoubleSide });
+    patchMore(mat, PAINTED ? 'birds-p' : 'birds', (s) => {
       s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\n attribute float aWing; attribute vec2 aFlap; uniform float uTime;')
         .replace('#include <begin_vertex>', `#include <begin_vertex>
           float fl = sin(uTime * 14.0 + aFlap.x * 6.2831) * aFlap.y;

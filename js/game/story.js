@@ -5,6 +5,9 @@ import { SITES } from '../world/props.js';
 import { groundHeight, VILLAGE, riverX } from '../world/terrain.js';
 import { buildHumanoid, animateHumanoid, buildWeapons } from '../actors/humanoid.js';
 import { THEME } from '../audio/music.js';
+import { SP } from '../world/flora.js';
+import { PAINTED } from '../core/palette.js';
+import { toonify } from '../core/toon.js';
 
 const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
 const sitePos = (k, dx = 0, dz = 0) => { const s = SITES[k]; return V3(s.x + dx, groundHeight(s.x + dx, s.z + dz), s.z + dz); };
@@ -17,7 +20,7 @@ export class NPC {
     g.scene.add(this.h.root);
     this.pos = this.h.root.position; this.pos.copy(o.pos); this.pos.y = groundHeight(this.pos.x, this.pos.z);
     this.yaw = o.yaw || 0; this.speed = 0; this.path = []; this.state = 'idle'; this.look = null; this.up = 0; this.action = null; this.t = Math.random() * 10;
-    if (o.flute) { const W = buildWeapons(g.T); const f = W.flute; f.rotation.set(Math.PI / 2, 0, 0); f.position.set(0, -0.08, 0); this.h.j.handR.add(f); this.flute = f; }
+    if (o.flute) { const W = buildWeapons(g.T); const f = W.flute; f.rotation.set(Math.PI / 2, 0, 0); f.position.set(0, -0.08, 0); if (PAINTED) toonify(f, { outline: 0.006, soften: 2 }); this.h.j.handR.add(f); this.flute = f; }
   }
   walkTo(p, run = false) { this.path = [p.clone()]; this.run = run; }
   update(dt) {
@@ -41,6 +44,13 @@ export class NPC {
 // --------------------------------------------------------------------------------------------- chapters
 const CH = [];
 const chapter = (o) => CH.push(o);
+// the semal nearest the den: the tree the langurs teach Vanaj to climb
+function lessonTree(g) {
+  if (g._lessonTree) return g._lessonTree;
+  const d = SITES.den; let best = null, bd = Infinity;
+  for (const t of g.veg.climbNear(d.x, d.z, 64)) { if (t.sp !== SP.semal) continue; const k = Math.hypot(t.x - d.x, t.z - d.z); if (k < bd) { bd = k; best = t; } }
+  return (g._lessonTree = best);
+}
 
 chapter({
   id: 'c1', title: 'Fog on the Teak', act: 'Act I · Winter', season: 'winter', weather: 'mist', hour: 7.05, spawn: ['den', 3, 6],
@@ -48,17 +58,33 @@ chapter({
     S.ensureKaali();
     g.eco.spawnGroup('peafowl', sitePos('den', 45, 20), 3);
     g.eco.spawnGroup('chital', sitePos('den', -90, 70), 7);
-    g.eco.spawnGroup('langur', sitePos('den', 30, -40), 5);
+    const lt = lessonTree(g); S.lessonTroop = g.eco.spawnGroup('langur', lt ? V3(lt.x + 4, 0, lt.z + 3) : sitePos('den', 30, -40), 6).members;
   },
   intro: ['Twelve winters later.', 'The fog came down the valley every morning and lay in the teak until the sun burned it off.', 'Kaali was old by then. I was not small any more.'],
   objectives: [
     { text: () => `Gather sticks (${S_.g.inv.count('stick')}/4) and stones (${S_.g.inv.count('stone')}/2) from the forest floor`, hint: 'Look down. <b>E</b> picks up what you see.', check: (g) => g.inv.count('stick') >= 4 && g.inv.count('stone') >= 2 },
     { text: 'Knap a stone knife — open your pouch with <b>Tab</b> and craft it', check: (g) => g.inv.has('knife'), done: (g) => { g.player.equip('knife'); g.ui.narrate('Stone on stone, until one edge bites.'); } },
     { text: 'Drink at the waterhole', marker: 'denWater', check: (g, S) => S.flags.drank },
+    // the young langurs teach the canopy: the forest's other half, and the first joy of the game
+    { text: 'The young langurs are playing in the big semal. Climb up after them', markerFn: (g) => lessonTree(g), hint: '<b>Space</b> facing a big trunk to climb · <b>W</b> up, <b>A</b>/<b>D</b> round it · keep climbing at a limb to step out onto it',
+      check: (g) => !!g.player.canopy.mode && g.player.pos.y - groundHeight(g.player.pos.x, g.player.pos.z) > 7,
+      done: (g) => g.ui.narrate(['From up there the forest was another country. The teak lay below me like a green sea with the fog still in it.', 'Kaali sat at the foot of the tree and barked at me, the way she did when I was small and climbed too high.']) },
+    { text: 'Swing on a liana, let go, and catch the next hold', hint: 'Hold <b>Space</b> to catch a liana or branch · <b>W</b> swings higher · let go of <b>Space</b> to fly · hold it again to catch',
+      check: (g, S) => S.flags.swung,
+      done: (g) => { g.ui.narrate(['I flew.', 'For one breath I was not a boy and not a wolf. I was something the forest had never seen.', 'The langurs shrieked at me. I think they were laughing.']); if (g.music) g.music.stinger('clue'); } },
     { text: 'Hunt with Kaali. Bring down a peafowl, chital or boar', hint: '<b>C</b> crouch · strike an unaware animal for a silent kill · <b>Q</b> → Dhole whistle sends Kaali', check: (g, S) => S.flags.hunted },
     { text: 'Skin the kill with your knife (<b>E</b> at the carcass)', check: (g, S) => S.flags.harvested || g.inv.has('meat_raw') },
     { text: () => `Make a fire — craft a Campfire (sticks ${S_.g.inv.count('stick')}/5, stones ${S_.g.inv.count('stone')}/3)`, check: (g) => g.camps.length > 0, hint: 'Gather more sticks and stones if you need them.' },
     { text: 'Cook the meat at the fire (<b>E</b>)', check: (g) => g.inv.has('meat_cooked') },
+    { text: 'Share the meat with Kaali (<b>E</b> near her)', check: (g, S) => S.flags.satKaali,
+      interact: { at: (g) => (g.companion && !g.companion.dead ? g.companion.pos : null), r: 4.5, prompt: 'Sit with Kaali and share the meat',   // she keeps ~3 m off
+        act: (g, S) => {
+          g.player.action = { type: 'eat', anim: 'eat', t: 0, dur: 3 }; g.player.crouch = true;
+          const k = g.companion; if (k) { k.setState('rest', 40); k.lookAt = g.player.pos; }
+          g.audio.hum();
+          g.ui.narrate(['She took the first piece. The old wolf always ate first.', 'Then she put her grey muzzle on my knee.', 'Her teeth were worn almost to nothing. She had carried me in them, once.']);
+          setTimeout(() => { S.flags.satKaali = true; S.checkNow(); }, 9000);
+        } } },
     { text: 'Eat the cooked meat (<b>Tab</b> → Eat), then sleep by the fire', check: (g, S) => S.flags.slept, hint: 'Sleeping by a fire passes the night and saves your progress.' },
   ],
   outro: ['I scratched a mark on the den wall, as I did every night.', 'I did not know why. Neither did Kaali.'],
@@ -95,7 +121,7 @@ chapter({
       const t0 = g.clock;
       while (S.gen === gen) {
         await g.wait(0.25);
-        if (kaali && kaali.dead && !S.kaaliDeadAt) { S.kaaliDeadAt = g.clock; t.target = 'player'; t.setState('charge'); g.ui.narrate('Kaali —'); }
+        if (kaali && kaali.dead && !S.kaaliDeadAt) { S.kaaliDeadAt = g.clock; t.target = 'player'; t.setState('charge'); g.slowmo(0.3, 1.8); g.audio.animal('wolf', 'pain', kaali.pos); g.ui.narrate('Kaali —'); }
         if (kaali && !kaali.dead && t.target === kaali && g.clock - t0 > 30) { kaali.hp = 1; }
         const ran = g.player.pos.distanceTo(t.pos) > 110;
         if (t.dead || S.tigerDmg > 70 || (S.kaaliDeadAt && g.clock - S.kaaliDeadAt > 40) || (S.kaaliDeadAt && ran)) break;
@@ -113,8 +139,18 @@ chapter({
     } },
     { text: 'Find the shining vine where Torn-Ear stood', markerFn: (g, S) => S.flags.wirePos, check: (g) => g.inv.has('wire'), done: (g) => { g.ui.addJournal('A vine that shone', 'Torn-Ear had a loop of something bright cut deep into his foreleg, so deep the flesh had grown over it. It came away in the fight. It is thin and cold and does not rot. I had never seen anything shine except water, and the lota.', 'clue'); g.music.stinger('clue'); } },
     { text: () => `Gather leaves (${S_.g.inv.count('leaves')}/3) and cover Kaali`, markerFn: (g) => g.companionBody ? g.companionBody.pos : null, check: (g, S) => S.flags.coveredKaali, hint: 'Leaves lie on the forest floor and grow on lantana shrubs (<b>E</b>).' },
+    { text: 'Sit with her a while', markerFn: (g) => (g.companionBody ? g.companionBody.pos : null), check: (g, S) => S.flags.mourned,
+      interact: { at: (g) => (g.companionBody ? g.companionBody.pos : null), r: 3.4, prompt: 'Sit by Kaali',
+        act: async (g, S) => {
+          const gen = S.gen; g.player.crouch = true; g.player.action = { type: 'hum', anim: 'hum', t: 0, dur: 6 };
+          g.ui.narrate(['I sat with her until the shadows went long.']); await g.wait(4); if (S.gen !== gen) return;
+          g.audio.hum(); g.ui.narrate(['I hummed the four notes. I did not know where they came from. She always lay still for them.']); await g.wait(6); if (S.gen !== gen) return;
+          g.ui.narrate(['Wolves do not cry.', 'I did.']);
+          g.ui.addJournal('Kaali', 'She found me on a sandbank when I was three and carried me home by the cloth at my waist. She was the only mother I remember. I covered her with teak leaves where she fell, by the den.', 'story');
+          await g.wait(5); if (S.gen !== gen) return; S.flags.mourned = true; S.checkNow();
+        } } },
   ],
-  outro: ['I covered her with teak leaves.', 'The forest went quiet the way it does after a kill.'],
+  outro: ['The forest went quiet the way it does after a kill.', 'That night the den was too big for one.'],
   cleanup(g) { g.eco.blocked.delete('tiger'); },
 });
 
@@ -126,7 +162,7 @@ chapter({
     g.eco.spawnGroup('boar', sitePos('termite', -60, 80), 4);
     g.ui.seeLore('termite');
   },
-  intro: ['The den smelled of tiger.', 'I carried the embers in a clay-lined bamboo tube and walked east, into country I did not know.'],
+  intro: ['The den smelled of tiger. Under it, still, it smelled of her.', 'I carried the embers in a clay-lined bamboo tube and walked east, into country I did not know.'],
   objectives: [
     { text: 'Travel east to the termite flats', marker: 'termite', reach: ['termite', 70] },
     { text: 'A sloth bear. Approach crouched and unarmed, and hum (hold <b>Q</b> → Calm hum)', markerFn: (g, S) => S.bear && S.bear.pos, check: (g, S) => S.bear && (S.bear.bond >= 0.6 || S.bear.dead), hint: 'Bears see and hear poorly; surprise one and it attacks. Put your weapon away (<b>1</b>).',
@@ -453,9 +489,19 @@ export class Story {
     g.on('harvest', () => (this.flags.harvested = true));
     g.on('sleep', () => (this.flags.slept = true));
     g.on('climbed', () => (this.flags.climbed = true));
+    g.on('swung', () => (this.flags.swung = true));
     g.on('eat', (e) => { if (e.item === 'termites') this.flags.ateTermites = true; });
     g.on('clue', (e) => { this.flags['clue_' + e.id] = true; });
     g.on('*', () => this.checkNow());
+  }
+  // leave the current chapter (back to the title): its scripts stop, its people, items and companion go
+  stop() {
+    const g = this.g;
+    if (this.chapter && this.chapter.cleanup) this.chapter.cleanup(g);
+    this.gen++; this.chIndex = -1; this.objIndex = 0; this.flags = {}; this.marker = null; this.done = false;
+    for (const n of this.npcs) n.remove(); this.npcs = []; g.npcs = [];
+    for (const it of this.storyItems) g.scene.remove(it.mesh); this.storyItems = [];
+    if (g.companion) { g.eco.remove(g.companion); g.companion = null; }
   }
   get chapter() { return CH[this.chIndex]; }
   get obj() { return this.chapter && this.chapter.objectives[this.objIndex]; }
@@ -491,7 +537,7 @@ export class Story {
   next() {
     const g = this.g, o = this.obj;
     if (!o) return;
-    if (o.done) o.done(g, this);
+    if (o.done) { try { o.done(g, this); } catch (e) { console.warn(e); } }   // a beat that fails must not wedge the chapter
     this.objIndex++;
     g.audio.ui('tick');
     setTimeout(() => this.beginObjective(), 600);
@@ -560,7 +606,7 @@ export class Story {
     for (const a of g.eco.animals) if (a.story === 'tornear') g.eco.remove(a);
     const t = g.eco.spawnOne('tiger', pos, { story: 'tornear', name: 'Torn-Ear', persistent: true, aggro: o.aggro ?? 1, hpMul: o.hpMul || 1, scale: 1.12, male: true });
     if (t.J.earL) { t.J.earL.scale.set(0.55, 0.7, 1); t.J.earL.rotation.z = 0.9; }
-    if (t.J.kneeRF) { const ring = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.006, 4, 16), new THREE.MeshStandardMaterial({ color: 0xd8dde0, metalness: 1, roughness: 0.2 })); ring.rotation.x = Math.PI / 2; ring.position.y = -0.1; t.J.kneeRF.add(ring); }
+    if (t.J.kneeRF) { const ring = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.006, 4, 16), new THREE.MeshStandardMaterial({ color: 0xd8dde0, metalness: 1, roughness: 0.2 })); ring.rotation.x = Math.PI / 2; ring.position.y = -0.1; t.J.kneeRF.add(ring); if (PAINTED) toonify(ring, { outline: 0 }); }
     t.limp = 0.35;
     g.ui.seeLore('tiger');
     return t;
@@ -574,6 +620,7 @@ export class Story {
     const g = this.g;
     const m = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.008, 4, 20), new THREE.MeshStandardMaterial({ color: 0xe8ecf0, metalness: 1, roughness: 0.15, emissive: 0x303438 }));
     m.position.copy(pos); m.position.y = groundHeight(pos.x, pos.z) + 0.03; m.rotation.x = -Math.PI / 2; g.scene.add(m);
+    if (PAINTED) toonify(m, { outline: 0, rim: 1 });
     const it = { id, pos: m.position.clone(), mesh: m, prompt };
     this.storyItems.push(it);
     return it;
@@ -618,6 +665,7 @@ export class Story {
       this.flags.placedLota = true; g.inv.take('lota', 1);
       const m = new THREE.Mesh(new THREE.SphereGeometry(0.1, 12, 8), new THREE.MeshStandardMaterial({ color: 0xc8ccd0, metalness: 0.9, roughness: 0.3 }));
       m.position.copy(g.player.pos).add(V3(-Math.sin(g.player.yaw) * 0.8, 0.1, -Math.cos(g.player.yaw) * 0.8)); g.scene.add(m);
+      if (PAINTED) toonify(m, { outline: 0.006, rim: 1 });
       this.aaji.walkTo(m.position); this.aaji.look = g.player.pos;
       this.checkNow();
       return true;

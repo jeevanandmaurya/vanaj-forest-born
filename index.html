@@ -89,7 +89,7 @@ button { font-family:var(--sans); cursor:pointer; }
 .cross.hit::after { content:''; position:absolute; left:-10px; top:-10px; width:20px; height:20px; border:2px solid #fff; transform:rotate(45deg) scale(.7); opacity:.9; }
 .cross.kill::after { border-color:#ff4a3a; }
 #prompt { position:absolute; left:50%; top:calc(50% + 46px); transform:translateX(-50%); font-size:14px; letter-spacing:.03em; text-shadow:0 1px 8px #000; opacity:0; transition:opacity .2s; white-space:nowrap; }
-#subtitle { position:absolute; left:50%; bottom:13vh; transform:translateX(-50%); width:min(880px, 80vw); text-align:center; font-family:var(--serif); font-size:27px; line-height:1.35; text-shadow:0 2px 14px rgba(0,0,0,.95), 0 0 2px #000; opacity:0; transition:opacity .8s; }
+#subtitle { position:absolute; left:50%; bottom:max(13vh, 150px); transform:translateX(-50%); width:min(820px, 60vw); text-align:center; font-family:var(--serif); font-size:27px; line-height:1.35; text-shadow:0 2px 14px rgba(0,0,0,.95), 0 0 2px #000; opacity:0; transition:opacity .8s; }
 #subtitle.show { opacity:1; } #subtitle em { font-style:italic; }
 #place { position:absolute; left:0; right:0; top:22%; text-align:center; pointer-events:none; opacity:0; color:#efe6d2; text-shadow:0 2px 14px rgba(0,0,0,.75); }
 #place.show { animation: placeIn 6s ease forwards; }
@@ -125,7 +125,8 @@ button { font-family:var(--sans); cursor:pointer; }
 .journal { display:grid; grid-template-columns:1.2fr 1fr; gap:34px; min-width:880px; }
 .jentry { padding:12px 0; border-bottom:1px solid var(--line); } .jentry p, .lentry p { font-family:var(--serif); font-size:17px; line-height:1.45; color:var(--bone2); } .jentry.clue h3 { color:#e8c890; }
 .lentry { padding:10px 0; border-bottom:1px solid var(--line); } .lentry h3 i { font-size:14px; color:var(--bone2); font-weight:400; } .lentry.locked { opacity:.35; }
-#mapcv { width:min(72vh, 760px); height:min(72vh, 760px); display:block; border:1px solid var(--line); }
+#mapcv { width:min(calc(86vh - 84px), calc(100vw - 48px), 760px); height:auto; aspect-ratio:1; display:block; border:2px solid #6a5034; border-radius:4px; box-shadow:0 6px 30px rgba(0,0,0,.45); }
+#map .box { padding:14px 16px 16px; min-width:0; overflow:hidden; background:rgba(40,30,20,.88); } #map h2 { margin:0 0 8px; font-size:26px; }
 /* prologue */
 #prologue { position:fixed; inset:0; z-index:45; background:#000; display:none; align-items:center; justify-content:center; }
 #prologue.show { display:flex; }

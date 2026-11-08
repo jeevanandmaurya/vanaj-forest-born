@@ -2,6 +2,8 @@
 // dust, water splashes, rock-bee swarms, fireflies, falling teak leaves.
 import * as THREE from 'three';
 import { G } from '../core/shaderlib.js';
+import { PAINTED } from '../core/palette.js';
+import { toonify } from '../core/toon.js';
 import { groundHeight, groundNormal, waterAt } from './terrain.js';
 
 class Particles {
@@ -78,6 +80,7 @@ export class FX {
     this.decalIdx = 0; this.decalAge = new Float32Array(220);
     this.decals.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(220 * 3).fill(1), 3);
     scene.add(this.decals);
+    if (PAINTED) toonify(this.decals, { outline: 0 });
     this.fires = [];
     this.lights = [];
     for (let i = 0; i < 3; i++) { const l = new THREE.PointLight(0xff8a3a, 0, 22, 1.6); l.castShadow = false; scene.add(l); this.lights.push(l); }
@@ -173,6 +176,7 @@ export class FX {
     this.leafMesh.frustumCulled = false; this.leafMesh.count = 0;
     for (let i = 0; i < N; i++) this.lf.push({ x: 0, y: -1e4, z: 0, ph: Math.random() * 10, s: 0.7 + Math.random() * 0.8 });
     this.scene.add(this.leafMesh);
+    if (PAINTED) toonify(this.leafMesh, { outline: 0, rim: 0.3 });
   }
   updateAmbient(dt, cam, night, season, raining) {
     // fireflies: monsoon/post-monsoon nights

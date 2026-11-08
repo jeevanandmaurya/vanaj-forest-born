@@ -28,15 +28,21 @@ export class AudioEngine {
     this.state = { hour: 8, season: 'winter', rain: 0, wind: 0.3, water: 0, night: 0, cave: 0, under: 0, village: 0 };
   }
   resume() { if (this.ctx && this.ctx.state !== 'running') this.ctx.resume().catch(() => {}); }
+  // Noise that loops without a seam. The beds (wind, river, rain, fire) loop these buffers; brown noise wanders,
+  // so its last sample sat far from its first and the loop clicked every 4 s. The generator runs on past the end,
+  // and that continuation is crossfaded into the head, so playback runs from the tail straight into the start.
   makeNoise(type, sec) {
-    const ctx = this.ctx, n = ctx.sampleRate * sec, b = ctx.createBuffer(1, n, ctx.sampleRate), d = b.getChannelData(0);
+    const ctx = this.ctx, n = Math.floor(ctx.sampleRate * sec), X = 4096, raw = new Float32Array(n + X);
     let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0, last = 0;
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < n + X; i++) {
       const w = Math.random() * 2 - 1;
-      if (type === 'white') d[i] = w;
-      else if (type === 'pink') { b0 = 0.99886 * b0 + w * 0.0555179; b1 = 0.99332 * b1 + w * 0.0750759; b2 = 0.969 * b2 + w * 0.153852; b3 = 0.8665 * b3 + w * 0.3104856; b4 = 0.55 * b4 + w * 0.5329522; b5 = -0.7616 * b5 - w * 0.016898; d[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362) * 0.11; b6 = w * 0.115926; }
-      else { last = (last + 0.02 * w) / 1.02; d[i] = last * 3.5; }
+      if (type === 'white') raw[i] = w;
+      else if (type === 'pink') { b0 = 0.99886 * b0 + w * 0.0555179; b1 = 0.99332 * b1 + w * 0.0750759; b2 = 0.969 * b2 + w * 0.153852; b3 = 0.8665 * b3 + w * 0.3104856; b4 = 0.55 * b4 + w * 0.5329522; b5 = -0.7616 * b5 - w * 0.016898; raw[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + w * 0.5362) * 0.11; b6 = w * 0.115926; }
+      else { last = (last + 0.02 * w) / 1.02; raw[i] = last * 3.5; }
     }
+    const b = ctx.createBuffer(1, n, ctx.sampleRate), d = b.getChannelData(0);
+    d.set(raw.subarray(0, n));
+    for (let i = 0; i < X; i++) { const k = i / X; d[i] = raw[n + i] * (1 - k) + raw[i] * k; }
     return b;
   }
   makeIR(sec, decay, dark) {
@@ -149,7 +155,6 @@ export class AudioEngine {
     this.fireG = this.loopNoise('brown', [['lowpass', 500]], 0, this.sfx);
     this.fireCrackT = 0; this.fireLevel = 0;
     // breathing / heartbeat
-    this.breathG = this.loopNoise('pink', [['bandpass', 1100, 0.8]], 0, this.sfx);
     this.breathLevel = 0; this.heartT = 0; this.heartRate = 0;
     // underwater rumble
     this.underG = this.loopNoise('brown', [['lowpass', 200]], 0, this.sfx);
@@ -173,8 +178,10 @@ export class AudioEngine {
     const k = 0.4;
     const h = st.hour, day = st.night < 0.5;
     const gust = 0.6 + 0.4 * Math.sin(t * 0.37) * Math.sin(t * 0.13 + 1);
-    this.windG.gain.setTargetAtTime(0.05 + st.wind * 0.16 * gust, t, k);
-    this.leavesG.gain.setTargetAtTime((0.012 + st.wind * 0.045 * gust) * (st.season === 'summer' ? 1.4 : 1), t, k);
+    // wind comes and goes in gusts over a near-silent floor (a constant bed read as hiss)
+    const g2 = gust * gust;
+    this.windG.gain.setTargetAtTime(0.012 + st.wind * 0.13 * g2, t, k);
+    this.leavesG.gain.setTargetAtTime((0.003 + st.wind * 0.03 * g2) * (st.season === 'summer' ? 1.4 : 1), t, k);
     this.riverG.gain.setTargetAtTime(st.water * 0.32, t, k);
     this.babbleG.gain.setTargetAtTime(st.water * 0.07, t, k);
     this.rainG.gain.setTargetAtTime(st.rain * 0.22, t, k * 2);
@@ -187,8 +194,9 @@ export class AudioEngine {
     this.fireG.gain.setTargetAtTime(this.fireLevel * 0.12, t, 0.2);
     this.fireCrackT -= dt;
     if (this.fireLevel > 0.05 && this.fireCrackT <= 0) { this.fireCrackT = rand(0.03, 0.35); const o = this.spatial(null, this.fireLevel * 0.6); this.noiseBurst(o, t, { ft: 'highpass', f: rand(2000, 5000), dur: rand(0.005, 0.03), g: rand(0.2, 0.8) }); }
-    // breath + heartbeat
-    this.breathG.gain.setTargetAtTime(this.breathLevel * 0.05 * (0.5 + 0.5 * Math.sin(t * 5.2)), t, 0.05);
+    // breath: separate breaths in and out once winded, faster as stamina runs out (not a pulsing noise bed)
+    this.breathT = (this.breathT || 0) - dt;
+    if (this.breathLevel > 0.3 && this.breathT <= 0) { this.breathT = 1.25 - this.breathLevel * 0.6; this.breath(this.breathLevel); }
     if (this.heartRate > 0) { this.heartT -= dt; if (this.heartT <= 0) { this.heartT = 60 / this.heartRate; const o = this.spatial(null, 0.5 * Math.min(1, this.heartRate / 140)); this.tone(o, t, { f0: 58, f1: 40, dur: 0.12, g: 0.9 }); this.tone(o, t + 0.17, { f0: 52, f1: 38, dur: 0.1, g: 0.6 }); } }
     this.underG.gain.setTargetAtTime(st.under * 0.3, t, 0.1);
     this.lp.frequency.setTargetAtTime(st.under ? 450 : 20000, t, 0.08);
@@ -371,15 +379,28 @@ export class AudioEngine {
     }
   }
   // ------------------------------------------------------------------ player & combat sfx
-  footstep(surface, intensity = 1, pos) {
+  // A bare foot: the heel lands as a soft low thump, then the ball of the foot sounds the surface. The gap between
+  // them shrinks as the pace rises (CRI's heel/toe method), running adds weight to the heel, and each step varies
+  // its pitch and level without repeating the last variant. Almost dry: reverb smeared the old steps into hiss.
+  // run: 0 walking .. 1 sprinting.
+  footstep(surface, intensity = 1, pos, run = 0) {
     if (!this.ready) return;
-    const t = this.ctx.currentTime, o = this.spatial(pos || null, 0.55 * intensity, { verb: 0.12 });
-    if (surface === 'leaf') { const n = 3 + Math.floor(rand(0, 4)); for (let i = 0; i < n; i++) this.noiseBurst(o, t + i * rand(0.006, 0.02), { f: rand(2200, 5200), q: 0.9, dur: rand(0.012, 0.04), g: rand(0.25, 0.6) }); this.noiseBurst(o, t, { ft: 'lowpass', f: 260, dur: 0.07, g: 0.5, color: 'pink' }); }
-    else if (surface === 'grass') { this.noiseBurst(o, t, { f: 1300, f1: 2400, q: 0.6, dur: 0.14, a: 0.02, g: 0.35 }); this.noiseBurst(o, t, { ft: 'lowpass', f: 220, dur: 0.06, g: 0.4, color: 'pink' }); }
-    else if (surface === 'rock') { this.noiseBurst(o, t, { f: 2600, q: 3, dur: 0.025, g: 0.5 }); this.noiseBurst(o, t, { ft: 'lowpass', f: 400, dur: 0.05, g: 0.4, color: 'pink' }); }
-    else if (surface === 'water') { this.noiseBurst(o, t, { ft: 'lowpass', f: 1400, f1: 500, dur: 0.25, a: 0.01, g: 0.6, color: 'pink' }); this.tone(o, t + 0.02, { f0: rand(500, 900), f1: rand(1200, 1800), dur: 0.06, g: 0.1 }); }
-    else if (surface === 'mud') { this.noiseBurst(o, t, { ft: 'lowpass', f: 800, dur: 0.12, g: 0.5, color: 'pink' }); this.noiseBurst(o, t + 0.04, { f: 900, q: 3, dur: 0.05, g: 0.2 }); }
-    else { this.noiseBurst(o, t, { f: 900, q: 0.8, dur: 0.07, g: 0.4, color: 'pink' }); }
+    const t = this.ctx.currentTime, o = this.spatial(pos || null, 0.5 * intensity, { verb: 0.04 });
+    let v; do v = Math.floor(rand(0, 4)); while (v === this._lastStep); this._lastStep = v;
+    const p = 0.86 + v * 0.09 + rand(-0.03, 0.03), gap = 0.075 - run * 0.06 + rand(0, 0.012), toe = t + gap;
+    this.noiseBurst(o, t, { ft: 'lowpass', f: (150 + run * 60) * p, dur: 0.07 + run * 0.03, a: 0.004, g: 0.42 + run * 0.25, color: 'brown' });
+    if (surface === 'leaf') { this.noiseBurst(o, toe, { f: 1500 * p, f1: 900 * p, q: 1.4, dur: 0.06, a: 0.006, g: 0.14 }); if (Math.random() < 0.5) this.noiseBurst(o, toe + 0.025, { f: 2600 * p, q: 2, dur: 0.025, g: 0.06 }); }
+    else if (surface === 'grass') this.noiseBurst(o, toe, { f: 1100 * p, f1: 1900 * p, q: 0.9, dur: 0.11, a: 0.02, g: 0.12 });
+    else if (surface === 'rock') { this.noiseBurst(o, toe, { f: 2300 * p, q: 5, dur: 0.018, g: 0.16 }); this.tone(o, toe, { f0: 900 * p, f1: 700 * p, dur: 0.03, g: 0.03, type: 'triangle' }); }
+    else if (surface === 'water') { this.noiseBurst(o, t, { ft: 'lowpass', f: 1300 * p, f1: 450, dur: 0.22, a: 0.01, g: 0.45, color: 'pink' }); this.tone(o, toe, { f0: rand(500, 800), f1: rand(1100, 1600), dur: 0.05, g: 0.06 }); }
+    else if (surface === 'mud') { this.noiseBurst(o, toe, { ft: 'lowpass', f: 700 * p, dur: 0.1, g: 0.25, color: 'pink' }); this.noiseBurst(o, toe + 0.04, { f: 850 * p, q: 3, dur: 0.04, g: 0.08 }); }
+    else this.noiseBurst(o, toe, { f: 800 * p, q: 1, dur: 0.05, g: 0.12, color: 'pink' });
+  }
+  // one breath, in or out by turns: a soft band of air, deeper and louder the more winded
+  breath(level) {
+    if (!this.ready) return;
+    const t = this.ctx.currentTime, o = this.spatial(null, 0.3 * level, { verb: 0.02 }), out = (this._breathOut = !this._breathOut);
+    this.noiseBurst(o, t, { f: out ? 700 : 1300, f1: out ? 500 : 1700, q: 0.9, dur: out ? 0.42 : 0.3, a: out ? 0.05 : 0.12, g: 0.35, color: 'pink' });
   }
   swing(weight = 1) { if (!this.ready) return; const t = this.ctx.currentTime, o = this.spatial(null, 0.5); this.noiseBurst(o, t, { f: 300 / weight, f1: 1500 / weight, q: 1.6, dur: 0.22 + weight * 0.06, a: 0.08, g: 0.55, color: 'pink' }); }
   impact(kind, pos, strength = 1) {

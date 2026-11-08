@@ -5,12 +5,14 @@ import { mulberry32, hash2, clamp, smoothstep } from '../core/noise.js';
 import { G, patch, WIND_VERTEX, NOISE_GLSL } from '../core/shaderlib.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { height, biomeAt, waterAt, CHUNK, WATERHOLES, lakeE } from './terrain.js';
+import { PAINTED, PU, ACCENT } from '../core/palette.js';
+import { toon } from '../core/toon.js';
 
 // ------------------------------------------------------------------ geometry builder
 class GB {
-  constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; this.w = []; this.r = []; this.i = []; }
-  vert(x, y, z, nx, ny, nz, u, v, cr, cg, cb, w, r) {
-    this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(u, v); this.c.push(cr, cg, cb); this.w.push(w); this.r.push(r);
+  constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; this.w = []; this.r = []; this.s = []; this.i = []; }
+  vert(x, y, z, nx, ny, nz, u, v, cr, cg, cb, w, r, s = 0) {
+    this.p.push(x, y, z); this.n.push(nx, ny, nz); this.uv.push(u, v); this.c.push(cr, cg, cb); this.w.push(w); this.r.push(r); this.s.push(s);
     return this.p.length / 3 - 1;
   }
   geo() {
@@ -21,6 +23,7 @@ class GB {
     g.setAttribute('color', new THREE.Float32BufferAttribute(this.c, 3));
     g.setAttribute('aWind', new THREE.Float32BufferAttribute(this.w, 1));
     g.setAttribute('aRand', new THREE.Float32BufferAttribute(this.r, 1));
+    if (PAINTED) g.setAttribute('aSize', new THREE.Float32BufferAttribute(this.s, 1));
     g.setIndex(this.i);
     if (this.p.length) g.computeBoundingSphere();
     return g;
@@ -65,6 +68,12 @@ function tube(gb, pts, rads, radial, windFn, rnd, uRep, colMul = 1, shape = null
 
 const _v = new THREE.Vector3(), _u = new THREE.Vector3(), _rt = new THREE.Vector3(), _nm = new THREE.Vector3();
 function card(gb, C, up, w, h, crownC, crownR, wind, rnd, rng, tint) {
+  if (PAINTED) {   // the painted look draws every leaf card as a camera-facing leaf-clump sprite at its centre
+    const P = _v.copy(C).addScaledVector(up, h * 0.5), d = Math.min(1, Math.hypot(P.x - crownC.x, (P.y - crownC.y) * 1.2, P.z - crownC.z) / crownR);
+    _nm.set(P.x - crownC.x, (P.y - crownC.y) * 0.8 + crownR * 0.35, P.z - crownC.z).normalize();
+    const ao = (0.6 + 0.4 * d) * (0.85 + 0.25 * clamp((P.y - crownC.y) / crownR + 0.5, 0, 1));
+    return sprite(gb, P, Math.max(w, h) * 0.8, _nm, ao, tint, wind, rnd);
+  }
   // right vector perpendicular to up, random twist
   _rt.set(rng() - 0.5, rng() - 0.5, rng() - 0.5).cross(up).normalize();
   const hw = w / 2;
@@ -82,6 +91,62 @@ function card(gb, C, up, w, h, crownC, crownR, wind, rnd, rng, tint) {
   gb.i.push(base, base + 1, base + 2, base, base + 2, base + 3);
 }
 
+// one painted leaf-clump sprite: four vertices at its centre, spread toward the camera in the vertex shader
+// (uv gives the corner, aSize the width), so it never turns edge-on
+function sprite(gb, P, size, n, ao, tint, wind, rnd) {
+  const base = gb.p.length / 3;
+  for (const [u, v] of [[0, 0], [1, 0], [1, 1], [0, 1]]) gb.vert(P.x, P.y, P.z, n.x, n.y, n.z, u, v, ao * tint[0], ao * tint[1], ao * tint[2], wind, rnd, size);
+  gb.i.push(base, base + 1, base + 2, base, base + 2, base + 3);
+}
+
+// The painted look's crowns ("cloud trees", docs/art-direction.md): the twig tips grouped by k-means into a few
+// big foliage masses, each filled with sprites whose normals point out from the mass's centre, so toon light
+// shades every mass as one rounded form with a leafy edge. Returns the near and far sprite sets.
+const CLUMPS = { teak: 6, mahua: 7, saja: 5, kulu: 4, palash: 4, small: 5, arjun: 8, semal: 11 };
+function cloudCrown(near, far, tips, K, size, rng, tint, H) {
+  K = Math.min(K, tips.length);
+  const crownC = new THREE.Vector3(); for (const p of tips) crownC.add(p); crownC.multiplyScalar(1 / tips.length);
+  let crownR = 0.1; for (const p of tips) crownR = Math.max(crownR, p.distanceTo(crownC));
+  // spread-out seeds (farthest point), then a few k-means rounds
+  const cs = [tips[Math.floor(rng() * tips.length)].clone()];
+  while (cs.length < K) { let best = tips[0], bd = -1; for (const p of tips) { let d = Infinity; for (const c of cs) d = Math.min(d, p.distanceToSquared(c)); if (d > bd) { bd = d; best = p; } } cs.push(best.clone()); }
+  const asg = new Int32Array(tips.length), cnt = new Array(K);
+  for (let it = 0; it < 6; it++) {
+    for (let i = 0; i < tips.length; i++) { let bi = 0, bd = Infinity; for (let k = 0; k < K; k++) { const d = tips[i].distanceToSquared(cs[k]); if (d < bd) { bd = d; bi = k; } } asg[i] = bi; }
+    const sum = cs.map(() => new THREE.Vector3()); cnt.fill(0);
+    for (let i = 0; i < tips.length; i++) { sum[asg[i]].add(tips[i]); cnt[asg[i]]++; }
+    for (let k = 0; k < K; k++) if (cnt[k]) cs[k].copy(sum[k].multiplyScalar(1 / cnt[k]));
+  }
+  const rad = new Array(K).fill(0);
+  for (let i = 0; i < tips.length; i++) rad[asg[i]] += tips[i].distanceTo(cs[asg[i]]);
+  const P = new THREE.Vector3(), N = new THREE.Vector3(), O = new THREE.Vector3();
+  const put = (gb, k, p, sz, shade) => {
+    const r = Math.max(0.5, rad[k]);
+    N.subVectors(p, cs[k]).divideScalar(r).multiplyScalar(0.8).add(O.subVectors(p, crownC).divideScalar(crownR).multiplyScalar(0.35)); N.y += 0.25; N.normalize();
+    const ao = (0.62 + 0.38 * clamp(p.distanceTo(cs[k]) / r, 0, 1)) * (0.82 + 0.28 * clamp((p.y - crownC.y) / crownR + 0.5, 0, 1)) * shade;
+    sprite(gb, p, sz, N, ao, tint, 0.6 + 0.4 * clamp((p.y - H * 0.35) / H, 0, 1), rng());
+  };
+  for (let k = 0; k < K; k++) {
+    if (!cnt[k]) continue;
+    rad[k] = rad[k] / cnt[k] * 1.25 + size * 0.35;
+    const r = rad[k], shade = 0.9 + rng() * 0.2, sz = clamp(r * 0.8, size * 0.6, size * 1.1);
+    // the tips themselves, then a shell of sprites rounding the mass (flatter underneath)
+    for (let i = 0; i < tips.length; i++) if (asg[i] === k) put(near, k, P.copy(tips[i]).add(O.set(rng() - 0.5, rng() - 0.5, rng() - 0.5).multiplyScalar(size * 0.3)), sz * (0.8 + rng() * 0.4), shade);
+    const shell = Math.round(6 + r * 3.5);
+    for (let j = 0; j < shell; j++) {
+      O.set(rng() * 2 - 1, rng() * 2 - 1, rng() * 2 - 1); if (O.lengthSq() < 0.01) O.set(0, 1, 0);
+      O.normalize(); O.y = O.y * 0.75 + 0.15; O.normalize();
+      put(near, k, P.copy(cs[k]).addScaledVector(O, r * (0.75 + 0.25 * rng())), sz * (0.85 + rng() * 0.35), shade);
+    }
+    // far: a handful of big sprites per mass
+    for (let j = 0; j < 4; j++) {
+      O.set(rng() * 2 - 1, rng() * 1.4 - 0.4, rng() * 2 - 1).normalize();
+      put(far, k, P.copy(cs[k]).addScaledVector(O, r * 0.45), r * 1.5, shade);
+    }
+  }
+  return { crownC, crownR };
+}
+
 // ------------------------------------------------------------------ species specs
 const SPEC = {
   // teak: straight clean bole, fluted / low-buttressed base, fibrous grey-brown bark, open crown of huge leaves
@@ -97,6 +162,8 @@ const SPEC = {
   small: { H: [7, 11], r0: [0.18, 0.3], trunkFrac: 0.42, nB: [5, 7], ang: [0.7, 1.15], bLen: 0.9, crownR: 4.0, cardS: [1.5, 1.8], perTip: 4, sub: 2, leaf: 'small', bark: 'generic', gnarl: 0.2, lean: 0.08, tint: [1, 1, 1], bend: 0.3, roots: 2, taper: 0.7, flare: 0.45 },
   // arjun: riverside giant, buttressed uneven stem, smooth pale flaking bark
   arjun: { H: [15, 21], r0: [0.48, 0.66], trunkFrac: 0.42, nB: [7, 9], ang: [0.8, 1.25], bLen: 1.1, crownR: 7.0, cardS: [2.0, 2.4], perTip: 4, sub: 3, leaf: 'small', bark: 'arjun', gnarl: 0.16, lean: 0.06, tint: [0.9, 1.0, 0.9], flute: { n: 5, amp: 0.55, h: 2.0 }, roots: 5, bend: 0.35, taper: 0.66, flare: 0.5 },
+  // semal / silk-cotton: the forest's emergent giant, grey buttressed bole, tiers of level limbs, crimson flowers
+  semal: { H: [20, 28], r0: [0.55, 0.75], trunkFrac: 0.55, nB: [6, 9], ang: [1.2, 1.5], bLen: 1.2, crownR: 8, cardS: [2.4, 3], perTip: 3, sub: 2, leaf: 'small', bark: 'arjun', gnarl: 0.05, lean: 0.02, tint: [0.95, 1, 0.92], roots: 6, taper: 0.6, flare: 0.7 },
   // dead snag: broken top, a few stubs
   dead: { H: [8, 15], r0: [0.22, 0.36], trunkFrac: 0.5, nB: [3, 5], ang: [0.6, 1.1], bLen: 0.5, crownR: 4.0, cardS: [0, 0], perTip: 0, sub: 1, leaf: null, bark: 'teak', gnarl: 0.25, lean: 0.12, tint: [1, 1, 1], roots: 3, taper: 0.55, flare: 0.45, snag: true },
 };
@@ -160,6 +227,9 @@ const GROW = {
   small: { trunkL: [4.5, 7], trunkR: [0.18, 0.28], levels: 3, children: [5, 3, 3], angle: [0, 50, 48, 45], start: [0, 0.55, 0.3, 0.3], length: [0, 3.6, 2.0, 1.0], radius: [1, 0.6, 0.58, 0.6], gnarl: [0.14, 0.2, 0.25, 0.3], taper: [0.5, 0.65, 0.7, 0.75], force: 0.01, sections: [7, 5, 4, 3], segs: [9, 6, 4, 3], leafCount: 2, leafSize: [1.8, 2.2], roots: 2, flare: 0.4, lean: 0.08 },
   // arjun: riverside giant, buttressed uneven stem, wide spreading crown
   arjun: { trunkL: [6, 8.5], trunkR: [0.5, 0.68], levels: 3, children: [6, 4, 3], angle: [0, 56, 50, 45], start: [0, 0.58, 0.3, 0.25], length: [0, 7.2, 3.5, 1.5], radius: [1, 0.62, 0.56, 0.6], gnarl: [0.1, 0.16, 0.22, 0.28], taper: [0.45, 0.62, 0.7, 0.75], force: 0.007, sections: [8, 7, 5, 3], segs: [14, 8, 5, 3], leafCount: 3, leafSize: [2.3, 2.9], flute: { n: 5, amp: 0.55, h: 2.0 }, roots: 5, flare: 0.5, lean: 0.07 },
+  // semal: a tall straight bole with plank buttresses, near-level limbs in tiers (easy to climb out along), a
+  // broad flat-topped crown standing above the teak
+  semal: { trunkL: [16, 21], trunkR: [0.6, 0.78], levels: 3, children: [8, 3, 3], angle: [0, 80, 50, 45], start: [0, 0.42, 0.3, 0.25], length: [0, 8.0, 3.6, 1.6], radius: [1, 0.45, 0.55, 0.6], gnarl: [0.03, 0.07, 0.18, 0.26], taper: [0.62, 0.6, 0.7, 0.75], force: 0.003, sections: [12, 7, 4, 3], segs: [16, 9, 5, 3], leafCount: 2, leafSize: [2.6, 3.2], flute: { n: 7, amp: 0.8, h: 2.8 }, roots: 6, flare: 0.75, lean: 0.02 },
   // dead snag: no leaves, broken leader
   dead: { trunkL: [7, 11], trunkR: [0.22, 0.34], levels: 2, children: [4, 3, 0], angle: [0, 50, 48, 0], start: [0, 0.5, 0.35, 0], length: [0, 3.2, 1.3, 0], radius: [1, 0.55, 0.55, 0], gnarl: [0.12, 0.25, 0.3, 0], taper: [0.5, 0.75, 0.8, 0], force: 0.008, sections: [8, 5, 3, 0], segs: [10, 6, 4, 0], leafCount: 0, leafSize: [0, 0], roots: 3, flare: 0.45, lean: 0.12, snag: true },
 };
@@ -274,7 +344,8 @@ function buildGeneric(specName, seed) {
   // leaves: crossed cards at each twig, normals from the crown centre (soft, rounded canopy shading)
   const leafG = new GB(), leaf1 = new GB();
   let crownC = new THREE.Vector3(), crownR = 0.1;
-  if (sk.leaves.length) {
+  if (PAINTED && sk.leaves.length) ({ crownC, crownR } = cloudCrown(leafG, leaf1, sk.leaves.map((l) => l.p), CLUMPS[specName] || 5, (P.leafSize[0] + P.leafSize[1]) * 0.5, rng, spec.tint, H));
+  else if (sk.leaves.length) {
     for (const l of sk.leaves) crownC.add(l.p); crownC.multiplyScalar(1 / sk.leaves.length);
     for (const l of sk.leaves) crownR = Math.max(crownR, l.p.distanceTo(crownC)); crownR *= 0.9;
     for (const l of sk.leaves) {
@@ -296,7 +367,9 @@ function buildGeneric(specName, seed) {
       card(leaf1, l.p.clone().addScaledVector(up, -sz * 0.35), up, sz, sz, crownC, crownR, 0.5, rng(), rng, spec.tint);
     }
   }
-  return { bark: gb.geo(), leaf: sk.leaves.length ? leafG.geo() : null, bark1: lb.geo(), leaf1: sk.leaves.length ? leaf1.geo() : null, H, trunkR: r0 * (1.25 + (P.flute ? P.flute.amp * 0.5 : 0)), crownY: crownC.y || H * 0.7, crownR, barkKind: spec.bark, leafKind: spec.leaf };
+  // the climbable skeleton: trunk and every limb thick enough to grip (x, y, z, radius per section)
+  const climb = sk.branches.filter((b) => b.level <= 2 && b.sections[0].r > 0.045).map((b) => ({ level: b.level, pts: b.sections.map((q) => [q.p.x, q.p.y, q.p.z, q.r]) }));
+  return { bark: gb.geo(), leaf: sk.leaves.length ? leafG.geo() : null, bark1: lb.geo(), leaf1: sk.leaves.length ? leaf1.geo() : null, H, trunkR: r0 * (1.25 + (P.flute ? P.flute.amp * 0.5 : 0)), crownY: crownC.y || H * 0.7, crownR, barkKind: spec.bark, leafKind: spec.leaf, climb };
 }
 
 function buildBamboo(seed) {
@@ -431,10 +504,10 @@ function buildStones(seed) {
 
 // ------------------------------------------------------------------ materials
 export const FOLIAGE_SEASON = {
-  winter: { teak: [0.22, [1.08, 0.98, 0.72]], kulu: [0.55, [1.1, 1.0, 0.75]], palash: [0.25, [1, 1, 0.85]], mahua: [0.05, [1, 1, 0.95]], saja: [0.12, [1.05, 1, 0.85]], small: [0.06, [1, 1, 0.9]], arjun: [0.0, [1, 1, 0.95]], bamboo: [0.12, [1.1, 1.05, 0.8]], banyan: [0, [1, 1, 1]], lantana: [0.05, [1, 1, 0.9]] },
-  summer: { teak: [0.82, [1.35, 0.85, 0.42]], kulu: [0.96, [1.2, 0.9, 0.6]], palash: [0.0, [1, 1, 1]], mahua: [0.3, [1.2, 0.9, 0.7]], saja: [0.55, [1.25, 0.92, 0.55]], small: [0.35, [1.15, 1.0, 0.6]], arjun: [0.1, [1.05, 1, 0.8]], bamboo: [0.5, [1.3, 1.1, 0.55]], banyan: [0.0, [1.05, 1, 0.9]], lantana: [0.35, [1.15, 1, 0.65]] },
-  monsoon: { teak: [0, [0.86, 1.1, 0.78]], kulu: [0, [0.9, 1.08, 0.8]], palash: [0, [0.9, 1.08, 0.8]], mahua: [0, [0.88, 1.06, 0.82]], saja: [0, [0.9, 1.08, 0.82]], small: [0, [0.88, 1.08, 0.8]], arjun: [0, [0.9, 1.06, 0.85]], bamboo: [0, [0.86, 1.12, 0.78]], banyan: [0, [0.92, 1.05, 0.88]], lantana: [0, [0.88, 1.08, 0.8]] },
-  post: { teak: [0.02, [0.95, 1.04, 0.82]], kulu: [0.1, [0.98, 1.04, 0.85]], palash: [0.02, [0.95, 1.04, 0.82]], mahua: [0, [0.95, 1.02, 0.86]], saja: [0, [0.95, 1.04, 0.84]], small: [0, [0.95, 1.04, 0.84]], arjun: [0, [0.95, 1.02, 0.86]], bamboo: [0, [0.92, 1.06, 0.82]], banyan: [0, [0.96, 1.02, 0.9]], lantana: [0, [0.95, 1.04, 0.84]] },
+  winter: { semal: [0.45, [1.05, 1, 0.85]], teak: [0.22, [1.08, 0.98, 0.72]], kulu: [0.55, [1.1, 1.0, 0.75]], palash: [0.25, [1, 1, 0.85]], mahua: [0.05, [1, 1, 0.95]], saja: [0.12, [1.05, 1, 0.85]], small: [0.06, [1, 1, 0.9]], arjun: [0.0, [1, 1, 0.95]], bamboo: [0.12, [1.1, 1.05, 0.8]], banyan: [0, [1, 1, 1]], lantana: [0.05, [1, 1, 0.9]] },
+  summer: { semal: [0.7, [1.2, 0.95, 0.65]], teak: [0.82, [1.35, 0.85, 0.42]], kulu: [0.96, [1.2, 0.9, 0.6]], palash: [0.0, [1, 1, 1]], mahua: [0.3, [1.2, 0.9, 0.7]], saja: [0.55, [1.25, 0.92, 0.55]], small: [0.35, [1.15, 1.0, 0.6]], arjun: [0.1, [1.05, 1, 0.8]], bamboo: [0.5, [1.3, 1.1, 0.55]], banyan: [0.0, [1.05, 1, 0.9]], lantana: [0.35, [1.15, 1, 0.65]] },
+  monsoon: { semal: [0, [0.88, 1.08, 0.82]], teak: [0, [0.86, 1.1, 0.78]], kulu: [0, [0.9, 1.08, 0.8]], palash: [0, [0.9, 1.08, 0.8]], mahua: [0, [0.88, 1.06, 0.82]], saja: [0, [0.9, 1.08, 0.82]], small: [0, [0.88, 1.08, 0.8]], arjun: [0, [0.9, 1.06, 0.85]], bamboo: [0, [0.86, 1.12, 0.78]], banyan: [0, [0.92, 1.05, 0.88]], lantana: [0, [0.88, 1.08, 0.8]] },
+  post: { semal: [0, [0.95, 1.04, 0.84]], teak: [0.02, [0.95, 1.04, 0.82]], kulu: [0.1, [0.98, 1.04, 0.85]], palash: [0.02, [0.95, 1.04, 0.82]], mahua: [0, [0.95, 1.02, 0.86]], saja: [0, [0.95, 1.04, 0.84]], small: [0, [0.95, 1.04, 0.84]], arjun: [0, [0.95, 1.02, 0.86]], bamboo: [0, [0.92, 1.06, 0.82]], banyan: [0, [0.96, 1.02, 0.9]], lantana: [0, [0.95, 1.04, 0.84]] },
 };
 
 function leafMaterial(map, key) {
@@ -523,6 +596,108 @@ function barkMaterial(map, key, tint = 0xffffff, moss = 1, normalMap = null) {
   return m;
 }
 
+// ------------------------------------------------------------------ painted-look materials
+// A leaf clump painted in code: a round mass with a scalloped rim of pointed leaves, a lighter top-left and a
+// few leaf strokes inside. White, so the palette colours it.
+function leafSpriteTexture() {
+  const S = 128, c = document.createElement('canvas'); c.width = c.height = S; const x = c.getContext('2d'), rng = mulberry32(61);
+  const lobe = (a, r0, L, W, v) => {
+    x.save(); x.translate(S / 2 + Math.cos(a) * r0, S / 2 + Math.sin(a) * r0); x.rotate(a); x.fillStyle = `rgb(${v},${v},${v})`;
+    x.beginPath(); x.moveTo(-L * 0.2, 0); x.bezierCurveTo(L * 0.1, -W, L * 0.75, -W * 0.8, L, 0); x.bezierCurveTo(L * 0.75, W * 0.8, L * 0.1, W, -L * 0.2, 0); x.fill(); x.restore();
+  };
+  // a round mass with a scalloped rim of broad leaves; the upper-left rim a shade lighter
+  x.fillStyle = 'rgb(222,222,222)'; x.beginPath(); x.arc(S / 2, S / 2, S * 0.33, 0, 6.2832); x.fill();
+  for (let i = 0; i < 15; i++) {
+    const a = (i / 15) * 6.2832 + (rng() - 0.5) * 0.25;
+    lobe(a, S * (0.22 + rng() * 0.04), S * (0.2 + rng() * 0.05), S * (0.085 + rng() * 0.025), 218 + Math.round(26 * Math.max(0, -Math.cos(a + 0.8))));
+  }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+  return t;
+}
+let LEAF_SPRITE = null;
+// spreads each sprite's four vertices from its centre toward the camera (or the sun, in the shadow pass)
+const BILLBOARD_VERTEX = /* glsl */`
+  vec4 mvPosition = vec4(transformed, 1.0);
+  float bbS = 1.0;
+  #ifdef USE_INSTANCING
+    mvPosition = instanceMatrix * mvPosition; bbS = length(instanceMatrix[0].xyz);
+  #endif
+  mvPosition = modelViewMatrix * mvPosition;
+  float bbA = aRand * 6.2832; vec2 bbC = uv * 2.0 - 1.0;
+  bbC = vec2(cos(bbA) * bbC.x - sin(bbA) * bbC.y, sin(bbA) * bbC.x + cos(bbA) * bbC.y);
+  mvPosition.xy += bbC * aSize * 0.5 * bbS;
+  gl_Position = projectionMatrix * mvPosition;`;
+const LEAF_FRAG_DROP = /* glsl */`
+  if (vRand < uLeafDrop) discard;
+  #ifdef CAM_FADE
+  // leaves dissolve close to the camera, so climbing inside a crown you see Vanaj, not a wall of leaves
+  if (fract(vRand * 91.7) > smoothstep(2.0, 5.5, length(vViewPosition))) discard;
+  #endif
+  { vec2 ddx = dFdx(vMapUv * 128.0), ddy = dFdy(vMapUv * 128.0);
+    diffuseColor.a *= 1.0 + max(0.0, 0.5 * log2(max(dot(ddx, ddx), dot(ddy, ddy)))) * 0.3; }`;
+// species leaf colour against the season's foliage pair: teak and kulu yellower, mahua, arjun and banyan deeper
+const LEAF_KIND = { semal: [0.9, 1.0, 0.86], teak: [1.06, 1.0, 0.84], mahua: [0.8, 0.9, 0.84], saja: [0.86, 0.95, 0.9], kulu: [1.1, 1.05, 0.8], palash: [0.95, 1.0, 0.86], small: [0.9, 1.0, 0.9], arjun: [0.8, 0.92, 0.88], bamboo: [1.0, 1.08, 0.8], banyan: [0.74, 0.88, 0.84], lantana: [0.9, 1.0, 0.85] };
+function paintedLeafMaterial(key) {
+  LEAF_SPRITE = LEAF_SPRITE || leafSpriteTexture();
+  const m = toon({
+    map: LEAF_SPRITE, alphaTest: 0.5, vertexColors: true, wind: true, rim: 0.3, key: 'leaf-' + key, patch: (s) => {
+      s.uniforms.uLeafDrop = m.userData.drop; s.uniforms.uLeafTint = m.userData.tint; s.uniforms.uFlower = m.userData.flower;
+      Object.assign(s.uniforms, PU);
+      s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\n attribute float aSize; varying float vRand;')
+        .replace('#include <project_vertex>', `${BILLBOARD_VERTEX}
+          vRand = aRand;
+          vNormal = normalize(vNormal + vec3(bbC, 0.0) * 0.12);   // a hint of roundness per sprite; the mass's normal leads`);
+      s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>
+          #define CAM_FADE
+          uniform float uLeafDrop; uniform vec3 uLeafTint, uLeafShade, uLeafLit; uniform vec4 uFlower; varying float vRand;`)
+        .replace('#include <map_fragment>', `#include <map_fragment>\n${LEAF_FRAG_DROP}`)
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          diffuseColor.rgb *= mix(uLeafShade, uLeafLit, 0.5) * uLeafTint * (0.97 + 0.06 * fract(vRand * 13.7));
+          diffuseColor.rgb = mix(diffuseColor.rgb, uFlower.rgb * vColor, step(fract(vRand * 7.31), uFlower.a));`);
+    },
+  });
+  m.userData.drop = { value: 0 }; m.userData.tint = { value: new THREE.Vector3(1, 1, 1) }; m.userData.flower = { value: new THREE.Vector4(0, 0, 0, 0) };
+  return m;
+}
+function paintedLeafDepth(key, dropRef) {
+  const m = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map: LEAF_SPRITE, alphaTest: 0.5 });
+  patch(m, 'leafdepth-p-' + key, (s) => {
+    s.uniforms.uLeafDrop = dropRef;
+    s.vertexShader = s.vertexShader.replace('#include <common>', `#include <common>
+      attribute float aWind; attribute float aRand; attribute float aSize; varying float vRand; uniform float uTime; uniform vec2 uWind; uniform float uWindStrength;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\n${WIND_VERTEX}\n vRand = aRand;`)
+      .replace('#include <project_vertex>', BILLBOARD_VERTEX);
+    s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>\n uniform float uLeafDrop; varying float vRand;`)
+      .replace('#include <map_fragment>', `#include <map_fragment>\n${LEAF_FRAG_DROP}`);
+  });
+  return m;
+}
+// lianas (js/world/vines.js): a dull green stem, and the painted leaf clumps
+export function vineParts() {
+  const leaf = paintedLeafMaterial('vine'); leaf.userData.tint.value.set(0.85, 1.05, 0.8);
+  const g = new GB(), rng = mulberry32(77);
+  for (let i = 0; i < 9; i++) {
+    const t = 0.06 + i * 0.105, a = rng() * 6.28, P = new THREE.Vector3(Math.cos(a) * 0.12, -t, Math.sin(a) * 0.12);
+    sprite(g, P, (i === 0 ? 1.1 : 0.45 + rng() * 0.3), new THREE.Vector3(Math.cos(a), 0.35, Math.sin(a)).normalize(), 0.75 + rng() * 0.3, [1, 1, 1], 0.6, rng());
+  }
+  return { leaf, leafGeo: g.geo(), stem: toon({ color: 0x5e6a36, rim: 0.3, key: 'vine-stem' }) };
+}
+// bark: one flat colour per species with soft vertical strokes, darker toward the ground
+const BARK_COL = { semal: '#a8a29a', teak: '#a49482', mahua: '#7a6656', saja: '#857c76', kulu: '#e6e0d6', palash: '#94826e', small: '#94826c', arjun: '#c4b49c', dead: '#9a9088', deadfall: '#8a7a68', stones: '#9a96a4', bamboo: '#b4ac5c', banyan: '#8a8070', lantana: '#6a5a40' };
+function paintedBarkMaterial(key) {
+  return toon({
+    color: new THREE.Color(BARK_COL[key] || '#7a6a58'), vertexColors: true, wind: true, rim: 0.6, key: 'bark-' + key, patch: (s) => {
+      s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\n varying vec2 vBUv; varying float vLYb;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\n vBUv = uv; vLYb = position.y;');
+      s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>\n${NOISE_GLSL}\n varying vec2 vBUv; varying float vLYb;`)
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          { float st = vnoise(vec2(vBUv.x * 5.0, vBUv.y * 0.5)); float w = fwidth(st) + 1e-4;
+            diffuseColor.rgb *= 0.9 + 0.18 * smoothstep(0.6 - w, 0.6 + w, st) - 0.12 * smoothstep(0.66 - w, 0.66 + w, 1.0 - st);
+            diffuseColor.rgb *= mix(0.72, 1.0, smoothstep(-0.3, 1.2, vLYb)); }`);
+    },
+  });
+}
+
 // ------------------------------------------------------------------ vegetation manager
 const SPECIES_LIST = [
   { name: 'teak', variants: 5, build: (s) => buildGeneric('teak', s) },
@@ -532,6 +707,7 @@ const SPECIES_LIST = [
   { name: 'palash', variants: 3, build: (s) => buildGeneric('palash', s) },
   { name: 'small', variants: 3, build: (s) => buildGeneric('small', s) },
   { name: 'arjun', variants: 2, build: (s) => buildGeneric('arjun', s) },
+  { name: 'semal', variants: 3, build: (s) => buildGeneric('semal', s) },
   { name: 'dead', variants: 2, build: (s) => buildGeneric('dead', s) },
   { name: 'bamboo', variants: 3, build: (s) => buildBamboo(s) },
   { name: 'banyan', variants: 1, build: (s) => buildBanyan(s) },
@@ -541,6 +717,7 @@ const SPECIES_LIST = [
 ];
 export const SP = {}; SPECIES_LIST.forEach((s, i) => (SP[s.name] = i));
 const STRIDE = 7; // x y z rot scale species variant
+const _lk = new THREE.Vector3(), SEMAL_RED = new THREE.Color('#d0342a');
 
 export class Vegetation {
   constructor(scene, T, quality) {
@@ -564,6 +741,11 @@ export class Vegetation {
     const scan = { teak: ['oak', 0xd2c4ae], mahua: ['oak', 0x8e8070], saja: ['pine', 0x8a8580], palash: ['willow', 0xb4a490], small: ['willow', 0xc4b6a4], dead: ['oak', 0xb4aca2], deadfall: ['oak', 0x9c948a] };
     for (const sp of SPECIES_LIST) {
       const t0 = this.templates[SP[sp.name]][0], sc = scan[sp.name];
+      if (PAINTED) {
+        this.barkMats[sp.name] = paintedBarkMaterial(sp.name);
+        if (t0.leafKind) { const lm = this.leafMats[sp.name] = paintedLeafMaterial(sp.name); if (quality.aa) lm.alphaToCoverage = true; lm.userData.depth = paintedLeafDepth(sp.name, lm.userData.drop); }
+        continue;
+      }
       this.barkMats[sp.name] = sc && T.scan ? barkMaterial(T.scan[sc[0]].map, sp.name, sc[1], barkMoss[sp.name] ?? 0.7, T.scan[sc[0]].normal)
         : barkMaterial(T.bark[t0.barkKind], sp.name, barkTint[sp.name] || 0xffffff, barkMoss[sp.name] ?? 0.7);
       if (t0.leafKind) {
@@ -581,7 +763,7 @@ export class Vegetation {
       for (let v = 0; v < SPECIES_LIST[s].variants; v++) {
         const t = this.templates[s][v];
         const nv = SPECIES_LIST[s].variants;
-        const capMul = (name === 'teak' ? 1.0 : name === 'banyan' ? 0.1 : name === 'deadfall' || name === 'stones' ? 0.45 : 0.5) * Math.min(1, 1.9 / nv);
+        const capMul = (name === 'teak' ? 1.0 : name === 'banyan' || name === 'semal' ? 0.12 : name === 'deadfall' || name === 'stones' ? 0.45 : 0.5) * Math.min(1, 1.9 / nv);
         const c0 = Math.ceil(cap0 * capMul), c1 = Math.ceil(cap1 * capMul);
         const mk = (geo, mat, cap, shadow, depth) => {
           if (!geo || !geo.attributes.position || geo.attributes.position.count === 0) return null;
@@ -608,6 +790,12 @@ export class Vegetation {
     for (const name in this.leafMats) {
       const m = this.leafMats[name], cfg = fs[name] || [0, [1, 1, 1]];
       m.userData.drop.value = cfg[0]; m.userData.tint.value.set(...cfg[1]);
+      if (PAINTED) {   // flowers are a colour in the painted look: palash flame and mahua cream in summer
+        m.userData.tint.value.multiply(_lk.set(...(LEAF_KIND[name] || [1, 1, 1])));
+        const fl = season === 'summer' && name === 'palash' ? [ACCENT.palash, 0.85] : season === 'summer' && name === 'mahua' ? [ACCENT.mahua, 0.35] : season === 'winter' && name === 'semal' ? [SEMAL_RED, 0.3] : null;
+        m.userData.flower.value.set(fl ? fl[0].r : 0, fl ? fl[0].g : 0, fl ? fl[0].b : 0, fl ? fl[1] : 0);
+        continue;
+      }
       let map = this.T.leaf[this.templates[SP[name]][0].leafKind];
       if (name === 'palash' && season === 'summer') map = this.T.leaf.palashFlower;
       if (name === 'mahua' && season === 'summer') map = this.T.leaf.mahuaFlower;
@@ -647,6 +835,11 @@ export class Vegetation {
         sp = r2 < stoneShare ? SP.stones : SP.deadfall; scale = 0.75 + r3 * 0.7;
         if (b.village > 0.3 || b.field > 0.2) sp = -1;
       } else if (b.village > 0.2 && b.field > 0.3 && r1 > 0.997) { sp = SP.mahua; scale = 1.1; }  // mahua kept in fields
+      // giants: a semal now and then stands over the teak (often round the den, where Vanaj learns the trees),
+      // and some riverside arjun grow huge; both carry lianas to swing on
+      const dDen = Math.hypot(x - 760, z - 880);
+      if (sp >= 0 && sp !== SP.lantana && sp !== SP.stones && sp !== SP.deadfall && b.rock < 0.4 && b.bamboo < 0.4 && r4 < (dDen < 160 ? 0.05 : 0.015) && dDen > 14) { sp = SP.semal; scale = 0.9 + r3 * 0.25; }
+      else if (sp === SP.arjun && r3 > 0.75) scale = 1.4 + (r3 - 0.75) * 1.6;
       // drowned trees: Junewani Talao and the Totladoh margin keep the grey trunks of trees that died when the water rose
       const jw = WATERHOLES[2], jd = Math.hypot(x - jw.x, z - jw.z), le = lakeE(x, z);
       const drowned = (jd < jw.r * 0.85 && r4 < 0.12) || (le > 0.84 && le < 0.99 && r4 < 0.05);
@@ -725,6 +918,24 @@ export class Vegetation {
     }
     return best;
   }
+  // the climbable trees near a point (world space, cached per tree)
+  climbNear(x, z, R = 24) {
+    const out = [], pcx = Math.floor(x / CHUNK), pcz = Math.floor(z / CHUNK), R2 = R * R;
+    const cache = this.climbCache || (this.climbCache = new Map());
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+      const cell = this.cells.get((pcx + dx) * 100003 + (pcz + dz)); if (!cell) continue;
+      const d = cell.data;
+      for (let i = 0; i < d.length; i += STRIDE) {
+        const tx = d[i], tz = d[i + 2]; if ((tx - x) * (tx - x) + (tz - z) * (tz - z) > R2) continue;
+        const tmpl = this.templates[d[i + 5]][d[i + 6]]; if (!tmpl.climb) continue;
+        const key = Math.round(tx * 100) * 1e6 + Math.round(tz * 100);
+        let t = cache.get(key);
+        if (!t) { t = worldClimb(tmpl, tx, d[i + 1], tz, d[i + 3], d[i + 4], girthOf(tx, tz), d[i + 5]); cache.set(key, t); if (cache.size > 500) cache.delete(cache.keys().next().value); }
+        out.push(t);
+      }
+    }
+    return out;
+  }
   nearestTree(x, z, maxD = 3, species) {
     let best = null, bd = maxD * maxD;
     const c = this.colliders;
@@ -749,6 +960,25 @@ export class Vegetation {
 
 const girthOf = (x, z) => { const h = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453; return 0.84 + 0.34 * (h - Math.floor(h)); };
 const _wm = new THREE.Matrix4(), _wq = new THREE.Quaternion(), _wq2 = new THREE.Quaternion(), _we = new THREE.Euler(), _wp = new THREE.Vector3(), _ws = new THREE.Vector3(), _wn = new THREE.Vector3(), _wup = new THREE.Vector3(0, 1, 0);
+// A tree's climbable skeleton in world space, through the same transform its instance is drawn with: the trunk
+// (one polyline) and limbs, each a list of points with radii; vines hang from some limbs of the big trees.
+const _cm = new THREE.Matrix4(), _cv = new THREE.Vector3();
+function worldClimb(tmpl, x, y, z, rot, s, g, sp) {
+  const h = Math.sin(x * 4.898 + z * 7.23) * 1458.5453, f = h - Math.floor(h);
+  _we.set((f - 0.5) * 0.07, rot, (((f * 7.13) % 1) - 0.5) * 0.07, 'YXZ'); _wq.setFromEuler(_we);
+  _cm.compose(_wp.set(x, y, z), _wq, _ws.set(s * g, s * (1.06 - (g - 0.84) * 0.25), s * g));
+  const rs = s * g, parts = tmpl.climb.map((b) => ({ level: b.level, pts: b.pts.map((q) => _cv.set(q[0], q[1], q[2]).applyMatrix4(_cm).clone()), r: b.pts.map((q) => q[3] * rs) }));
+  const trunk = parts.find((b) => b.level === 0) || null, limbs = parts.filter((b) => b.level > 0);
+  // lianas: on the giants (and big trees generally) hang from a point well out along a few stout limbs
+  const vines = [], big = sp === SP.semal || rs > 1.35, rng = mulberry32(Math.floor(x * 13 + z * 7));
+  if (big) for (const L of limbs) {
+    if (L.level !== 1 || vines.length >= 5 || rng() > 0.55) continue;
+    const k = Math.min(L.pts.length - 1, Math.floor(L.pts.length * (0.55 + rng() * 0.3))), a = L.pts[k];
+    const low = height(a.x, a.z) + 1.4 + rng() * 1.2;
+    if (a.y - low > 3) vines.push({ a: a.clone(), len: a.y - low, ang: new THREE.Vector2(), vel: new THREE.Vector2(), ph: rng() * 6.28 });
+  }
+  return { x, z, sp, trunk, limbs, vines, top: trunk ? trunk.pts[trunk.pts.length - 1].y : y };
+}
 function writeMat(bm, lm, idx, x, y, z, rot, s, g = 1, slopeAlign = false) {
   const h = Math.sin(x * 4.898 + z * 7.23) * 1458.5453, f = h - Math.floor(h);
   if (slopeAlign) {
@@ -845,9 +1075,9 @@ export class Grass {
     this.heightMul = { value: 1 };
     this.radius = { value: quality.grassR };
     const mkMat = (tex, key) => {
-    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.85, metalness: 0, map: tex, alphaTest: 0.42 });
-    patch(mat, key, (s) => {
+    const fn = (s) => {
       s.uniforms.uGrassH = this.heightMul; s.uniforms.uGrassR = this.radius;
+      if (PAINTED) Object.assign(s.uniforms, PU);
       s.vertexShader = s.vertexShader.replace('#include <common>', `#include <common>
         attribute float aWind; attribute float aRand; uniform float uTime; uniform vec2 uWind; uniform float uWindStrength; uniform vec3 uPlayerPos; uniform float uGrassH; uniform float uGrassR;
         uniform sampler2D tGroundAO; uniform vec4 uAORect;
@@ -870,20 +1100,24 @@ export class Grass {
           vGT = aWind; vGW = gip;`);
       s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>
         ${NOISE_GLSL}
-        uniform float uSeasonGreen; varying float vGT; varying vec3 vGW; varying float vGShade;`)
+        uniform float uSeasonGreen; uniform vec3 uGrassRoot, uGrassTip; varying float vGT; varying vec3 vGW; varying float vGShade;`)
         .replace('#include <color_fragment>', `#include <color_fragment>
           float gn = vnoise(vGW.xz * 0.05) * 0.6 + vnoise(vGW.xz * 0.4) * 0.4;
+          ${PAINTED ? `
+          // painted blades: the season's root colour up to its tip colour, a little lighter or darker per patch
+          diffuseColor.rgb = mix(uGrassRoot, uGrassTip, smoothstep(0.05, 0.95, vGT)) * (0.88 + 0.24 * gn) * (1.0 - vGShade * 0.15);` : `
           float green = clamp(uSeasonGreen * (0.7 + 0.6 * gn), 0.0, 1.0);
           vec3 dry = mix(vec3(0.62, 0.52, 0.30), vec3(0.78, 0.68, 0.42), gn);
           vec3 lush = mix(vec3(0.24, 0.40, 0.12), vec3(0.42, 0.56, 0.2), gn);
           vec3 gc = mix(dry, lush, green);
           gc = mix(gc, gc * vec3(1.2, 1.15, 0.8), vGT * 0.6);
-          diffuseColor.rgb *= gc * 1.25 * (1.0 - vGShade * 0.22);
+          diffuseColor.rgb *= gc * 1.25 * (1.0 - vGShade * 0.22);`}
           { vec2 ddx = dFdx(vMapUv * 256.0), ddy = dFdy(vMapUv * 256.0); float mip = max(0.0, 0.5 * log2(max(dot(ddx, ddx), dot(ddy, ddy)))); diffuseColor.a *= 1.0 + mip * 0.35; }`)
         .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
           normal = normalize(vNormal);`);
-    });
-    return mat; };
+    };
+    return PAINTED ? toon({ map: tex, vertexColors: true, side: THREE.DoubleSide, alphaTest: 0.42, rim: 0, key, patch: fn })
+      : patch(new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.85, metalness: 0, map: tex, alphaTest: 0.42 }), key, fn); };
     this.mat = mkMat(grassTexture(false), 'grass-s'); this.matT = mkMat(grassTexture(true), 'grass-t');
     this.short = new THREE.InstancedMesh(tuftCards(5, 0.5, 0.9, 3), this.mat, quality.grassCap || 9000);
     this.tall = new THREE.InstancedMesh(tuftCards(9, 1.35, 1.1, 3), this.matT, Math.floor((quality.grassCap || 9000) * 0.6));

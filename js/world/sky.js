@@ -4,9 +4,11 @@ import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { G, NOISE_GLSL } from '../core/shaderlib.js';
 import { mulberry32, clamp, smoothstep, lerp } from '../core/noise.js';
+import { PAINTED, paintedLight, paintedHour } from '../core/palette.js';
+import { RIM } from '../core/toon.js';
 
 const LAT = 21.7 * Math.PI / 180;
-const _sv = new THREE.Vector3(), _sr = new THREE.Vector3(), _su = new THREE.Vector3(), _sa = new THREE.Vector3(), _sUp = new THREE.Vector3(0, 1, 0);
+const _sv = new THREE.Vector3(), _sr = new THREE.Vector3(), _su = new THREE.Vector3(), _sa = new THREE.Vector3(), _sUp = new THREE.Vector3(0, 1, 0), _rc = new THREE.Color();
 
 function kelvin(k) {
   // approx blackbody to linear RGB
@@ -64,6 +66,7 @@ export class SkySystem {
     scene.add(this.hemi);
 
     this.buildStars(); this.buildMoon(); this.buildClouds();
+    if (PAINTED) { this.sky.visible = false; this.clouds.visible = false; this.buildPainted(); }
 
     // env
     this.pmrem = new THREE.PMREMGenerator(renderer);
@@ -141,6 +144,78 @@ export class SkySystem {
     this.clouds = new THREE.Mesh(geo, mat); this.clouds.renderOrder = -3; this.clouds.frustumCulled = false; this.clouds.layers.enable(1);
     this.scene.add(this.clouds);
   }
+  // The painted look's sky (docs/art-direction.md): a two-colour gradient with a soft sun glow, and flat cel
+  // clouds on their own layer above the stars and moon. Clouds take two colours: lit on the side toward the
+  // sun, shade inside.
+  buildPainted() {
+    const u = this.paintU = {
+      uTop: { value: new THREE.Color() }, uHor: { value: new THREE.Color() }, uHaze: { value: new THREE.Color() }, uSunC: { value: new THREE.Color() },
+      uCl: { value: new THREE.Color() }, uCs: { value: new THREE.Color() }, uSunD: { value: new THREE.Vector3(0, 1, 0) },
+      uGlow: { value: 1 }, uDisc: { value: 1 }, uCover: { value: 0.3 }, uT: { value: 0 }, uDark: { value: 0 }, uFlashC: { value: 0 },
+    };
+    const vs = `varying vec3 vD; void main(){ vD = normalize(position); vec4 p = projectionMatrix * modelViewMatrix * vec4(position,1.0); gl_Position = p.xyww; }`;
+    const head = `${NOISE_GLSL}
+      uniform vec3 uTop, uHor, uHaze, uSunC, uCl, uCs, uSunD; uniform float uGlow, uDisc, uCover, uT, uDark, uFlashC; varying vec3 vD;`;
+    const sky = new THREE.ShaderMaterial({
+      uniforms: u, depthWrite: false, fog: false, side: THREE.BackSide, vertexShader: vs,
+      fragmentShader: `${head}
+        void main(){
+          vec3 d = normalize(vD);
+          vec3 col = mix(uHor, uTop, smoothstep(-0.02, 0.55, d.y));
+          col = mix(col, uHaze, smoothstep(0.02, -0.12, d.y));          // below the horizon: haze over far hills
+          float s = max(dot(d, uSunD), 0.0);
+          col += uSunC * (pow(s, 6.0) * 0.22 + pow(s, 48.0) * 0.4) * uGlow;
+          col = mix(col, uSunC * 1.3 + vec3(0.3), smoothstep(0.9986, 0.9991, s) * uDisc);
+          gl_FragColor = vec4(col, 1.0);
+        }`,
+    });
+    const clouds = new THREE.ShaderMaterial({
+      uniforms: u, transparent: true, depthWrite: false, fog: false, side: THREE.BackSide, vertexShader: vs,
+      fragmentShader: `${head}
+        float cl(vec2 p){ return fbm2(p) * 0.7 + fbm2(p * 2.3 + 5.0) * 0.3; }
+        void main(){
+          vec3 d = normalize(vD); if (d.y < -0.02) discard;
+          vec2 uv = d.xz / (max(d.y, 0.0) + 0.1) * 0.5 + vec2(uT * 0.004, uT * 0.0015);
+          float cov = mix(0.66, 0.38, uCover), n = cl(uv);
+          float dens = smoothstep(cov, cov + 0.035, n) * smoothstep(-0.02, 0.1, d.y);
+          float lit = 1.0 - smoothstep(cov + 0.05, cov + 0.09, cl(uv + uSunD.xz * 0.22));
+          float s = max(dot(d, uSunD), 0.0);
+          vec3 c = mix(uCs, uCl, lit) + uSunC * pow(s, 8.0) * 0.35 * lit * uGlow;
+          c = mix(c, c * 0.45, uDark) + vec3(0.8, 0.85, 1.0) * uFlashC * 2.0;
+          gl_FragColor = vec4(c, dens * 0.96);
+        }`,
+    });
+    const geo = new THREE.SphereGeometry(2500, 48, 24);
+    this.paintSky = new THREE.Mesh(geo, sky); this.paintSky.renderOrder = -6; this.paintSky.frustumCulled = false;
+    this.paintClouds = new THREE.Mesh(geo, clouds); this.paintClouds.renderOrder = -3; this.paintClouds.frustumCulled = false;
+    this.scene.add(this.paintSky, this.paintClouds);
+    this.scene.environment = null;
+  }
+  // palette-driven light, shade, rim, sky and haze; runs after the shared sun/moon/shadow code in update()
+  paintUpdate(dt, hour, declDeg, env, season, sd, md, camera) {
+    const p = paintedLight(paintedHour(hour, declDeg, LAT), season), cov = this.cloudCover, el = sd.y, dim = 1 - cov * 0.6;
+    // direct light: the sun while it is up, then the moon
+    this.sun.color.copy(p.sun);
+    this.sun.intensity = el >= -0.05 ? p.sunI * smoothstep(-0.05, 0.08, el) * dim : p.sunI * smoothstep(0.0, 0.25, md.y) * (1 - cov * 0.8);
+    G.uSunCol.value.copy(p.sun).multiplyScalar(this.day * dim);
+    // shade is the sky's own colour with warm bounce from below, at about half the brightness of full sun so
+    // shadows read as a cool mid-tone; half-desaturated, since a saturated blue light turns warm ground maroon
+    const desat = (c, out) => { const l = c.r * 0.2126 + c.g * 0.7152 + c.b * 0.0722; return out.copy(c).lerp(_rc.setRGB(l, l, l), 0.45); };
+    desat(p.sky, this.hemi.color); desat(p.gnd, this.hemi.groundColor);
+    this.hemi.intensity = p.hemiI * 5.9 * (1 - cov * 0.2) + this.flash * 6;
+    RIM.value.copy(p.sky).multiplyScalar(0.3 * p.hemiI).add(_rc.copy(p.sun).multiplyScalar(0.05 * p.sunI * dim));
+    const u = this.paintU, sunUp = el > -0.1;
+    u.uTop.value.copy(p.top).lerp(p.haze, cov * 0.5); u.uHor.value.copy(p.hor).lerp(p.haze, cov * 0.4); u.uHaze.value.copy(p.haze);
+    u.uSunC.value.copy(p.sun); u.uSunD.value.copy(sunUp ? sd : md);
+    u.uGlow.value = sunUp ? smoothstep(-0.1, 0.05, el) * dim : 0.3 * smoothstep(0.0, 0.2, md.y);
+    u.uDisc.value = smoothstep(-0.03, 0.0, el) * (1 - cov * 0.9);
+    u.uCl.value.copy(p.cl); u.uCs.value.copy(p.cs); u.uCover.value = cov; u.uT.value += dt * (1 + env.wind * 2);
+    u.uDark.value = env.rain; u.uFlashC.value = this.flash;
+    this.paintSky.position.copy(camera.position); this.paintClouds.position.copy(camera.position);
+    // haze: the palette's haze colour, warmer toward the sun
+    this.fogA.copy(p.haze); this.fogB.copy(p.haze).lerp(p.sun, 0.35 * this.day);
+    this.horizon.copy(p.hor); this.zenith.copy(p.top);
+  }
   // hour: 0..24, decl degrees
   computeSun(hour, declDeg) {
     const d = declDeg * Math.PI / 180, H = (hour - 12) * 15 * Math.PI / 180;
@@ -151,7 +226,7 @@ export class SkySystem {
     // az from north, clockwise (east = 90deg). World: north = -z, east = +x.
     return new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
   }
-  update(dt, hour, declDeg, env, camera, focus) {
+  update(dt, hour, declDeg, env, camera, focus, season) {
     const sd = this.computeSun(hour, declDeg);
     this.sunDir.copy(sd);
     const md = this.computeSun((hour + 12.5) % 24, -declDeg * 0.6); this.moonDir.copy(md);
@@ -218,14 +293,15 @@ export class SkySystem {
     cu.uDark.value = env.rain;
     cu.uFlashC.value = this.flash;
     this.sky.position.copy(camera.position);
+    if (PAINTED) this.paintUpdate(dt, hour, declDeg, env, season, sd, md, camera);
     // sample fog colours from the rendered sky
     this.sampleTimer -= dt;
-    if (this.sampleTimer <= 0) { this.sampleTimer = 0.5; this.sampleFog(sd); }
+    if (!PAINTED && this.sampleTimer <= 0) { this.sampleTimer = 0.5; this.sampleFog(sd); }
     G.uFogColor.value.lerp(this.fogA, Math.min(1, dt * 2));
     G.uFogSun.value.lerp(this.fogB, Math.min(1, dt * 2));
     // environment map
     this.envTimer -= dt;
-    if (this.q.env && this.envTimer <= 0 && this.lastEnvSun.distanceTo(sd) > 0.03) {
+    if (!PAINTED && this.q.env && this.envTimer <= 0 && this.lastEnvSun.distanceTo(sd) > 0.03) {
       this.envTimer = 2; this.lastEnvSun.copy(sd); this.refreshEnv();
     }
   }

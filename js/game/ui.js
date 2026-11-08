@@ -279,22 +279,42 @@ export class UI {
       l.appendChild(el('div', 'lentry' + (seen ? '' : ' locked'), seen ? `<h3>${L.name} <i>${L.sci || ''}</i></h3><p>${L.text}</p>` : `<h3>Unknown</h3><p>Not yet encountered.</p>`));
     }
   }
+  // the explored land is drawn clear; the rest lies under a parchment wash that still shows its shape, with
+  // soft edges (a 64x64 mask scaled up smoothly), so the map reads at a glance instead of being mostly black
   renderMap() {
     const g = this.g, cv = $('mapcv'), x = cv.getContext('2d');
     const S = cv.width;
-    if (g.mapImage) x.drawImage(g.mapImage, 0, 0, S, S);
-    // fog of war
-    const cell = S / 64;
-    x.fillStyle = 'rgba(14,12,10,0.86)';
-    for (let j = 0; j < 64; j++) for (let i = 0; i < 64; i++) if (!this.explored[j * 64 + i]) x.fillRect(i * cell, j * cell, cell + 0.5, cell + 0.5);
+    if (g.mapImage) { x.imageSmoothingEnabled = true; x.drawImage(g.mapImage, 0, 0, S, S); }
+    const fog = this._fog || (this._fog = Object.assign(document.createElement('canvas'), { width: 64, height: 64 }));
+    const fx = fog.getContext('2d'), fd = fx.createImageData(64, 64);
+    for (let k = 0; k < 64 * 64; k++) { fd.data[k * 4] = 238; fd.data[k * 4 + 1] = 226; fd.data[k * 4 + 2] = 196; fd.data[k * 4 + 3] = this.explored[k] ? 0 : 175; }
+    fx.putImageData(fd, 0, 0);
+    x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high'; x.drawImage(fog, 0, 0, S, S);
     const toMap = (wx, wz) => [(wx + 2048) / 4096 * S, (wz + 2048) / 4096 * S];
-    x.font = '600 13px "Cormorant Garamond", serif'; x.textAlign = 'center';
-    for (const k of this.discovered) { const s = SITES[k]; const [mx, my] = toMap(s.x, s.z); x.fillStyle = '#e9e1cf'; x.beginPath(); x.arc(mx, my, 3.5, 0, 6.28); x.fill(); x.fillStyle = 'rgba(233,225,207,0.9)'; x.fillText(s.name, mx, my - 8); }
-    for (const c of g.camps) { const [mx, my] = toMap(c.pos.x, c.pos.z); x.fillStyle = '#ff9a40'; x.beginPath(); x.arc(mx, my, 4, 0, 6.28); x.fill(); }
-    if (g.story && g.story.marker) { const [mx, my] = toMap(g.story.marker.x, g.story.marker.z); x.strokeStyle = '#e0a040'; x.lineWidth = 2; x.beginPath(); x.moveTo(mx, my - 8); x.lineTo(mx + 8, my); x.lineTo(mx, my + 8); x.lineTo(mx - 8, my); x.closePath(); x.stroke(); }
+    const ink = '#3a2a1c';
+    x.font = '600 15px "Cormorant Garamond", serif'; x.textAlign = 'center';
+    for (const k of this.discovered) {
+      const s = SITES[k]; const [mx, my] = toMap(s.x, s.z);
+      x.fillStyle = ink; x.beginPath(); x.arc(mx, my, 3.5, 0, 6.28); x.fill();
+      x.lineWidth = 3; x.strokeStyle = 'rgba(244,234,210,0.85)'; x.strokeText(s.name, mx, my - 9); x.fillText(s.name, mx, my - 9);
+    }
+    for (const c of g.camps) { const [mx, my] = toMap(c.pos.x, c.pos.z); x.fillStyle = '#e0702a'; x.beginPath(); x.arc(mx, my, 4.5, 0, 6.28); x.fill(); }
+    const comp = g.companion;
+    if (comp && !comp.dead) { const [mx, my] = toMap(comp.pos.x, comp.pos.z); x.fillStyle = '#7a5a3a'; x.strokeStyle = '#f4ead2'; x.lineWidth = 2; x.beginPath(); x.arc(mx, my, 5, 0, 6.28); x.fill(); x.stroke(); }
+    if (g.story && g.story.marker) {
+      const [mx, my] = toMap(g.story.marker.x, g.story.marker.z), pulse = 10 + 4 * Math.sin(performance.now() * 0.005);
+      x.strokeStyle = '#c0501e'; x.lineWidth = 3; x.beginPath(); x.moveTo(mx, my - 9); x.lineTo(mx + 9, my); x.lineTo(mx, my + 9); x.lineTo(mx - 9, my); x.closePath(); x.stroke();
+      x.lineWidth = 1.5; x.globalAlpha = 0.6; x.beginPath(); x.arc(mx, my, pulse, 0, 6.28); x.stroke(); x.globalAlpha = 1;
+    }
     const P = g.player; const [px, py] = toMap(P.pos.x, P.pos.z);
-    x.save(); x.translate(px, py); x.rotate(-P.yaw); x.fillStyle = '#fff'; x.beginPath(); x.moveTo(0, -9); x.lineTo(6, 7); x.lineTo(0, 3); x.lineTo(-6, 7); x.closePath(); x.fill(); x.restore();
-    x.fillStyle = 'rgba(233,225,207,0.7)'; x.font = '12px Karla, sans-serif'; x.textAlign = 'left'; x.fillText('N ↑', 10, 18);
+    x.save(); x.translate(px, py); x.rotate(-P.yaw); x.fillStyle = ink; x.strokeStyle = '#f4ead2'; x.lineWidth = 2;
+    x.beginPath(); x.moveTo(0, -11); x.lineTo(7, 8); x.lineTo(0, 4); x.lineTo(-7, 8); x.closePath(); x.stroke(); x.fill(); x.restore();
+    // compass and a small legend
+    x.fillStyle = ink; x.font = '700 16px "Cormorant Garamond", serif'; x.textAlign = 'center'; x.fillText('N', 26, 26);
+    x.beginPath(); x.moveTo(26, 32); x.lineTo(31, 48); x.lineTo(26, 44); x.lineTo(21, 48); x.closePath(); x.fill();
+    const L = [['#7ca058', 'Forest'], ['#cec67c', 'Meadow'], ['#60b2ba', 'Water'], ['#baac9c', 'Rock'], ['#e0be92', 'Village']];
+    x.font = '13px Karla, sans-serif'; x.textAlign = 'left';
+    L.forEach(([col, name], i) => { const yy = S - 18 - (L.length - 1 - i) * 18; x.fillStyle = col; x.fillRect(14, yy - 10, 14, 12); x.strokeStyle = 'rgba(58,42,28,0.5)'; x.lineWidth = 1; x.strokeRect(14, yy - 10, 14, 12); x.fillStyle = ink; x.fillText(name, 34, yy); });
   }
   showDeath(cause) {
     const msgs = { bleed: 'You bled into the leaves.', drown: 'The river kept you.', starve: 'Hunger is patient.', thirst: 'The heat drank you.', fall: 'The ground came up hard.', wounds: 'The forest is not cruel. It is attentive.' };

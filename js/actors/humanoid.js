@@ -5,6 +5,8 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { patch, NOISE_GLSL } from '../core/shaderlib.js';
 import { mergeByMaterial } from '../core/merge.js';
 import { humanRigReady, buildRiggedHuman, animateRiggedHuman } from './humanrig.js';
+import { PAINTED } from '../core/palette.js';
+import { toonify } from '../core/toon.js';
 
 function limbGeo(r0, r1, len, radial = 10) {
   const c = new THREE.CylinderGeometry(r1, r0, len, radial, 4, true); c.translate(0, -len / 2, 0);
@@ -39,7 +41,13 @@ export function skinMaterial(color = 0x5e3d2a, mud = 0.35, key = 'skin') {
   return m;
 }
 
+// in the painted look every person is toon-shaded with ink outlines (docs/art-direction.md)
 export function buildHumanoid(opts = {}) {
+  const h = buildHumanoidBody(opts);
+  if (PAINTED) toonify(h.root, { soften: 2 });
+  return h;
+}
+function buildHumanoidBody(opts) {
   if (humanRigReady() && !opts.procedural) return buildRiggedHuman(opts);
   const S = opts.scale || 1.0;
   const skin = opts.skin || skinMaterial(opts.skinColor || 0x5e3d2a, opts.mud ?? 0.35, opts.skinKey || 'skin');

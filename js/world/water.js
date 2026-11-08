@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { G, NOISE_GLSL, ATMOS_GLSL, addGlobals } from '../core/shaderlib.js';
 import { clamp } from '../core/noise.js';
+import { PAINTED, PU } from '../core/palette.js';
 import { height, riverX, riverY, RIVER_W, RIVER_END_Z, LAKE, LAKE_LEVEL, lakeE, WATERHOLES, HALF, WATER_STATE } from './terrain.js';
 
 // Season looks of Pench water: clear green-teal winter pools, stagnant algae-green summer "doh",
@@ -14,11 +15,73 @@ const WATER_SEASON = {
   post: { turb: 1.0, scatter: [0.02, 0.036, 0.027], tree: [0.055, 0.085, 0.04], algae: 0.1 },
 };
 
+// the painted look's water: shallow-to-deep colour per season, light and dark ripple lines (stretched along
+// the current in the river), flecks of sun glitter, banded sky and treeline reflection, and a white foam line
+// that laps at every shore (docs/art-direction.md)
+const PAINTED_WATER = {
+  winter: ['#5cb8a8', '#1e6470'], summer: ['#8aa858', '#3a6a48'], monsoon: ['#b0905a', '#7a5a38'], post: ['#62b4a0', '#226a6a'],
+};
+const PAINTED_FRAG = /* glsl */`
+  ${NOISE_GLSL}
+  ${ATMOS_GLSL}
+  uniform float uTime, uRain, uDay, uSunVis, uFlash, uTreeline; uniform vec3 uSunDir, uSunCol, uSkyZen, uSkyHor, uShallow, uDeep, uLeafShade; uniform vec2 uFlow;
+  varying vec3 vWP; varying float vDepth; varying vec2 vFD;
+  float aaStep(float e, float x) { float w = fwidth(x) * 0.75 + 1e-4; return smoothstep(e - w, e + w, x); }
+  void main(){
+    vec2 p = vWP.xz; float t = uTime, depth = max(vDepth, 0.0);
+    float still = 1.0 - clamp(uFlow.y, 0.0, 1.0);
+    vec3 light = mix(vec3(0.1, 0.14, 0.26), vec3(1.0), uDay) + uSunCol * 0.12;
+    vec3 col = mix(uShallow, uDeep, smoothstep(0.1, 2.2, depth)) * light;
+    // reflection: sky above the forest wall, in two flat bands
+    vec3 V = normalize(vWP - cameraPosition);
+    float NdV = max(-V.y, 0.0);
+    vec3 R = reflect(V, vec3(0.0, 1.0, 0.0));
+    float az = atan(R.z, R.x);
+    float tl = uTreeline * (0.8 + 0.3 * vnoise(vec2(az * 4.0, 1.3)));
+    vec3 refl = mix(uSkyHor, uSkyZen, smoothstep(0.1, 0.7, R.y));
+    refl = mix(refl, mix(uLeafShade, uShallow, 0.35) * 0.8 * light, 1.0 - aaStep(tl, R.y));   // the forest's reflection: a soft green, not a dark slab
+    col = mix(col, refl, (0.2 + 0.35 * aaStep(0.5, 1.0 - NdV)) * 0.75);
+    // ripple lines: contour lines of slow noise; along the current they stretch into streaks
+    vec2 fd = normalize(vFD + vec2(1e-4, 0.0));
+    vec2 q = mix(p * 0.35, vec2(dot(p, vec2(fd.y, -fd.x)) * 0.9, dot(p, fd) * 0.12 - t * uFlow.y * 0.9), 1.0 - still);
+    float rn = vnoise(q + t * 0.04 * still) * 0.7 + vnoise(q * 2.3 - t * 0.06) * 0.3;
+    float fadeD = 1.0 - smoothstep(30.0, 140.0, distance(cameraPosition, vWP));
+    float lineL = aaStep(0.94, sin(rn * 12.0)) * fadeD, lineD = aaStep(0.96, sin(rn * 12.0 + 2.2)) * fadeD;
+    col = mix(col, mix(col, uSkyHor * light + 0.08, 0.6), lineL * 0.45);
+    col = mix(col, col * 0.8, lineD * 0.35);
+    // sun glitter: a few bright flecks along the sun's path on the water
+    float glint = pow(max(dot(R, uSunDir), 0.0), 24.0) * aaStep(0.8, vnoise(p * 2.6 + vec2(t * 0.4, -t * 0.3)));
+    col += uSunCol * uSunVis * glint * 2.0;
+    // rain: white rings
+    float ring = 0.0;
+    if (uRain > 0.01) {
+      vec2 cp = p * 1.2, ci = floor(cp), cf = fract(cp);
+      float h = hash12(ci), life = fract(t * (0.9 + h) + h * 10.0);
+      float dl = length(cf - 0.5 - (vec2(hash12(ci + 3.1), hash12(ci + 7.7)) - 0.5) * 0.4);
+      ring = (1.0 - aaStep(0.025, abs(dl - life * 0.45))) * (1.0 - life) * uRain;
+    }
+    // foam: thin lines lapping at the shore, a few pixels wide whatever the bank's slope (a band of fixed depth
+    // spread metres wide on gentle banks and read as snow), and white water where the river runs shallow and fast
+    float lap = 0.1 + 0.06 * sin(t * 1.1 + vnoise(p * 0.7) * 7.0);
+    float wd = fwidth(depth) * 1.6 + 0.003;
+    float foam = 1.0 - smoothstep(wd * 0.5, wd, abs(depth - lap));
+    foam = max(foam, (1.0 - smoothstep(wd * 0.5, wd, abs(depth - lap * 2.6))) * 0.5);
+    foam = max(foam, (1.0 - smoothstep(wd * 0.6, wd * 1.4, vDepth)) * smoothstep(-wd * 1.5, 0.0, vDepth));   // the waterline itself, not the dry bank past it
+    foam = max(foam, (1.0 - still) * aaStep(0.66, vnoise(p * 1.4 + fd * t * 1.6)) * (1.0 - smoothstep(0.15, 0.5, depth)) * 0.8);
+    foam = max(foam, ring);
+    col = mix(col, vec3(0.92, 0.94, 0.9) * light, foam * 0.85);
+    col += vec3(0.8, 0.85, 1.0) * uFlash * 0.3;
+    float a = mix(0.6, 0.94, smoothstep(0.0, 1.0, depth)) * smoothstep(-0.03, 0.03, depth);
+    a = max(a, foam * 0.9 * smoothstep(-0.06, 0.0, depth));
+    gl_FragColor = vec4(applyAtmos(col, vWP), a);
+  }`;
+
 function waterMaterial(riseRef, flow, treeline) {
   const u = {
     uRise: riseRef, uRain: { value: 0 }, uSkyZen: { value: new THREE.Color() }, uSkyHor: { value: new THREE.Color() },
     uFlow: { value: new THREE.Vector2(0, flow) }, uDay: { value: 1 }, uTreeline: { value: treeline },
     uTurb: { value: 1 }, uScatter: { value: new THREE.Color(0.05, 0.08, 0.07) }, uTreeCol: { value: new THREE.Color(0.06, 0.08, 0.045) }, uAlgae: { value: 0 },
+    uShallow: { value: new THREE.Color() }, uDeep: { value: new THREE.Color() }, uLeafShade: PU.uLeafShade,
   };
   const m = new THREE.ShaderMaterial({
     uniforms: u, transparent: true, depthWrite: false, fog: false,
@@ -27,7 +90,7 @@ function waterMaterial(riseRef, flow, treeline) {
       uniform float uRise; varying vec3 vWP; varying float vDepth; varying vec2 vFD;
       void main(){ vec3 p = position; p.y += uRise; vec4 w = modelMatrix * vec4(p,1.0); vWP = w.xyz; vDepth = aDepth + uRise; vFD = aFlowDir;
         gl_Position = projectionMatrix * viewMatrix * w; }`,
-    fragmentShader: `
+    fragmentShader: PAINTED ? PAINTED_FRAG : `
       ${NOISE_GLSL}
       ${ATMOS_GLSL}
       uniform float uTime, uRain, uDay, uSunVis, uFlash, uTreeline, uTurb, uAlgae; uniform vec3 uSunDir, uSunCol, uSkyZen, uSkyHor, uScatter, uTreeCol; uniform vec2 uFlow;
@@ -114,7 +177,7 @@ function waterMaterial(riseRef, flow, treeline) {
       }`,
   });
   m.onBeforeCompile = (s) => addGlobals(s);
-  m.customProgramCacheKey = () => 'water';
+  m.customProgramCacheKey = () => (PAINTED ? 'water-p' : 'water');
   // ShaderMaterial uniforms need the globals at creation too
   for (const k in G) u[k] = G[k];
   return m;
@@ -130,7 +193,7 @@ export class Water {
   }
   buildRiver() {
     const pos = [], dep = [], fd = [], idx = [];
-    const W2 = RIVER_W + 10, across = 10, step = 4;
+    const W2 = RIVER_W + 10, across = 36, step = 2;   // fine enough that per-vertex depth follows the banks
     let rows = 0;
     for (let z = -HALF; z <= RIVER_END_Z + 60; z += step) {
       const cx = riverX(z), y = riverY(z);
@@ -150,7 +213,7 @@ export class Water {
   }
   buildLake() {
     const pos = [], dep = [], fd = [], idx = [];
-    const step = 6, x0 = LAKE.x - LAKE.rx * 1.35, x1 = LAKE.x + LAKE.rx * 1.35, z0 = LAKE.z - LAKE.rz * 1.35, z1 = LAKE.z + LAKE.rz * 1.35;
+    const step = 3, x0 = LAKE.x - LAKE.rx * 1.35, x1 = LAKE.x + LAKE.rx * 1.35, z0 = LAKE.z - LAKE.rz * 1.35, z1 = LAKE.z + LAKE.rz * 1.35;
     const nx = Math.ceil((x1 - x0) / step), nz = Math.ceil((z1 - z0) / step);
     const map = new Int32Array((nx + 1) * (nz + 1)).fill(-1);
     for (let j = 0; j <= nz; j++) for (let i = 0; i <= nx; i++) {
@@ -170,7 +233,7 @@ export class Water {
     this.holes = [];
     for (const w of WATERHOLES) {
       const pos = [], dep = [], fd = [], idx = [];
-      const R = w.r + 5, ring = 20, rings = 6;
+      const R = w.r + 3, ring = 64, rings = 20;   // ends under the bank, never past it
       pos.push(w.x, w.level, w.z); dep.push(w.level - height(w.x, w.z)); fd.push(0, 0);
       for (let r = 1; r <= rings; r++) for (let k = 0; k < ring; k++) {
         const a = k / ring * Math.PI * 2, rr = R * r / rings, x = w.x + Math.cos(a) * rr, z = w.z + Math.sin(a) * rr;
@@ -202,6 +265,8 @@ export class Water {
       m.uniforms.uTurb.value = c.turb * (isRiver && season === 'summer' ? 0.7 : 1);
       m.uniforms.uScatter.value.setRGB(...c.scatter); m.uniforms.uTreeCol.value.setRGB(...c.tree);
       m.uniforms.uAlgae.value = c.algae;
+      const pw = PAINTED_WATER[season] || PAINTED_WATER.winter;
+      m.uniforms.uShallow.value.set(pw[0]); m.uniforms.uDeep.value.set(pw[1]);
     }
   }
   update(sky, rain) {

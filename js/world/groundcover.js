@@ -4,6 +4,8 @@
 // pond beds, under the water. Everything is deterministic per 4 m cell, so it is the same when you come back.
 import * as THREE from 'three';
 import { G, patch, NOISE_GLSL } from '../core/shaderlib.js';
+import { PAINTED } from '../core/palette.js';
+import { toon } from '../core/toon.js';
 import { biomeAt, waterAt, groundHeight, groundStep } from './terrain.js';
 import { Simplex } from '../core/noise.js';
 
@@ -119,12 +121,17 @@ export class GroundCover {
     this.leaves = new THREE.InstancedMesh(lg, lm, capL);
 
     // --- twigs
-    const tm = new THREE.MeshStandardMaterial({ color: 0x8a7258, map: T.scan && T.scan.oak ? T.scan.oak.map : null, roughness: 0.95 });
+    const tm = PAINTED ? toon({ color: 0x8a7258, rim: 0.3, key: 'gc-twig' }) : new THREE.MeshStandardMaterial({ color: 0x8a7258, map: T.scan && T.scan.oak ? T.scan.oak.map : null, roughness: 0.95 });
     this.twigs = new THREE.InstancedMesh(twigGeometry(), tm, capT);
 
     // --- stones: three shapes share one material; colour per instance (laterite, gneiss, basalt, algae-wet)
-    const sm = new THREE.MeshStandardMaterial({ map: T.rock, roughness: 0.82 });
-    patch(sm, 'gc-stone', (s) => {
+    // painted: each stone a flat colour (per instance) on toon light, darker where it sits in the soil
+    const sm = PAINTED ? toon({ rim: 0.4, key: 'gc-stone', patch: (s) => {
+      s.vertexShader = s.vertexShader.replace('#include <common>', `#include <common>\n varying float vSY;`).replace('#include <begin_vertex>', `#include <begin_vertex>\n vSY = position.y;`);
+      s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>\n varying float vSY;`)
+        .replace('#include <color_fragment>', `#include <color_fragment>\n diffuseColor.rgb *= 1.15 * mix(0.7, 1.0, smoothstep(-0.3, 0.2, vSY));`);
+    } }) : new THREE.MeshStandardMaterial({ map: T.rock, roughness: 0.82 });
+    if (!PAINTED) patch(sm, 'gc-stone', (s) => {
       s.vertexShader = s.vertexShader.replace('#include <common>', `#include <common>\n varying vec3 vSP; varying vec3 vSN;`)
         .replace('#include <begin_vertex>', `#include <begin_vertex>\n vSP = position; vSN = normal;`);
       s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>\n varying vec3 vSP; varying vec3 vSN;\n uniform float uWetness;`)
@@ -147,7 +154,7 @@ export class GroundCover {
     this._m = new THREE.Matrix4(); this._q = new THREE.Quaternion(); this._e = new THREE.Euler(); this._v = new THREE.Vector3(); this._s = new THREE.Vector3();
     this._up = new THREE.Vector3(0, 1, 0); this._n = new THREE.Vector3(); this._qa = new THREE.Quaternion();
   }
-  setSeason(s) { this.leafMul = SEASON_LEAF[s] ?? 1; this.fresh = SEASON_FRESH[s] ?? 0.06; this.cells.clear(); this.pressed.clear(); this.last.set(1e9, 0, 1e9); }
+  setSeason(s) { this.leafMul = PAINTED ? 0 : SEASON_LEAF[s] ?? 1; this.fresh = SEASON_FRESH[s] ?? 0.06; this.cells.clear(); this.pressed.clear(); this.last.set(1e9, 0, 1e9); }
   // a foot came down here: dry leaves under it crumble into the print, so leave the 3D leaves out of that spot.
   // Kept per cell for half a game day, which is longer than any print lasts.
   press(x, z, r, t) {
