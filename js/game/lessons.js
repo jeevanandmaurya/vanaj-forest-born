@@ -29,7 +29,7 @@ export const SKILLS = {
   bandage: { g: 'Living', k: 'H', t: 'Bind a bleeding wound (needs a leaf bandage)', on: 'bandaged' },
   map: { g: 'Living', k: 'M', t: 'Open the map', d: (g) => g.ui.open === 'map' },
   journal: { g: 'Living', k: 'J', t: 'Read your journal', d: (g) => g.ui.open === 'journal' },
-  compass: { g: 'Living', k: 'Look', t: 'The diamond on the compass shows where to go', d: (g, P, k, L) => L.ids && L.ids.includes('compass') && L.t > 9 },
+  compass: { g: 'Living', k: 'Look', t: 'The orange arrow points to where you need to go next', d: (g, P, k, L) => L.ids && L.ids.includes('compass') && L.t > 9 },
   alarms: { g: 'Living', k: 'Listen', t: 'Red marks on the compass are animal alarm calls. Something is hunting there', d: (g, P, k, L) => L.ids && L.ids.includes('alarms') && L.t > 9 },
   // fighting
   equip: { g: 'Fighting', k: '1 - 6', t: 'Switch what you\'re holding (or the mouse wheel)', d: (g, P, k, L) => g.inv.equipped !== L.held0 },
@@ -69,6 +69,15 @@ export const SKILLS = {
   rootLeap: { g: 'Trees', k: 'Space', t: 'Jump off', d: (g, P, k, L) => P.canopy.mode === 'air' && L.prev === 'rope' },
 };
 
+// the same lessons with a thumb: buttons for keys, and different words where the words were about the keyboard
+const TOUCH_KEY = { 'W A S D': 'Stick', Mouse: 'Drag', Shift: 'Stick', Space: 'Jump', C: 'Crouch', E: 'Use', Tab: 'Bag', B: 'Bag', H: 'Bag', M: 'Map', J: 'Notes', 'Left-click': 'Strike', 'Right-click': 'Aim', 'Right-click Space': 'Aim Jump', 'C Left-click': 'Crouch Strike', F: 'Use', 'Right-click Left-click': 'Aim Strike', 6: 'Weapon', '1 - 6': 'Weapon', Q: 'Call', 'W S': 'Stick', 'A D': 'Stick', W: 'Stick', 'Shift W': 'Climb', Look: 'Look', Listen: 'Listen' };
+const TOUCH_TEXT = {
+  run: 'Push the stick all the way forward to run. It tires you out', eatKey: 'Eat from your bag', bandage: 'Bind a bleeding wound from your bag (needs a leaf bandage)',
+  equip: 'Switch what you\'re holding', dodge: 'Dodge while blocking', spearThrow: 'Aim the spear, then throw it', bowDraw: 'Aim the bow, hold Strike to draw, let go to shoot',
+  wheel: 'Tap Call, then tap the call you want', climbUp: 'Climb up or down. Hold Climb to go faster', walkLimb: 'Walk along it. Pull back on the stick to turn round',
+  catch: 'Hold Jump in the air to catch a liana or branch. Keep holding or you let go', ropeClimb: 'Hold Climb and push the stick up or down to climb the rope', letGo: 'Let go of Jump mid-swing to fly', pump: 'Push the stick to swing the rope, in time with the swing',
+};
+const NOT_ON_TOUCH = ['view', 'torchOff'];   // no button for these on a phone
 // when something comes up for the first time, teach what goes with it
 const MOMENTS = [
   { ids: ['swim'], title: 'Deep water', when: (g, P) => P.swimming },
@@ -104,6 +113,8 @@ export class Lessons {
     });
     this.el = document.getElementById('skillcard');
   }
+  kbdOf(s) { return kbd(this.g.touch ? TOUCH_KEY[s.k] || s.k : s.k); }
+  textOf(id, s) { return (this.g.touch && TOUCH_TEXT[id]) || s.t; }
   reset() { this.done.clear(); this.seenMoment.clear(); this.ids = null; this.fromObjective = false; this.render(); }
   has(...ids) { return ids.every((i) => this.done.has(i)); }
   // show this list until it is done (from an objective) or for a while (when something comes up)
@@ -125,6 +136,7 @@ export class Lessons {
     if (g.cinematic || P.dead) return;
     this.t += dt; this.play += dt;
     if (this.view0 === undefined) this.markers();
+    if (g.touch) for (const id of NOT_ON_TOUCH) this.done.add(id);
     // what the player has just done
     for (const id in SKILLS) { if (this.done.has(id)) continue; const s = SKILLS[id]; if (s.d && s.d(g, P, k, this)) this.learn(id); }
     const cm = P.canopy.mode; if (cm !== this.cur) { this.prev = this.cur || null; this.cur = cm; this.prevT = 0.4; } else if ((this.prevT -= dt) <= 0) this.prev = null;
@@ -150,11 +162,11 @@ export class Lessons {
     const e = this.el; if (!e) return;
     if (!this.ids) { e.innerHTML = ''; e.classList.remove('on'); return; }
     e.classList.add('on');
-    e.innerHTML = (this.title ? `<h5>${this.title}</h5>` : '') + this.ids.map((i) => { const s = SKILLS[i], d = this.done.has(i); return `<div class="sk${d ? ' done' : ''}"><i>${d ? '✓' : ''}</i>${kbd(s.k)}<span>${s.t}</span></div>`; }).join('');
+    e.innerHTML = (this.title ? `<h5>${this.title}</h5>` : '') + this.ids.map((i) => { const s = SKILLS[i], d = this.done.has(i); return `<div class="sk${d ? ' done' : ''}"><i>${d ? '✓' : ''}</i>${this.kbdOf(s)}<span>${this.textOf(i, s)}</span></div>`; }).join('');
   }
   // the journal's list of everything he can do
   list() {
     const groups = {}; for (const [id, s] of Object.entries(SKILLS)) (groups[s.g] = groups[s.g] || []).push([id, s]);
-    return Object.entries(groups).map(([g, rows]) => `<h4>${g}</h4>` + rows.map(([id, s]) => `<div class="sk${this.done.has(id) ? ' done' : ''}"><i>${this.done.has(id) ? '✓' : ''}</i>${kbd(s.k)}<span>${s.t}</span></div>`).join('')).join('');
+    return Object.entries(groups).map(([g, rows]) => `<h4>${g}</h4>` + rows.map(([id, s]) => `<div class="sk${this.done.has(id) ? ' done' : ''}"><i>${this.done.has(id) ? '✓' : ''}</i>${this.kbdOf(s)}<span>${this.textOf(id, s)}</span></div>`).join('')).join('');
   }
 }

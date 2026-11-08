@@ -1,0 +1,9 @@
+{
+  "name": "VANAJ: Forest-Born",
+  "short_name": "VANAJ",
+  "start_url": "./index.html",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#000000",
+  "theme_color": "#000000"
+}

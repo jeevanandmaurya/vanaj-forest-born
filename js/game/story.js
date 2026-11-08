@@ -98,6 +98,16 @@ function canopyRoute(g) {
   });
 }
 
+// the nearest of the kinds of thing wanted lying about, for the pointer (looked up a few times a second)
+function nearestItem(g, types) {
+  if (g._itemT > g.clock) return g._item;
+  g._itemT = g.clock + 0.4; const p = g.player.pos; let best = null, bd = Infinity;
+  for (const a of g.pickups.active) if (types.includes(a.type)) { const d = (a.x - p.x) ** 2 + (a.z - p.z) ** 2; if (d < bd) { bd = d; best = a; } }
+  for (const it of (g.loose && g.loose.near) || []) { if (it.gone || !types.includes(it.stick ? 'stick' : 'stone') || (!it.stick && it.size > 0.24)) continue; const d = (it.pos.x - p.x) ** 2 + (it.pos.z - p.z) ** 2; if (d < bd) { bd = d; best = it.pos; } }
+  return (g._item = best);
+}
+function nearestAnimal(g, test) { const p = g.player.pos; let best = null, bd = Infinity; for (const a of g.eco.animals) if (test(a)) { const d = a.dist2(p); if (d < bd) { bd = d; best = a.pos; } } return best; }
+function nearestCamp(g) { const p = g.player.pos; let best = null, bd = Infinity; for (const c of g.camps) { const d = c.pos.distanceToSquared(p); if (d < bd) { bd = d; best = c.pos; } } return best; }
 // the nearest liana, for the compass (looked up once a second)
 function nearestLiana(g) {
   const now = g.clock; if (g._lianaT > now) return g._liana;
@@ -118,7 +128,7 @@ chapter({
   objectives: [
     // the basics first, right where he stands, each one ticked off by doing it
     { text: 'Stretch your legs. Kaali wants to get going', teach: ['move', 'look', 'run', 'jump', 'crouch'], teachTitle: 'Getting around', check: (g) => g.lessons.has('move', 'look', 'run', 'jump', 'crouch') },
-    { text: () => `Pick up sticks (${S_.g.inv.count('stick')}/4) and stones (${S_.g.inv.count('stone')}/2) off the ground`, teach: ['gather'], check: (g) => g.inv.count('stick') >= 4 && g.inv.count('stone') >= 2 },
+    { text: () => `Pick up sticks (${S_.g.inv.count('stick')}/4) and stones (${S_.g.inv.count('stone')}/2) off the ground`, teach: ['gather'], markerFn: (g) => { const need = []; if (g.inv.count('stick') < 4) need.push('stick'); if (g.inv.count('stone') < 2) need.push('stone'); return nearestItem(g, need); }, check: (g) => g.inv.count('stick') >= 4 && g.inv.count('stone') >= 2 },
     { text: 'Make a stone knife. Open your pouch with <b>Tab</b>', teach: ['pouch', 'craft'], check: (g) => g.inv.has('knife'), done: (g) => { g.player.equip('knife'); g.ui.narrate("You hit one stone with another until an edge comes off sharp. Took me a while to learn that."); } },
     { text: 'Try the knife out. Something bigger than you will show up one day', teach: ['equip', 'attack', 'block', 'dodge'], teachTitle: 'Fighting', onStart: (g) => g.lessons.markers(), check: (g) => g.lessons.has('attack', 'block', 'dodge') },
     { text: 'Go and drink at the waterhole', marker: 'denWater', teach: ['drink', 'compass'], check: (g, S) => S.flags.drank },
@@ -173,11 +183,11 @@ chapter({
         if (g.clock - t0 <= 240) g.ui.narrate(falls === 0 ? ["Six trees, and I never touched the ground.", "The young one sat down next to me and started picking through my hair, like I was one of them."] : ["I fell off a lot. I kept climbing back up.", "When I got to the last tree the young one sat down next to me and started picking through my hair, like I was one of them."]);
         S.flags.raced = true; S.checkNow();
       } },
-    { text: 'Hunt with Kaali. Bring down a peafowl, chital or boar', teach: ['sneak', 'wheel', 'whistle'], teachTitle: 'Hunting', check: (g, S) => S.flags.hunted },
-    { text: 'Skin your kill with the knife (<b>E</b>)', teach: ['skin'], check: (g, S) => S.flags.harvested || g.inv.has('meat_raw') },
+    { text: 'Hunt with Kaali. Bring down a peafowl, chital or boar', teach: ['sneak', 'wheel', 'whistle'], teachTitle: 'Hunting', markerFn: (g) => nearestAnimal(g, (a) => !a.dead && ['peafowl', 'chital', 'boar'].includes(a.sp)), check: (g, S) => S.flags.hunted },
+    { text: 'Skin your kill with the knife (<b>E</b>)', teach: ['skin'], markerFn: (g) => nearestAnimal(g, (a) => a.dead && !a.harvested && !a.companion), check: (g, S) => S.flags.harvested || g.inv.has('meat_raw') },
     { text: () => `Make a campfire in your pouch, <b>Tab</b> (sticks ${S_.g.inv.count('stick')}/5, stones ${S_.g.inv.count('stone')}/3)`, teach: ['fire'], check: (g) => g.camps.length > 0, hint: "Pick up more sticks and stones if you're short." },
-    { text: 'Cook the meat at the fire (<b>E</b>)', teach: ['cook'], check: (g) => g.inv.has('meat_cooked') },
-    { text: 'Share the meat with Kaali (<b>E</b> near her)', check: (g, S) => S.flags.satKaali,
+    { text: 'Cook the meat at the fire (<b>E</b>)', teach: ['cook'], markerFn: (g) => nearestCamp(g), check: (g) => g.inv.has('meat_cooked') },
+    { text: 'Share the meat with Kaali (<b>E</b> near her)', markerFn: (g) => g.companion && g.companion.pos, check: (g, S) => S.flags.satKaali,
       interact: { at: (g) => (g.companion && !g.companion.dead ? g.companion.pos : null), r: 4.5, prompt: 'Sit with Kaali and share the meat',   // she keeps ~3 m off
         act: (g, S) => {
           g.player.action = { type: 'eat', anim: 'eat', t: 0, dur: 3 }; g.player.crouch = true;
@@ -186,7 +196,7 @@ chapter({
           g.ui.narrate(["She took the first piece. She always eats first.", "Then she put her chin on my knee.", "Her teeth were nearly worn down. Those same teeth carried me, once."]);
           setTimeout(() => { S.flags.satKaali = true; S.checkNow(); }, 9000);
         } } },
-    { text: 'Eat the cooked meat, then sleep by the fire', teach: ['eatKey', 'sleep'], check: (g, S) => S.flags.slept, hint: "Sleeping by a fire gets you through the night and saves your game." },
+    { text: 'Eat the cooked meat, then sleep by the fire', teach: ['eatKey', 'sleep'], markerFn: (g) => nearestCamp(g), check: (g, S) => S.flags.slept, hint: "Sleeping by a fire gets you through the night and saves your game." },
   ],
   outro: ["I scratched another line on the den wall, like I did every night.", "I couldn't tell you why. Kaali never asked."],
 });
@@ -268,7 +278,7 @@ chapter({
     { text: 'Travel east to the termite flats', marker: 'termite', reach: ['termite', 70] },
     { text: "A sloth bear. Get close crouched, weapon away, and hum to her (hold <b>Q</b> → Calm hum)", teach: ['crouch', 'equip', 'wheel', 'hum'], onStart: (g) => g.lessons.markers(), markerFn: (g, S) => S.bear && S.bear.pos, check: (g, S) => S.bear && (S.bear.bond >= 0.6 || S.bear.dead), hint: "Bears can't see or hear well, so if you surprise one it attacks. <b>1</b> puts your weapon away.",
       done: (g, S) => { if (S.bear.dead) g.ui.narrate(["So that's what claws do.", "I think about that bear sometimes. She could have shown me a lot."]); else { g.ui.narrate(['She huffed and turned her back on me.', "From a bear, that's a yes."]); S.bear.bond = 1; } g.ui.seeLore('bear'); } },
-    { text: 'Break open a termite mound (<b>E</b>) and eat the termites', check: (g, S) => S.flags.ateTermites },
+    { text: 'Break open a termite mound (<b>E</b>) and eat the termites', marker: 'termite', check: (g, S) => S.flags.ateTermites },
     { text: 'Craft a torch, then smoke the rock-bee comb for honey', marker: 'hive', teach: ['craft', 'torch', 'torchOff'], check: (g) => g.inv.has('honey'), hint: "Hold the torch (<b>6</b>) under the hive and press <b>E</b>. No smoke and the bees come for you.", done: (g) => g.ui.seeLore('rockbee') },
   ],
   outro: ["That night I heard Torn-Ear roar from my old den.", "The langurs didn't sleep. Me neither."],
@@ -415,7 +425,7 @@ chapter({
         g.ui.narrate(["I carried her out by the scruff, the way Kaali carried me.", "Lal could've killed me right there on the bank. She just watched."]);
         g.ui.addJournal('Chingari', "A dhole pup from a flooded den. The flood nearly got both of us, I guess. She won't leave me alone now. (Hold Q → Dhole whistle to send her at something or call her back.)", 'story');
       } },
-    { text: 'Sit with the pup until she stops shaking (<b>E</b> near her)', check: (g, S) => S.flags.calmPup,
+    { text: 'Sit with the pup until she stops shaking (<b>E</b> near her)', markerFn: (g) => g.companion && g.companion.pos, check: (g, S) => S.flags.calmPup,
       interact: { at: (g) => (g.companion && !g.companion.dead ? g.companion.pos : null), r: 4.5, prompt: 'Hold the pup',
         act: (g, S) => { const k = g.companion; if (k) k.setState('rest', 40); sitBeat(g, S, 'calmPup', ["She shook for a long time. Then she fell asleep with her nose under my arm.", "I called her Chingari. It means spark. You'd understand if you met her.", "Someone carried me out of the water once. Now I'd done it for someone else."], { hum: true }); } } },
   ],
@@ -467,7 +477,7 @@ chapter({
     { text: 'Look at the red stone under the saja', marker: 'shrine', check: (g, S) => S.flags.clue_shrine, done: (g) => { g.ui.narrate(["A stone painted red, a metal fork, bangles on a branch, red cloth tied round the trunk.", "People came here to leave things, not take them. I'd never seen anything do that."]); g.ui.addJournal('Gifts under the saja', "A red stone, a three-pointed fork, little clay horses, bangles and red cloth. Someone left these on purpose.", 'clue'); } },
     { text: "There's a tall wooden thing above the trees. Go to it", marker: 'tower', reach: ['tower', 9] },
     { text: 'Climb the ladder (<b>E</b>, then <b>W</b>)', marker: 'tower', check: (g, S) => S.flags.climbed || g.player.pos.y > SITES.tower.y + 6 },
-    { text: 'Pick up the rattling box', check: (g, S) => S.flags.clue_towerItems,
+    { text: 'Pick up the rattling box', marker: 'tower', check: (g, S) => S.flags.clue_towerItems,
       done: (g) => { g.inv.add('matches', 1); g.ui.narrate(["I shook it and it rattled. I scraped one of the little sticks on the side and it caught fire in my hand.", "I dropped it. Then I did it again. And again.", 'I laughed. I had never made that sound before.']); g.ui.addJournal('Fire in a box', "On the tower I found a cloth cap, a bottle you can see through, and a little box of sticks that catch fire when you scrape them. No more sawing bamboo to start a fire.", 'clue'); g.music.stinger('clue'); } },
     { text: 'Look north from the tower', check: (g, S) => S.lookedNorth, tick: (g, S, dt) => {
       const P = g.player; if (P.pos.y < SITES.tower.y + 6) { S.lookT = 0; return; }
@@ -711,13 +721,13 @@ export class Story {
     // compass / map marker
     this.marker = null;
     if (o && !this.entering) {
-      if (o.markerFn) { const p = o.markerFn(g, this); if (p) this.marker = { x: p.x, z: p.z }; }
+      if (o.markerFn) { const p = o.markerFn(g, this); if (p) this.marker = { x: p.x, z: p.z, y: p.y > 0 && p.isVector3 ? p.y + 1 : undefined }; }
       else if (o.marker) this.marker = { x: SITES[o.marker].x, z: SITES[o.marker].z };
       else if (o.reach) this.marker = { x: SITES[o.reach[0]].x, z: SITES[o.reach[0]].z };
       if (o.tick) o.tick(g, this, dt);
       if (o.reach) { const s = SITES[o.reach[0]]; if ((g.player.pos.x - s.x) ** 2 + (g.player.pos.z - s.z) ** 2 < o.reach[1] ** 2 && !o._doneOnce) { o._doneOnce = true; this.next(); setTimeout(() => (o._doneOnce = false), 1500); } }
       this.chkT = (this.chkT || 0) - dt;
-      if (this.chkT <= 0) { this.chkT = 0.25; this.checkNow(); if (typeof o.text === 'function') g.ui.obj.innerHTML = this.objText(); }
+      if (this.chkT <= 0) { this.chkT = 0.25; this.checkNow(); if (typeof o.text === 'function') g.ui.obj.innerHTML = g.ui.forThumbs(this.objText()); }
     }
     // soft boundary: the village before Act IV
     if (this.chIndex >= 0 && this.chIndex < 9 && !this.done) {

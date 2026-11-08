@@ -344,9 +344,12 @@ export class AudioEngine {
         break;
       }
       case 'langur': {
-        if (kind === 'alarm') { const n = 2 + Math.floor(rand(0, 4)); for (let r = 0; r < n; r++) { const tt = t + r * rand(0.22, 0.4); this.formant(out, tt, { f0: rand(300, 360), pts: [[0.09, 260]], dur: 0.11, a: 0.004, forms: [[900, 3, 1], [1900, 4, 0.5]], rasp: [1000, 1.0], g: 0.6 }); } }
-        else if (kind === 'whoop') this.formant(out, t, { f0: 250, pts: [[0.2, 480], [0.6, 300]], dur: 0.65, a: 0.03, forms: [[700, 3, 1], [1400, 4, 0.4]], g: 0.35 });
-        else this.formant(out, t, { f0: 500, pts: [[0.08, 900], [0.4, 400]], dur: 0.45, forms: [[1300, 4, 1]], rasp: [1500, 0.6], g: 0.5 });
+        // The alarm is a short harsh cough, low and breathy, two or three at a time. The adult male's loud call is a deep
+        // rising whoop that drops away. (The old alarm was a high buzz at full level, in runs of up to five.)
+        if (kind === 'alarm') { const n = 2 + Math.floor(rand(0, 2)), f = rand(170, 215); let tt = t; for (let r = 0; r < n; r++) { this.formant(out, tt, { f0: f, pts: [[0.1, f * 0.72]], dur: 0.13, a: 0.008, forms: [[620, 2.5, 1], [1250, 3, 0.35]], rasp: [650, 0.5], g: 0.26 }); this.noiseBurst(out, tt, { f: 1100, q: 0.9, dur: 0.1, g: 0.05, color: 'pink' }); tt += rand(0.34, 0.56); } }
+        else if (kind === 'whoop') { const f = rand(135, 155); this.formant(out, t, { f0: f, pts: [[0.28, f * 1.7], [0.75, f * 1.05]], dur: 0.8, a: 0.09, forms: [[430, 3, 1], [880, 4, 0.3]], g: 0.2 }); this.formant(out, t + 0.86, { f0: f * 1.2, pts: [[0.3, f * 0.85]], dur: 0.36, a: 0.05, forms: [[400, 3, 1]], g: 0.11 }); }
+        else if (kind === 'grunt') this.formant(out, t, { f0: rand(120, 150), pts: [[0.1, 105]], dur: 0.12, a: 0.02, forms: [[380, 2.5, 1]], g: 0.035 });
+        else this.formant(out, t, { f0: 420, pts: [[0.08, 640], [0.32, 340]], dur: 0.36, forms: [[1000, 3, 1]], rasp: [1100, 0.4], g: 0.26 });
         break;
       }
       case 'dhole': {

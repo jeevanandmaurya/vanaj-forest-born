@@ -268,6 +268,20 @@ class Game {
     this.composer.addPass(new OutputPass());
     if (!this.q.aa && this.q.name !== 'Low') { this.smaa = new SMAAPass(w * r.getPixelRatio(), h * r.getPixelRatio()); this.composer.addPass(this.smaa); }
   }
+  // On a phone, trade sharpness for smoothness: phones vary too much to guess, and they slow down as they heat up. Every few
+  // seconds the render scale steps down if frames are running slow, and back up if there is plenty to spare.
+  keepFrameRate(rdt, t) {
+    const F = this.fps || (this.fps = { n: 0, ms: 0, last: t, scale: 1 }), gap = t - F.last; F.last = t;
+    if (gap > 250) return;   // (a stall or a return from the background is not a slow frame)
+    F.n++; F.ms += gap;
+    if (F.n < 90) return;
+    const avg = F.ms / F.n; F.n = 0; F.ms = 0;
+    const next = avg > 38 ? Math.max(0.55, F.scale - 0.15) : avg < 22 ? Math.min(1, F.scale + 0.1) : F.scale;
+    if (Math.abs(next - F.scale) < 0.01) return;
+    F.scale = next;
+    const pr = Math.min(window.devicePixelRatio || 1, this.q.pr) * next;
+    this.renderer.setPixelRatio(pr); this.renderer.setSize(window.innerWidth, window.innerHeight); this.composer.setPixelRatio(pr);
+  }
   // Change the graphics level in the running game. All the systems read the same quality object, so it is updated in
   // place; each then adjusts what it built from it: buffers sized for the old level, the shadow map, the post-processing.
   // The settings panel is only open at the title or paused, so the short stall of rebuilding interrupts no play.
@@ -283,6 +297,7 @@ class Game {
       const r = this.renderer, P = this.player;
       r.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.q.pr));
       r.setSize(window.innerWidth, window.innerHeight);
+      if (this.fps) this.fps.scale = 1;
       for (const p of this.composer.passes) if (p.dispose) p.dispose();
       this.composer.dispose();
       this.buildComposer();
@@ -894,7 +909,8 @@ class Game {
     if (this.hitstopT > 0) { this.hitstopT -= rdt; rdt *= 0.08; }
     if (this.slowT > 0) { this.slowT -= rdt; rdt *= this.slowK; }
     if (this.holdFrames) { this.input.endFrame(); this.perf.frameEnd({ scene: this.scene, composer: this.composer, quality: '', animals: 0 }); return; }   // nothing to show: the sketchbook or black is up
-    const dt = this.paused ? 0 : rdt;
+    const dt = this.paused || this.rotateHold ? 0 : rdt;
+    if (this.touch && this.playing && dt > 0) this.keepFrameRate(rdt, t);
     try { this.update(dt, rdt); } catch (e) { console.error(e); }
     this.render(rdt);
     this.input.endFrame();

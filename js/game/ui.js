@@ -3,6 +3,7 @@
 import { ITEMS, RECIPES } from './items.js';
 import { SITES } from '../world/props.js';
 import { LORE } from './lore.js';
+import { groundHeight } from '../world/terrain.js';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html !== undefined) e.innerHTML = html; return e; };
@@ -119,6 +120,7 @@ export class UI {
       t.style.transform = `translateX(${x}px)`; t.style.opacity = Math.abs(d) < 95 ? 1 - Math.abs(d) / 110 : 0;
     }
     this.updateMarkers(yawDeg, W, dt);
+    this.updatePointer(dt);
     // subtitles
     if (this.subT > 0) { this.subT -= dt; if (this.subT <= 0) { this.sub.classList.remove('show'); } }
     if (this.subT <= 0 && this.subQ.length) { const s = this.subQ.shift(); this.sub.innerHTML = s.text; this.sub.classList.add('show'); this.subT = s.dur; }
@@ -167,6 +169,37 @@ export class UI {
       else e.style.opacity = 1;
     });
   }
+  // Where to go next, on the picture itself: over the target when it is in view, and otherwise an arrow at the edge of the
+  // screen pointing the way to turn, with the distance. It leaves the screen once you are there.
+  updatePointer(dt) {
+    const g = this.g, E = this.tgt || (this.tgt = { el: $('target'), label: $('target').querySelector('span'), arrow: $('target-arrow'), x: innerWidth / 2, y: innerHeight / 2, txt: '', cls: '' });
+    const M = g.story && g.story.marker, P = g.player, cam = g.camera;
+    const dist = M ? Math.hypot(M.x - P.pos.x, M.z - P.pos.z) : 0;
+    const show = M && !g.uiBlocking && !g.cinematic && !P.dead && dist > 4 && !(P.aim > 0.3);
+    E.el.style.opacity = show ? 1 : 0;
+    if (!show) return;
+    const wy = M.y !== undefined ? M.y : groundHeight(M.x, M.z) + 1.6;
+    // in the camera's own frame: +x right, +y up, -z ahead
+    const e = cam.matrixWorldInverse.elements, wx = M.x, wz = M.z;
+    const vx = e[0] * wx + e[4] * wy + e[8] * wz + e[12], vy = e[1] * wx + e[5] * wy + e[9] * wz + e[13], vz = e[2] * wx + e[6] * wy + e[10] * wz + e[14];
+    const W = innerWidth, H = innerHeight, ty = Math.tan(cam.fov * Math.PI / 360), tx = ty * cam.aspect;
+    const nx = vz < -0.1 ? vx / (-vz * tx) : 9, ny = vz < -0.1 ? vy / (-vz * ty) : 9;
+    const ahead = Math.abs(nx) < 0.82 && Math.abs(ny) < 0.78;
+    let x, y, rot = 0;
+    if (ahead) { x = (nx + 1) * 0.5 * W; y = (1 - ny) * 0.5 * H; }
+    else {
+      // round the edge of the screen. Behind you it is the way to turn that matters, so it leans to the side.
+      let dx = vx, dy = vy; if (vz > 0) { dy = Math.min(dy, 0) - Math.abs(vz) * 0.25; if (Math.abs(dx) < 0.1 * Math.abs(vz)) dx = 0.1 * Math.abs(vz); }
+      const l = Math.hypot(dx, dy) || 1; dx /= l; dy /= l;
+      const rx = W * 0.5 - 90, ry = H * 0.5 - 110;
+      x = W * 0.5 + dx * rx; y = H * 0.5 - dy * ry; rot = Math.atan2(dx, dy);
+    }
+    const k = Math.min(1, dt * 10); E.x += (x - E.x) * k; E.y += (y - E.y) * k;
+    E.el.style.transform = `translate(${E.x.toFixed(1)}px,${E.y.toFixed(1)}px)`;
+    if (!ahead) E.arrow.style.transform = `rotate(${rot.toFixed(3)}rad)`;
+    const cls = ahead ? 'ahead' : 'off'; if (cls !== E.cls) { E.el.classList.remove('ahead', 'off'); E.el.classList.add(cls); E.cls = cls; }
+    const txt = `${Math.round(dist)} m`; if (txt !== E.txt) { E.label.textContent = txt; E.txt = txt; }
+  }
   alarmMarker(x, z, label) {
     const existing = this.compassMarks.find((m) => Math.hypot(m.x - x, m.z - z) < 30 && m.label === label);
     if (existing) { existing.ttl = 14; return; }
@@ -179,12 +212,17 @@ export class UI {
   say(text, dur = 4) { this.subQ.push({ text, dur }); }
   // drop any lines still waiting (a new chapter, or back to the title)
   clearNarration() { this.subQ.length = 0; this.subT = 0; this.sub.classList.remove('show'); }
+  // objective and hint text names keys; on a phone it names the buttons
+  forThumbs(text) {
+    if (!this.g.touch || typeof text !== 'string') return text;
+    return text.replace(/hold <b>Q<\/b>/gi, 'tap <b>Call</b>').replace(/<b>(Tab|E|Q|C|W|A|D|S|Space|1|6)<\/b>/g, (m, k) => `<b>${{ Tab: 'Bag', E: 'Use', Q: 'Call', C: 'Crouch', Space: 'Jump', 1: 'Weapon', 6: 'Weapon' }[k] || 'the stick'}</b>`);
+  }
   toast(text, ttl = 3) {
-    const e = el('div', 'toast', text); this.toastBox.appendChild(e);
+    const e = el('div', 'toast', this.forThumbs(text)); this.toastBox.appendChild(e);
     this.toasts.push({ el: e, ttl });
     if (this.toasts.length > 6) { const t = this.toasts.shift(); t.el.remove(); }
   }
-  setObjective(chapter, text) { this.chap.textContent = chapter || ''; this.obj.innerHTML = text || ''; if (this.obj.parentElement) this.obj.parentElement.classList.toggle('blank', !chapter && !text); this.obj.classList.remove('flash'); void this.obj.offsetWidth; this.obj.classList.add('flash'); }
+  setObjective(chapter, text) { this.chap.textContent = chapter || ''; this.obj.innerHTML = this.forThumbs(text) || ''; if (this.obj.parentElement) this.obj.parentElement.classList.toggle('blank', !chapter && !text); this.obj.classList.remove('flash'); void this.obj.offsetWidth; this.obj.classList.add('flash'); }
   setPrompt(text) { if (text !== this._prompt) { this.prompt.innerHTML = text || ''; this.prompt.style.opacity = text ? 1 : 0; this._prompt = text; } }
   hitmarker(kill) { this.hitT = 0.18; if (kill) { this.hitKill = true; this.hitT = 0.45; } }
   damage(relAngle, d) {

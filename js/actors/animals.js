@@ -572,7 +572,12 @@ export class Animal {
   // --------------------------------------------------------------------------- update
   update(dt, W) {
     this.t += dt;
-    if (this.dead) { this.deadT += dt; this.bleedOut(dt, W); this.animate(dt, W); return; }
+    if (this.dead) {
+      // shot out of a tree, it comes down
+      if (this.tm || this.perch || this.hop) { this.tm = null; this.perch = null; this.hop = null; this.runTo = null; this.fallV = 0; this.anim.climb = 0; this.anim.sit = 0; this.anim.pounce = 0; }
+      if (this.fallV !== undefined && this.fallV !== null) { this.fallV += 18 * dt; this.pos.y -= this.fallV * dt; const gy = groundHeight(this.pos.x, this.pos.z); if (this.pos.y <= gy) { this.pos.y = gy; this.fallV = null; W.audio.impact('wood', this.pos, 0.3); } }
+      this.deadT += dt; this.bleedOut(dt, W); this.animate(dt, W); return;
+    }
     this.alarmCD -= dt; this.attackCD -= dt; this.timer -= dt; this.stateT += dt;
     // bleeding
     if (this.bleed > 0) {
@@ -905,14 +910,19 @@ export class Animal {
   // watch from high up, and give the alarm cough when they see a cat. this.tm: climb | down | limb | sit (null on the ground)
   thinkLangur(dt, W) {
     const pd = this.perceivePlayer(W, dt), g = this.group, A = this.anim;
-    const pr = W.nearestPredator(this, 90);
-    const seen = this.bond < 0.6 && this.awareness > 1.1 && pd < 16;
-    if (pr) { this.alarm(W, pr.sp); this.lookAt = pr.pos; this.threat = pr.pos; this.fearT = 16; }
-    else if (seen) { this.alarm(W, 'human'); this.lookAt = W.player.pos; this.threat = W.player.pos; this.fearT = Math.max(this.fearT || 0, 8); }
+    const pr = W.nearestPredator(this, 70), Pl = W.player, cm = Pl.canopy;
+    // Vanaj up in this same tree, close by, is alarming however calm he is; on the ground they soon stop caring
+    const close = this.bond < 0.6 && this.tree && cm && cm.tree === this.tree && cm.mode && this.pos.distanceToSquared(Pl.pos) < 36;
+    const seen = close || (this.bond < 0.6 && this.awareness > 1.1 && pd < 16);
+    // struck: up the nearest tree (takeDamage only sets a state, which means nothing to a langur otherwise)
+    if (this.state === 'flee') { this.fearT = 18; this.threat = this.threat || Pl.pos; this.lookAt = this.threat; this.setState('idle', 0.5); this.troopCall(W, 'human', 'hit'); }
+    if (pr) { this.troopCall(W, pr.sp, pr); this.lookAt = pr.pos; this.threat = pr.pos; this.fearT = 16; }
+    else if (seen) { this.troopCall(W, 'human', Pl); this.lookAt = Pl.pos; this.threat = Pl.pos; this.fearT = Math.max(this.fearT || 0, 8); }
     else { this.fearT = Math.max(0, (this.fearT || 0) - dt); if (this.fearT <= 0) this.lookAt = pd < 14 && this.awareness > 0.5 ? W.player.pos : null; }
     const scared = this.fearT > 0;
     A.climb = lerp(A.climb, this.tm === 'climb' || this.tm === 'down' ? 1 : 0, Math.min(1, dt * 8));
     if (this.tm !== 'limb') A.incline = lerp(A.incline, 0, Math.min(1, dt * 6));
+    if (this.tm !== 'sit' && A.feed) A.feed = lerp(A.feed, 0, Math.min(1, dt * 6));
     // in the air, on its way to a limb
     if (this.hop) {
       const h = this.hop; h.t += dt / h.dur;
@@ -925,10 +935,13 @@ export class Animal {
     }
     // set down in a tree by a story script
     if (this.perch && !this.tm) { this.tm = 'sit'; this.tree = null; this.limb = null; this.timer = 2 + Math.random() * 4; }
+    this.troopLife(dt, W, g);
     if (this.tm) return this.treeLife(dt, W, pd, pr, scared);
     // on the ground
     this.perch = null;
     if (scared && !this.runTo) this.pickTree(W, true);
+    // nowhere to climb: just away from it
+    if (scared && !this.runTo && this.threat) { const dx = this.pos.x - this.threat.x, dz = this.pos.z - this.threat.z, l = Math.hypot(dx, dz) || 1; if (l < 30) { A.sit = lerp(A.sit, 0, Math.min(1, dt * 8)); this.steer(this.pos.x + dx / l * 20, this.pos.z + dz / l * 20, this.d.run, dt, W); return; } }
     if (this.runTo) {
       const T = this.runTo, c = T.spine.pts[0], d = this.steer(c.x, c.z, scared ? this.d.run : this.d.trot, dt, W);
       A.sit = lerp(A.sit, 0, Math.min(1, dt * 8));
@@ -944,6 +957,30 @@ export class Animal {
       if (roost || far || Math.random() < 0.3) this.pickTree(W, false);
       else { this.dryGoal(c.x + (Math.random() - 0.5) * 22, c.z + (Math.random() - 0.5) * 22); this.setState('wander', 9); }
     }
+  }
+  // One voice for the troop. Whoever sees the danger first coughs a few times, then they all watch in silence; a new danger
+  // starts it again. (Every langur used to call on its own timer for as long as anything was in sight, without end.)
+  troopCall(W, kind, who) {
+    const g = this.group || this;
+    if (g.calledAt !== who) { g.calledAt = who; g.callsLeft = who === W.player ? 1 : 3; g.callCD = Math.min(g.callCD || 0, 0.3 + Math.random()); }
+    g.threatSeen = 25;
+    if ((g.callCD || 0) > 0 || g.callsLeft <= 0) return;
+    g.callsLeft--; g.callCD = 7 + Math.random() * 7;
+    this.alarmCD = 0; this.alarm(W, kind);
+  }
+  // what the troop does together: its call clock, moving on to new ground, and the odd loud call from the old male
+  troopLife(dt, W, g) {
+    if (!g || g.members.find((m) => !m.dead) !== this) return;   // the first living member keeps these
+    g.callCD = (g.callCD || 0) - dt;
+    if ((g.threatSeen = (g.threatSeen || 0) - dt) <= 0) g.calledAt = null;
+    g.moveT = (g.moveT ?? 40 + Math.random() * 60) - dt;
+    if (g.moveT <= 0 && !(this.fearT > 0)) {
+      g.moveT = 70 + Math.random() * 90;
+      const a = Math.random() * 6.28, r = 18 + Math.random() * 22, x = g.center.x + Math.cos(a) * r, z = g.center.z + Math.sin(a) * r;
+      if (!this.wet(x, z)) { g.center.x = x; g.center.z = z; }
+    }
+    g.whoopT = (g.whoopT ?? 30 + Math.random() * 120) - dt;
+    if (g.whoopT <= 0) { const h = W.hour ?? 12; g.whoopT = (h < 8 ? 70 : 170) + Math.random() * 150; if (!(this.fearT > 0)) W.audio.animal('langur', 'whoop', this.pos); }
   }
   // the climbable tree to make for: close by, stout, toward the troop, away from whatever frightened it
   pickTree(W, urgent) {
@@ -967,7 +1004,6 @@ export class Animal {
     this.limb = L; this.climbTo = L ? L.pts[0].y : T.top - 0.5; this.urgent = urgent;
     const c = T.spine.pts[0]; this.th = Math.atan2(this.pos.z - c.z, this.pos.x - c.x);
     this.cy = Math.max(this.pos.y, c.y);
-    if (Math.random() < 0.25) this.say = 1;
   }
   // axis point and radius of a tree's way up at height y
   woodAt(T, y, out) {
@@ -1010,7 +1046,7 @@ export class Animal {
       return;
     }
     if (this.tm === 'limb') {
-      const dir = Math.sign(this.lTo - this.ls) || 1, v = scared ? 3.6 : 1.1, ds = v * dt;
+      const dir = Math.sign(this.lTo - this.ls) || 1, v = scared ? 3.6 : 1.1, ds = Math.min(v * dt, Math.abs(this.lTo - this.ls));
       this.speed = v;
       const s0 = this.ls; this.onLimb(T, L, this.ls + dir * ds);
       if (Math.abs(this.ls - s0) > 1e-4) { const q = tmp2.copy(this.pos); this.onLimb(T, L, this.ls + dir * 0.1); tmp3.copy(this.pos); this.onLimb(T, L, s0 + dir * ds); this.yaw = Math.atan2(tmp3.x - q.x, tmp3.z - q.z); }
@@ -1025,15 +1061,20 @@ export class Animal {
     // sitting on a limb: feeding, watching, resting
     this.speed = 0; A.sit = lerp(A.sit, 1, Math.min(1, dt * 4));
     if (this.limb) { this.onLimb(T, L, this.ls); } else { this.pos.set(this.perch.x, this.perch.y, this.perch.z); }
+    let mate = null;
+    if (g) for (const m of g.members) { if (m === this || m.dead || !m.tm) continue; const dd = m.pos.distanceToSquared(this.pos); if (dd < 0.3 && L && m.tm === 'sit' && this.id < m.id) { this.lTo = clamp(this.ls + (Math.random() < 0.5 ? -1 : 1) * (0.9 + Math.random()), 0.4, this.limbEnd(L)); this.tm = 'limb'; return; } if (dd < 4 && m.tm === 'sit') mate = m; }
+    // feeding between looks about: a hand to the leaves and to the mouth. Next to another it turns to it, to groom.
+    A.feed = lerp(A.feed || 0, !scared && Math.sin(this.t * 0.7 + this.id) > 0.2 ? 1 : 0, Math.min(1, dt * 3));
     if (this.lookAt) this.faceTowards(this.lookAt, dt * 2);
+    else if (mate) { this.faceTowards(mate.pos, dt * 1.5); if (Math.random() < dt * 0.04) W.audio.animal('langur', 'grunt', this.pos); }
     const near = pd < 9 && this.bond < 0.6 && W.player.pos.y > this.pos.y - 5;
     if (this.timer > 0 && !(near && scared)) return;
     this.timer = 3 + Math.random() * 11;
     const c = g ? g.center : this.home, toCenter = Math.hypot(c.x - this.pos.x, c.z - this.pos.z), hour = W.hour ?? 12, roost = hour > 18 || hour < 5.5;
-    if (near && scared) { if (this.leap(W, true)) return; }
+    if (near && scared) { if (this.leap(W, true)) return; this.timer = 1; }
     const r = Math.random();
     if (scared) { if (r < 0.3) this.leap(W, true); else if (r < 0.5 && L) { this.lTo = Math.random() * this.limbEnd(L); this.tm = 'limb'; } return; }   // mostly stays put and watches
-    if (toCenter > 18 && this.leap(W, false, c)) return;
+    if (toCenter > 14) { if (this.leap(W, false, c)) return; if (T && T.spine && L) { this.lTo = 0.3; this.after = 'down'; this.tm = 'limb'; return; } }
     if (!roost && r < 0.16 && T && T.spine) { if (L) { this.lTo = 0.3; this.after = 'down'; this.tm = 'limb'; } else { this.leap(W, false); } return; }
     if (r < 0.42 && L) { this.lTo = 0.4 + Math.random() * (this.limbEnd(L) - 0.4); this.tm = 'limb'; return; }
     if (r < 0.62) this.leap(W, false, toCenter > 8 ? c : null);
@@ -1058,7 +1099,6 @@ export class Animal {
     const dist = to.distanceTo(p);
     this.hop = { from: p.clone(), to, t: 0, dur: Math.max(0.45, dist / 7.5), arc: Math.min(2.2, 0.5 + dist * 0.2), T: best.T, L: best.L, s: best.s };
     this.tm = 'leap'; this.limb = null; this.speed = 0;
-    if (Math.random() < 0.3) W.audio.animal('langur', 'whoop', p);
     return true;
   }
   // --------------------------------------------------------------------------- mugger
@@ -1177,6 +1217,7 @@ export class Animal {
       if (A.lie > 0.01) { u = lerp(u, front ? -1.2 : 0.9, A.lie); l = lerp(l, front ? 2.3 : -2.0, A.lie); }
       if (A.sit > 0.01) { if (!front) { u = lerp(u, d.primate ? -1.4 : -1.0, A.sit); l = lerp(l, d.primate ? 2.4 : 2.0, A.sit); } else if (d.primate) { u = lerp(u, 0.4, A.sit); l = lerp(l, -0.3, A.sit); } }
       if (A.pounce > 0.01) { u = lerp(u, front ? -1.25 : 0.9, A.pounce); l = lerp(l, front ? -0.2 : 0.1, A.pounce); }
+      if (A.feed > 0.01 && d.primate && n === 'RF') { const s = 0.5 + 0.5 * Math.sin(this.t * 3.1 + this.id); u = lerp(u, -1.1 - s * 0.7, A.feed); l = lerp(l, 0.5 + s * 1.3, A.feed); }
       if (A.climb > 0.01) { const sw = Math.sin(p) * 0.45 * moving; u = lerp(u, (front ? -1.45 : -0.9) + sw, A.climb); l = lerp(l, front ? 0.5 : 1.1, A.climb); }
       if (A.swipe > 0.01 && n === 'RF') { const s = Math.sin(A.swipe * Math.PI); u = lerp(u, -1.9, s); l = lerp(l, -0.8, s); }
       if (A.rear > 0.01 && front) { u = lerp(u, -1.3, A.rear); l = lerp(l, -0.6, A.rear); }
@@ -1283,9 +1324,9 @@ class Group {
     if (!alive.length) return;
     let cx = 0, cz = 0; for (const m of alive) { cx += m.pos.x; cz += m.pos.z; }
     cx /= alive.length; cz /= alive.length;
-    this.center.x = lerp(this.center.x, cx, dt * 0.05); this.center.z = lerp(this.center.z, cz, dt * 0.05);
+    if (this.kind !== 'troop') { this.center.x = lerp(this.center.x, cx, dt * 0.05); this.center.z = lerp(this.center.z, cz, dt * 0.05); }
     // drift herd center slowly
-    this.center.x += Math.sin(performance.now() * 0.00003 + this.radius) * dt * 0.2;
+    if (this.kind !== 'troop') this.center.x += Math.sin(performance.now() * 0.00003 + this.radius) * dt * 0.2;
   }
 }
 
