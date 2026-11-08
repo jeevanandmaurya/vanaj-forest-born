@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { GodRaysShader } from './core/godrays.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { loadRigs } from './actors/rigged.js';
-import { loadHumanRig } from './actors/humanrig.js';
+import { loadHumanRig, prebuildBodies } from './actors/humanrig.js';
 import { GroundAO } from './world/groundao.js';
 import { PerfOverlay } from './core/perf.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -14,6 +14,8 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { G } from './core/shaderlib.js';
 import { Physics, initPhysics } from './core/physics.js';
 import { LooseThings } from './world/loose.js';
+import { NearTrees } from './world/neartree.js';
+import { Ropes } from './world/ropes.js';
 import { PAINTED, setPaintedSeason } from './core/palette.js';
 import { clamp, lerp, smoothstep } from './core/noise.js';
 import { buildTextures } from './world/textures.js';
@@ -153,7 +155,7 @@ class Game {
     this.cover = new GroundCover(this.scene, this.T || T, q);
     if (PAINTED) this.cover.leaves.visible = false;   // the painted ground draws its own fallen leaves
     await prog(0.44, 'Shaping the trees close at hand');
-    this.veg.prebuildNear();
+    this.near = new NearTrees(this); this.near.prebuild(); this.ropes = new Ropes(this);
     await prog(0.5, 'Placing rocks, termite mounds, the den, the shrine and the village');
     this.props = new Props(this.scene, this.T, this.veg); this.props.build();
     this.groundAO = new GroundAO(256);
@@ -166,6 +168,7 @@ class Game {
     this.pickups = new Pickups(this.scene, this.T);
     await prog(0.66, 'Bringing in the chital, sambar, gaur and dholes');
     await Promise.all([loadRigs(), loadHumanRig()]);
+    prebuildBodies(q.name === 'Low' ? 2.2 : 1.7);   // the villagers' bodies, once each (about 1.5 s)
     this.eco = new Ecosystem(this.scene);
     this.birds = new Birds(this.scene, this);
     this.tracks = new Tracks(this.scene, this);
@@ -188,8 +191,11 @@ class Game {
     this.buildComposer();
     this.setSeason('winter', 'mist'); this.setTime(6.5);
     await prog(0.92, 'Compiling shaders');
+    this.near.update(this.player.pos, 0.016); this.near.t = 0;   // so the near trees' shaders compile with the rest
     try { this.sky.update(0.016, this.time.hour, this.seasonCfg.decl, this.weather.env, this.camera, this.player.pos, this.season); if (!this.noRender) this.warmShaders(); } catch (e) { console.warn(e); }
     this.titleShot(4); { const c = this.camera.position; this.terrain.update(c.x, c.z, 1e9, true); this.veg.update(c, true); this.grass.update(c, true); }
+    await prog(0.97, 'Tuning the bansuri');
+    this.inMenu = true; this.startAudio(); this.audio.setWorld(false, 0); if (this.music) this.music.titleStart();
     await prog(1, 'Ready');
     window.addEventListener('resize', () => this.resize());
     this.setupMenus();
@@ -227,10 +233,15 @@ class Game {
     }
     const npc = buildHumanoid({ skinColor: 0x9a6a4a, hair: 'short', cloth: 'dhoti', clothTex: this.T.clothRed, topTex: this.T.clothKhaki, turban: this.T.clothRed, skinKey: 'skin-npc' });
     npc.root.position.set(P.x + 3, P.y, P.z); this.scene.add(npc.root); npc.root.updateMatrixWorld(true);
+    // every other build of villager has its own skin shader
+    const others = [{ cloth: 'sari', clothTex: this.T.clothRed }, { cloth: 'sari', clothTex: this.T.clothRed, age: 1 }, { build: 'child', scale: 0.8, cloth: 'dhoti', clothTex: this.T.clothWhite }].map((o, k) => {
+      const h = buildHumanoid({ skinColor: 0x9a6a4a, hair: 'short', skinKey: 'skin-npc' + k, ...o });
+      h.root.position.set(P.x + 4 + k, P.y, P.z); this.scene.add(h.root); h.root.updateMatrixWorld(true); return h;
+    });
     r.setRenderTarget(this.composer.renderTarget1); r.compile(this.scene, cam); r.setRenderTarget(null);
     this.composer.render(0.016);
     for (const a of extra) this.eco.remove(a);
-    this.scene.remove(npc.root);
+    this.scene.remove(npc.root); for (const h of others) this.scene.remove(h.root);
   }
   buildComposer() {
     const r = this.renderer, w = window.innerWidth, h = window.innerHeight;
@@ -345,6 +356,10 @@ class Game {
     const g = this;
     const save = store.get('vanaj-save-v1');
     $('btn-continue').style.display = save ? '' : 'none';
+    // Browsers forbid sound before a gesture, so the menu's flute starts on the first click, touch or key anywhere
+    const firstSound = () => { g.startAudio(); g.audio.resume(); $('title-hint').classList.add('off'); };
+    for (const ev of ['pointerdown', 'keydown']) window.addEventListener(ev, firstSound, { once: true, capture: true });
+    if (g.audio.ctx && g.audio.ctx.state === 'running') $('title-hint').classList.add('off');   // sound already allowed
     $('btn-begin').onclick = () => { g.startAudio(); g.beginNew(); };
     $('btn-continue').onclick = () => { g.startAudio(); g.loadSave(); };
     $('btn-chapters').onclick = () => { $('chapters').classList.add('show'); };
@@ -389,12 +404,15 @@ class Game {
     else { this.audio.vol.master = S.master; this.audio.vol.music = S.music; }
   }
   startAudio() { this.audio.init(); this.audio.resume(); if (!this.music && this.audio.ready) { this.music = new Music(this.audio); } this.applySettings(); }
+  // leaving the main menu: the flute fades and the forest's sound comes up
+  leaveMenu() { this.inMenu = false; if (this.music) this.music.titleStop(); this.audio.setWorld(true); }
   requestLock() {
     if (this.touch) return;   // touch play looks by dragging, not pointer lock
     const el = this.renderer.domElement;
     try { const p = el.requestPointerLock && el.requestPointerLock(); if (p && p.catch) p.catch(() => { this.dragLook = true; }); } catch (e) { this.dragLook = true; }
   }
   async beginNew() {
+    this.leaveMenu();
     $('title').classList.remove('show');
     this.inv.load({ items: {}, locks: ['bow'] });
     await this.prologue();
@@ -442,6 +460,7 @@ class Game {
   // The click is answered at once with a fade to black; the teleport and streaming happen behind it, then the
   // picture fades in. (It used to freeze on the title for ~3 s: 0.9 s of building, 1.9 s compiling shaders.)
   async startGame(ch, opts = {}) {
+    this.leaveMenu();
     this.requestLock();
     this.starting = true;
     await this.ui.fade(true, 250);
@@ -469,6 +488,7 @@ class Game {
     this.player.equip(ch >= 4 ? 'spear' : ch >= 1 ? 'knife' : 'fists');
   }
   async freeRoam() {
+    this.leaveMenu();
     this.requestLock();
     this.starting = true;
     await this.ui.fade(true, 250);
@@ -497,6 +517,7 @@ class Game {
     this.ui.close(); this.ui.setObjective('', ''); this.ui.setPrompt('');
     if (this.music) this.music.setCombat(0);
     $('btn-continue').style.display = store.get('vanaj-save-v1') ? '' : 'none';
+    this.inMenu = true; this.audio.setWorld(false); if (this.music) this.music.titleStart();
     this.titleCam = 4;   // past the reach's opening dip to black
     $('title').classList.add('show');
     this.titleShot(4);
@@ -791,7 +812,7 @@ class Game {
     this.terrain.update(focus.x, focus.z, 4);
     this.veg.update(this.camera.position); this.grass.update(this.camera.position); this.cover.update(this.camera.position); this.pickups.update(focus);
     if (this.phys && this.playing) { this.phys.sync(P.pos); this.loose.update(P.pos); }
-    if (this.playing) this.veg.updateNear(P.pos);
+    if (this.playing) { this.near.update(P.pos, dt, P.canopy.mode ? P.canopy.tree : null); this.ropes.update(dt, P.pos); }
     this.vines.update(dt || rdt * 0.2, this.camera.position);
     pf.mark('streaming');
     // sky & weather
@@ -822,7 +843,8 @@ class Game {
       const vd = Math.hypot(P.pos.x - SITES.village.x, P.pos.z - SITES.village.z);
       const inCave = Math.hypot(P.pos.x - SITES.cave.x, P.pos.z - SITES.cave.z) < 9;
       this.audio.setReverb(inCave ? 'cave' : 'forest');
-      this.audio.update(rdt, { hour: this.time.hour, season: this.season, rain: env.rain, wind: G.uWindStrength.value, water: nearW, night: this.sky.night, under, village: this.story.villageSpawned ? clamp(1 - vd / 400, 0, 1) : 0 });
+      if (!this.inMenu) this.audio.update(rdt, { hour: this.time.hour, season: this.season, rain: env.rain, wind: G.uWindStrength.value, water: nearW, night: this.sky.night, under, village: this.story.villageSpawned ? clamp(1 - vd / 400, 0, 1) : 0 });
+      if (this.music && !this.playing) this.music.titleUpdate(rdt);
       if (this.music && this.playing) {
         let threat = 0;
         for (const a of this.eco.animals) if (!a.dead && !a.companion && a.target === 'player' && a.dist2(P.pos) < 60 * 60) { if (['charge', 'attack', 'pounce'].includes(a.state)) threat = Math.max(threat, a.d.kind === 'predator' ? 1 : 0.6); else if (a.state === 'stalk') threat = Math.max(threat, 0.3); }

@@ -36,7 +36,7 @@ export class Player {
     this.projectiles = []; this.stuck = [];
     this.spawn = new THREE.Vector3();
     // Vanaj is about fifteen: a lean, half-grown boy of ~1.55 m, not a grown man
-    this.body = buildHumanoid({ hair: 'matted', cloth: 'loin', clothTex: g.T.ragCloth, skinColor: PAINTED ? 0x7a4a30 : 0x4a3022, mud: 0.4, dirt: 1, scars: 1, skinKey: 'skin-player', lean: 0.95, build: 'teen', sculpt: true, detail: g.q.name === 'Low' ? 1.5 : 1, scale: 0.9 });
+    this.body = buildHumanoid({ hair: 'shaggy', cloth: 'wrap', clothTex: g.T.ragCloth, skinColor: '#a0714e', skinKey: 'skin-player', lean: 0.95, build: 'teen', sculpt: true, proportions: 'teen', outline: 0.0055, detail: g.q.name === 'Low' ? 1.5 : 1, scale: 0.94 });
     g.scene.add(this.body.root);
     this.bodyMats = new Set(); this.body.root.traverse((o) => { if (o.isMesh) this.bodyMats.add(o.material); });
     this.W3 = buildWeapons(g.T);
@@ -49,7 +49,7 @@ export class Player {
     this.vmLight = new THREE.DirectionalLight(0xffffff, 2); this.vmScene.add(this.vmLight); this.vmScene.add(this.vmLight.target);
     this.vmHemi = new THREE.HemisphereLight(0xffffff, 0x443322, 0.7); this.vmScene.add(this.vmHemi);
     this.vmFire = new THREE.PointLight(0xff8a3a, 0, 3, 1.5); this.vmScene.add(this.vmFire);
-    this.vmSkin = skinMaterial(0x7a5038, 0.4, 'skin-vm');
+    this.vmSkin = skinMaterial(0xa0714e, 0.2, 'skin-vm');
     this.vm = buildViewArms(this.vmSkin); this.vmScene.add(this.vm.root);
     if (PAINTED) toonify(this.vm.root, { outline: 0, soften: 2 });   // no ink here: at the arms' tiny scale the hull swelled round the camera and inked the whole screen
     this.vmW = buildWeapons(g.T);
@@ -188,10 +188,19 @@ export class Player {
       // standing on the ground, press down only lightly: a full gravity step into a slope is slid along it by the
       // controller, and he crept downhill while standing still
       if (this.onGround && this.vel.y <= 0) want.y = -0.002;
+      // No input and nearly stopped: stop. Friction here is ours to apply; the controller has none, and the small
+      // corrections it returns must not count as walking.
+      if (!moving && this.onGround && this.dodgeT <= 0 && this.vel.x * this.vel.x + this.vel.z * this.vel.z < 0.2 * 0.2) { this.vel.x = 0; this.vel.z = 0; want.x = 0; want.z = 0; }
       phys = g.phys.movePlayer(this.pos, want);
       if (Math.abs(want.x) + Math.abs(want.z) < 1e-5) { phys.x = 0; phys.z = 0; }
       this.pos.x += phys.x; this.pos.y += phys.y; this.pos.z += phys.z;
-      if (dt > 0) { this.vel.x = phys.x / dt; this.vel.z = phys.z / dt; }   // what he actually managed, sliding along a wall
+      // Speed only ever comes from him. The controller can take speed away (a wall, a shove against a rock) and turn
+      // it along the wall, but its own corrections are never fed back in: that loop kept him creeping at 0.1 m/s
+      // long after he stopped, with the idle animation playing.
+      if (dt > 0) {
+        const w2 = want.x * want.x + want.z * want.z, m2 = phys.x * phys.x + phys.z * phys.z;
+        if (w2 > 1e-10 && m2 < w2 * 0.92) { this.vel.x = phys.x / dt; this.vel.z = phys.z / dt; }
+      }
       if (this.vel.y > 0 && phys.y < this.vel.y * dt * 0.5) this.vel.y = 0;   // head against a limb
     } else {
       this.pos.addScaledVector(this.vel, dt);
@@ -328,6 +337,10 @@ export class Player {
     }
     // place the body first, so poses aimed at world points (a grip on a branch) land this frame, not last frame's
     this.body.root.position.copy(this.pos);
+    // catching a hold or stepping off one moves him straight onto it; the body eases across that gap instead of jumping
+    { const V = this._vis || (this._vis = new THREE.Vector3()), L = this._visLast || (this._visLast = this.pos.clone());
+      if (cm !== this._visMode) { this._visMode = cm; V.subVectors(L, this.pos); if (V.lengthSq() > 2.5 * 2.5) V.set(0, 0, 0); }
+      V.multiplyScalar(1 - damp(0.075, dt)); this.body.root.position.add(V); L.copy(this.body.root.position); }
     if (this.swimming) this.body.root.position.y += 0.6;
     this.body.root.position.y += Math.min(0, spring(this.dip, 0, 0.09, dt));
     this.body.root.rotation.set(0, this.bodyYaw + Math.PI, cm ? 0 : this.lean.x);

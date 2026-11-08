@@ -2,7 +2,7 @@
 // seasonal foliage (leaf fall, palash/mahua flowering), wind, grass tufts, trunk collision and langur perches.
 import * as THREE from 'three';
 import { mulberry32, hash2, clamp, smoothstep } from '../core/noise.js';
-import { G, patch, WIND_VERTEX, BEND_DECL, BEND_VERTEX, NOISE_GLSL } from '../core/shaderlib.js';
+import { G, patch, WIND_VERTEX, NOISE_GLSL } from '../core/shaderlib.js';
 import { mergeVertices, mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { height, biomeAt, waterAt, CHUNK, WATERHOLES, lakeE } from './terrain.js';
 import { PAINTED, PU, ACCENT } from '../core/palette.js';
@@ -183,7 +183,9 @@ function growBranch(gb, leaves, rng, start, dir, L, r0, depth, spec, ctx) {
     p.addScaledVector(d, L / segs);
   }
   tube(gb, pts, rads, depth === 0 ? 6 : 4, (q) => 0.18 + 0.5 * clamp((q[1] - ctx.H * 0.4) / ctx.H, 0, 1) * (depth + 1) * 0.5, rng(), 1);
-  if (ctx.paths && depth === 0) ctx.paths.push({ level: 1, pts: pts.map((q, i) => [q[0], q[1], q[2], rads[i]]) });
+  const self = ctx.all ? ctx.all.length : -1;
+  if (ctx.all) ctx.all.push({ level: depth + 1, pts, r: rads, parent: ctx.cur ?? 0, tA: ctx.curT ?? 1, segs: depth === 0 ? 10 : 7 });
+  if (ctx.paths && depth === 0) ctx.paths.push({ level: 1, bi: self, pts: pts.map((q, i) => [q[0], q[1], q[2], rads[i]]) });
   // sub-branches
   if (depth < 1) {
     for (let k = 0; k < spec.sub; k++) {
@@ -191,6 +193,7 @@ function growBranch(gb, leaves, rng, start, dir, L, r0, depth, spec, ctx) {
       const idx = Math.min(segs, Math.round(t * segs));
       const sp = new THREE.Vector3(...pts[idx]);
       const sd = dir.clone().add(new THREE.Vector3(rng() - 0.5, rng() * 0.6, rng() - 0.5).multiplyScalar(1.3)).normalize();
+      if (ctx.all) { ctx.cur = self; ctx.curT = idx / segs; }
       growBranch(gb, leaves, rng, sp, sd, L * (0.45 + rng() * 0.25), rads[idx] * 0.7, depth + 1, spec, ctx);
     }
   }
@@ -200,11 +203,11 @@ function growBranch(gb, leaves, rng, start, dir, L, r0, depth, spec, ctx) {
     const n = depth === 0 ? spec.perTip : spec.perTip;
     for (let k = 0; k < n; k++) {
       const off = new THREE.Vector3((rng() - 0.5), (rng() - 0.3), (rng() - 0.5)).multiplyScalar(ctx.cardS * 0.7);
-      leaves.push({ C: tip.clone().add(off), base: dir.clone() });
+      leaves.push({ C: tip.clone().add(off), base: dir.clone(), b: self, t: 1 });
     }
     // along outer half
     for (let s = Math.floor(segs * 0.5); s < segs; s++) {
-      if (rng() < 0.6) leaves.push({ C: new THREE.Vector3(...pts[s]), base: dir.clone() });
+      if (rng() < 0.6) leaves.push({ C: new THREE.Vector3(...pts[s]), base: dir.clone(), b: self, t: s / segs });
     }
   }
 }
@@ -240,7 +243,7 @@ function growSkeleton(P, rng) {
   const branches = [], leaves = [];
   const trunkL = rnd(...P.trunkL), r0 = rnd(...P.trunkR);
   const leanQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(rnd(-P.lean, P.lean), 0, rnd(-P.lean, P.lean)));
-  const queue = [{ origin: new THREE.Vector3(0, -1.2, 0), q: leanQ, length: trunkL + 1.2, radius: r0, level: 0 }];
+  const queue = [{ origin: new THREE.Vector3(0, -1.2, 0), q: leanQ, length: trunkL + 1.2, radius: r0, level: 0, parent: -1, tA: 0 }];
   _qF.setFromUnitVectors(_up, _up);
   while (queue.length) {
     const b = queue.shift();
@@ -256,11 +259,12 @@ function growSkeleton(P, rng) {
       _e.set(rnd(-g, g), rnd(-g, g) * 0.3, rnd(-g, g)); _q2.setFromEuler(_e); q.multiply(_q2);
       q.rotateTowards(_qF, Math.min(0.25, P.force / Math.max(r, 0.03)));
     }
-    branches.push({ level: L, sections, segs: P.segs[L] });
+    branches.push({ level: L, sections, segs: P.segs[L], parent: b.parent, tA: b.tA });
+    const self = branches.length - 1;
     if (L < P.levels) {
       // terminal continuation from the tip (keeps the leader / limb going and lets it fork)
       const last = sections[nSec];
-      if (!(L === 0 && P.snag)) queue.push({ origin: last.p.clone(), q: last.q.clone(), length: P.length[L + 1] * rnd(0.75, 1.1), radius: last.r, level: L + 1 });
+      if (!(L === 0 && P.snag)) queue.push({ origin: last.p.clone(), q: last.q.clone(), length: P.length[L + 1] * rnd(0.75, 1.1), radius: last.r, level: L + 1, parent: self, tA: 1 });
       // side children, spiralled round the parent
       const n = P.children[L], off = rng() * 6.28;
       for (let c = 0; c < n; c++) {
@@ -273,11 +277,11 @@ function growSkeleton(P, rng) {
         const ang = (P.angle[L + 1] + rnd(-12, 12)) * Math.PI / 180, rad = off + c * 2.39996 + rnd(-0.3, 0.3);
         const qc = qp.clone().multiply(_q2.setFromAxisAngle(_up, rad)).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), ang));
         const len = P.length[L + 1] * rnd(0.7, 1.15) * (L === 0 ? 1 - (t - P.start[L + 1]) * 0.35 : 1);
-        queue.push({ origin: o, q: qc, length: len, radius: pr * P.radius[L + 1], level: L + 1 });
+        queue.push({ origin: o, q: qc, length: len, radius: pr * P.radius[L + 1], level: L + 1, parent: self, tA: t });
       }
     } else if (P.leafCount > 0) {
-      for (let k = 0; k < Math.max(0, P.leafCount - 1); k++) { const t = rnd(0.35, 1); const s = sections[Math.min(nSec, Math.round(t * nSec))]; leaves.push({ p: s.p.clone(), q: s.q.clone() }); }
-      leaves.push({ p: sections[nSec].p.clone(), q: sections[nSec].q.clone() });
+      for (let k = 0; k < Math.max(0, P.leafCount - 1); k++) { const t = rnd(0.35, 1); const si = Math.min(nSec, Math.round(t * nSec)), s = sections[si]; leaves.push({ p: s.p.clone(), q: s.q.clone(), b: self, t: si / nSec }); }
+      leaves.push({ p: sections[nSec].p.clone(), q: sections[nSec].q.clone(), b: self, t: 1 });
     }
   }
   return { branches, leaves, r0, trunkL };
@@ -317,52 +321,6 @@ function meshSkeleton(gb, sk, P, rng, detail, H) {
   }
 }
 
-// The near-detail bark (Vegetation.updateNear): the same skeleton, but every branch a smooth Catmull-Rom curve
-// through its sections (three rings per section, so the limbs Vanaj climbs bend instead of kinking), rounder
-// rings, and the finest twigs too. Rings are framed on the curve's own tangent, keeping the sections' twist so
-// the flutes line up with the instanced version it replaces.
-const _h = { p0: new THREE.Vector3(), p1: new THREE.Vector3(), p2: new THREE.Vector3(), p3: new THREE.Vector3(), pos: new THREE.Vector3(), tan: new THREE.Vector3(), N: new THREE.Vector3(), B: new THREE.Vector3(), X: new THREE.Vector3(), d: new THREE.Vector3(), q: new THREE.Quaternion() };
-function meshSkeletonHi(gb, sk, P, rng, H) {
-  const fl = P.flute, flPh = sk.flPh || 0, { p0, p1, p2, p3, pos, tan, N, B, X, d, q } = _h;
-  for (const b of sk.branches) {
-    const S = b.sections, n = S.length; if (n < 2) continue;
-    const segs = b.level >= 3 ? 4 : Math.max(5, Math.round(b.segs * 1.6)), sub = b.level >= 3 ? 1 : 3;
-    const base = gb.p.length / 3, uRep = Math.max(1, Math.round(2 * Math.PI * S[0].r / 0.9));
-    let len = 0, rows = 0; const last = new THREE.Vector3();
-    for (let i = 0; i < n; i++) for (let k = 0; k < (i === n - 1 ? 1 : sub); k++) {
-      const t = k / sub, i1 = Math.min(n - 1, i + 1);
-      p0.copy(S[Math.max(0, i - 1)].p); p1.copy(S[i].p); p2.copy(S[i1].p); p3.copy(S[Math.min(n - 1, i + 2)].p);
-      const t2 = t * t, t3 = t2 * t;
-      pos.set(0, 0, 0).addScaledVector(p1, 2).addScaledVector(d.subVectors(p2, p0), t)
-        .addScaledVector(d.copy(p0).multiplyScalar(2).addScaledVector(p1, -5).addScaledVector(p2, 4).sub(p3), t2)
-        .addScaledVector(d.copy(p3).sub(p0).addScaledVector(p1, 3).addScaledVector(p2, -3), t3).multiplyScalar(0.5);
-      tan.subVectors(p2, p0).addScaledVector(d.copy(p0).multiplyScalar(2).addScaledVector(p1, -5).addScaledVector(p2, 4).sub(p3), 2 * t)
-        .addScaledVector(d.copy(p3).sub(p0).addScaledVector(p1, 3).addScaledVector(p2, -3), 3 * t2);
-      q.copy(S[i].q).slerp(S[i1].q, t);
-      if (tan.lengthSq() < 1e-8) tan.set(0, 1, 0).applyQuaternion(q);
-      tan.normalize();
-      X.set(1, 0, 0).applyQuaternion(q); N.copy(X).addScaledVector(tan, -X.dot(tan)); if (N.lengthSq() < 1e-6) N.set(0, 0, 1).cross(tan); N.normalize();
-      B.crossVectors(N, tan);
-      if (rows > 0) len += pos.distanceTo(last); last.copy(pos); rows++;
-      let r = S[i].r + (S[i1].r - S[i].r) * t;
-      if (b.level === 0) r *= 1 + P.flare * Math.exp(-Math.max(0, pos.y) * 1.5);
-      const hf = clamp(pos.y / H, 0, 1);
-      const wv = b.level === 0 ? Math.pow(hf, 2.2) * 0.22 : 0.16 + 0.22 * Math.min(b.level, 2) * hf;
-      const ao = (0.62 + 0.38 * clamp((pos.y + 0.2) / 2.4, 0, 1)) * (b.level === 0 ? 1 : 0.92);
-      for (let j = 0; j <= segs; j++) {
-        const a = (j / segs) * Math.PI * 2, c = Math.cos(a), s = Math.sin(a);
-        let m = 1;
-        if (fl && b.level === 0) m = 1 + fl.amp * Math.pow(Math.max(0, Math.cos(a * fl.n + flPh + pos.y * 0.15)), 1.6) * Math.exp(-Math.max(0, pos.y + 0.3) / fl.h);
-        const nx = N.x * c + B.x * s, ny = N.y * c + B.y * s, nz = N.z * c + B.z * s, rr = r * m, gro = fl && b.level === 0 ? 0.8 + 0.2 * clamp(m - 0.6, 0, 1) : 1;
-        gb.vert(pos.x + nx * rr, pos.y + ny * rr, pos.z + nz * rr, nx, ny, nz, (j / segs) * uRep, len / 1.7, ao * gro, ao * gro, ao * gro, wv, rng());
-      }
-    }
-    for (let i = 0; i < rows - 1; i++) for (let j = 0; j < segs; j++) {
-      const a = base + i * (segs + 1) + j, bb = a + 1, c = a + segs + 1, dd = c + 1;
-      gb.i.push(a, c, bb, bb, c, dd);
-    }
-  }
-}
 // the tail of an indexed geometry from vertex v0 and index i0 on (the roots, appended after the skeleton)
 function tailOf(g, v0, i0) {
   const out = new THREE.BufferGeometry();
@@ -423,27 +381,10 @@ function buildGeneric(specName, seed) {
     }
   }
   // the climbable skeleton: trunk and every limb thick enough to grip (x, y, z, radius per section)
-  const climb = sk.branches.filter((b) => b.level <= 2 && b.sections[0].r > 0.045).map((b) => ({ level: b.level, pts: b.sections.map((q) => [q.p.x, q.p.y, q.p.z, q.r]) }));
+  const climb = sk.branches.map((b, bi) => [b, bi]).filter(([b]) => b.level <= 2 && b.sections[0].r > 0.045).map(([b, bi]) => ({ level: b.level, bi, pts: b.sections.map((q) => [q.p.x, q.p.y, q.p.z, q.r]) }));
   const tmpl = { bark: gb.geo(), leaf: sk.leaves.length ? leafG.geo() : null, bark1: lb.geo(), leaf1: sk.leaves.length ? leaf1.geo() : null, H, trunkR: r0 * (1.25 + (P.flute ? P.flute.amp * 0.5 : 0)), crownY: crownC.y || H * 0.7, crownR, barkKind: spec.bark, leafKind: spec.leaf, climb };
-  // near detail, built the first time a tree of this kind stands close to Vanaj: the smooth bark (with the same
-  // roots), and the crown with a scatter of small leaf sprites round every twig
-  if (PAINTED) tmpl.makeHi = () => {
-    const hb = new GB(), hr = mulberry32(seed + 13);
-    meshSkeletonHi(hb, sk, P, hr, H);
-    const bark = mergeGeometries([hb.geo(), tailOf(tmpl.bark, rootV, rootI)]); bark.computeBoundingSphere();
-    let leaf = null;
-    if (tmpl.leaf) {
-      const lh = new GB(), size = (P.leafSize[0] + P.leafSize[1]) * 0.5, O = new THREE.Vector3(), Nn = new THREE.Vector3();
-      for (const l of sk.leaves) for (let k = 0; k < 3; k++) {
-        const p = l.p.clone().add(O.set(hr() - 0.5, hr() - 0.4, hr() - 0.5).multiplyScalar(size * 0.45));
-        Nn.subVectors(p, crownC).normalize(); Nn.y += 0.3; Nn.normalize();
-        const ao = (0.7 + 0.3 * clamp((p.y - crownC.y) / Math.max(1, crownR) + 0.5, 0, 1)) * (0.92 + hr() * 0.16);
-        sprite(lh, p, size * (0.3 + hr() * 0.16), Nn, ao, spec.tint, 0.7 + 0.3 * clamp((p.y - H * 0.35) / H, 0, 1), hr());
-      }
-      leaf = mergeGeometries([tmpl.leaf, lh.geo()]); leaf.computeBoundingSphere();
-    }
-    return { bark, leaf };
-  };
+  // everything js/world/neartree.js needs to build this tree's near form
+  tmpl.hi = { kind: 'tree', sk, P, spec, H, crownC, crownR, tail: () => tailOf(tmpl.bark, rootV, rootI), leafGeo: () => tmpl.leaf };
   return tmpl;
 }
 
@@ -453,7 +394,7 @@ function buildBamboo(seed) {
   const lb = new GB(), ll = new GB();
   const crownC = new THREE.Vector3(0, 7, 0);
   let maxH = 0;
-  const culms = [];
+  const culms = [], all = [{ level: 0, pts: [[0, -1, 0], [0, 6, 0]], r: [0.3, 0.3], parent: -1, tA: 0, noMesh: true }], tips = [];
   for (let c = 0; c < N; c++) {
     const a = rng() * 6.28, rad = Math.sqrt(rng()) * 1.1;
     const bx = Math.cos(a) * rad, bz = Math.sin(a) * rad;
@@ -467,36 +408,42 @@ function buildBamboo(seed) {
       rads.push(r0 * (1 - 0.5 * t));
     }
     tube(gb, pts, rads, 5, (p) => clamp(p[1] / H, 0, 1) ** 1.6 * 0.9, rng(), 1);
-    if (c % 3 === 1 && rad > 0.5) culms.push({ level: 1, pts: pts.slice(2).map((q, i) => [q[0], q[1], q[2], Math.max(0.04, rads[i + 2])]) });
+    const cb = all.length; all.push({ level: 1, pts, r: rads, parent: 0, tA: 0, segs: 6 });
+    if (c % 3 === 1 && rad > 0.5) culms.push({ level: 1, bi: cb, pts: pts.slice(2).map((q, i) => [q[0], q[1], q[2], Math.max(0.04, rads[i + 2])]) });
     if (c % 3 === 0) tube(lb, [pts[0], pts[4], pts[8]], [rads[0], rads[4], rads[8]], 3, (p) => clamp(p[1] / H, 0, 1) ** 1.6 * 0.9, 0.5, 1);
     for (let s = 3; s <= 8; s++) {
       const p = new THREE.Vector3(...pts[s]);
       const up = new THREE.Vector3(Math.cos(a), 0.3 - rng() * 0.6, Math.sin(a)).normalize();
       const sz = 1.7 + rng() * 0.8;
+      tips.push({ p: p.clone(), b: cb, t: s / 8 });
       card(lg, p, up, sz, sz, crownC, 7, clamp(p.y / H, 0, 1) * 1.1, rng(), rng, [1, 1, 1]);
       if (s % 3 === 0 && c % 2 === 0) card(ll, p, up, sz * 2.2, sz * 2.2, crownC, 7, 0.8, rng(), rng, [1, 1, 1]);
     }
   }
-  const climb = [{ level: 0, pts: [[0, -1, 0, 1.0], [0, maxH * 0.35, 0, 0.85], [0, maxH * 0.7, 0, 0.55]] }, ...culms];
-  return { bark: gb.geo(), leaf: lg.geo(), bark1: lb.geo(), leaf1: ll.geo(), H: maxH, trunkR: 1.1, crownY: 7, crownR: 5, barkKind: 'bamboo', leafKind: 'bamboo', climb };
+  const climb = [{ level: 0, bi: 0, pts: [[0, -1, 0, 1.0], [0, maxH * 0.35, 0, 0.85], [0, maxH * 0.7, 0, 0.55]] }, ...culms];
+  const tmpl = { bark: gb.geo(), leaf: lg.geo(), bark1: lb.geo(), leaf1: ll.geo(), H: maxH, trunkR: 1.1, crownY: 7, crownR: 5, barkKind: 'bamboo', leafKind: 'bamboo', climb };
+  tmpl.hi = { kind: 'bamboo', branches: all, leaves: tips, H: maxH, crownC, crownR: 5, spec: { tint: [1, 1, 1] }, leafGeo: () => tmpl.leaf };
+  return tmpl;
 }
 
 function buildBanyan(seed) {
   const rng = mulberry32(seed); const gb = new GB(), lg = new GB(); const leaves = [];
   const spec = { gnarl: 0.15, sub: 3, perTip: 5 };
-  const ctx = { H: 16, cardS: 2.6, paths: [], roots: [] };
+  const ctx = { H: 16, cardS: 2.6, paths: [], roots: [], all: [] };
   // fused trunks
   for (let k = 0; k < 4; k++) {
     const a = k / 4 * 6.28 + rng(), o = 0.5 + rng() * 0.3;
     const pts = [], rads = [];
     for (let s = 0; s <= 6; s++) { const t = s / 6; pts.push([Math.cos(a) * o * (1 - t * 0.6), -1.5 + t * 7.5, Math.sin(a) * o * (1 - t * 0.6)]); rads.push((0.85 + rng() * 0.25) * (1 - t * 0.35)); }
     tube(gb, pts, rads, 10, () => 0.02, rng(), null);
+    ctx.all.push({ level: 0, pts, r: rads, parent: -1, tA: 0, segs: 14, softAs: k === 0 ? undefined : 0 });
   }
   const limbs = 7 + Math.floor(rng() * 3);
   for (let b = 0; b < limbs; b++) {
     const phi = b / limbs * 6.28 + rng() * 0.4, th = 1.15 + rng() * 0.3;
     const dir = new THREE.Vector3(Math.cos(phi) * Math.sin(th), Math.cos(th), Math.sin(phi) * Math.sin(th));
     const start = new THREE.Vector3(0, 5 + rng() * 1.5, 0);
+    ctx.cur = 0; ctx.curT = 0.85;
     growBranch(gb, leaves, rng, start, dir, 10 + rng() * 5, 0.55, 0, { ...spec, gnarl: 0.12 }, ctx);
     // aerial roots
     for (let r = 0; r < 4; r++) {
@@ -518,8 +465,10 @@ function buildBanyan(seed) {
   const lb = new GB(), ll = new GB();
   tube(lb, [[0, -1.5, 0], [0, 6, 0]], [1.6, 1.3], 6, () => 0, 0.5, null);
   for (let i = 0; i < leaves.length; i += 18) { const l = leaves[i]; const up = l.C.clone().sub(crownC).normalize().multiplyScalar(0.5).add(new THREE.Vector3(0, 1, 0)).normalize(); card(ll, l.C, up, 9, 9, crownC, crownR, 0.4, rng(), rng, [1, 1, 1]); }
-  const climb = [{ level: 0, pts: [[0, -1.5, 0, 1.6], [0, 3, 0, 1.45], [0, 6.5, 0, 1.2]] }, ...ctx.paths];
-  return { bark: gb.geo(), leaf: lg.geo(), bark1: lb.geo(), leaf1: ll.geo(), H: 18, trunkR: 1.8, crownY: 9, crownR, barkKind: 'banyan', leafKind: 'banyan', climb, roots: ctx.roots };
+  const climb = [{ level: 0, bi: 0, pts: [[0, -1.5, 0, 1.6], [0, 3, 0, 1.45], [0, 6.5, 0, 1.2]] }, ...ctx.paths];
+  const tmpl = { bark: gb.geo(), leaf: lg.geo(), bark1: lb.geo(), leaf1: ll.geo(), H: 18, trunkR: 1.8, crownY: 9, crownR, barkKind: 'banyan', leafKind: 'banyan', climb, roots: ctx.roots };
+  tmpl.hi = { kind: 'banyan', branches: ctx.all, leaves, H: 18, crownC, crownR, spec: { tint: [1, 1, 1] }, leafGeo: () => tmpl.leaf };
+  return tmpl;
 }
 
 function buildLantana(seed) {
@@ -547,8 +496,9 @@ function buildDeadfall(seed) {
   const nb = 2 + Math.floor(rng() * 3);
   for (let k = 0; k < nb; k++) {
     const t = 0.25 + rng() * 0.6, p = pts[Math.round(t * 6)], side = rng() < 0.5 ? -1 : 1;
-    const l = 0.4 + rng() * 1.2, up = 0.15 + rng() * 0.5;
-    tube(gb, [p, [p[0] + (rng() - 0.5) * 0.4, p[1] + up * l, p[2] + side * l]], [r0 * 0.45, 0.012], 4, () => 0, rng(), 1, 0.85);
+    // broken branch stubs: short and blunt, with a bend, not long needles
+    const l = 0.22 + rng() * 0.5, up = 0.2 + rng() * 0.5, dx = (rng() - 0.5) * 0.3, mid = [p[0] + dx * 0.5, p[1] + up * l * 0.55, p[2] + side * l * 0.5];
+    tube(gb, [p, mid, [p[0] + dx, p[1] + up * l * 0.9, p[2] + side * l]], [r0 * 0.5, r0 * 0.38, r0 * 0.26], 5, () => 0, rng(), 1, 0.85);
   }
   return { bark: gb.geo(), leaf: null, bark1: new GB().geo(), leaf1: null, H: 0.5, trunkR: 0, crownY: 0.2, crownR: 0, barkKind: 'teak', leafKind: null, debris: true };
 }
@@ -696,7 +646,7 @@ function leafSpriteTexture() {
 }
 let LEAF_SPRITE = null;
 // spreads each sprite's four vertices from its centre toward the camera (or the sun, in the shadow pass)
-const BILLBOARD_VERTEX = /* glsl */`
+export const BILLBOARD_VERTEX = /* glsl */`
   vec4 mvPosition = vec4(transformed, 1.0);
   float bbS = 1.0;
   #ifdef USE_INSTANCING
@@ -711,24 +661,27 @@ const LEAF_FRAG_DROP = /* glsl */`
   if (vRand < uLeafDrop) discard;
   #ifdef CAM_FADE
   // leaves dissolve close to the camera, so climbing inside a crown you see Vanaj, not a wall of leaves
-  if (fract(vRand * 91.7) > smoothstep(2.0, 5.5, length(vViewPosition))) discard;
+  if (fract(vRand * 91.7) > smoothstep(CAM_A, CAM_B, length(vViewPosition))) discard;
   #endif
   { vec2 ddx = dFdx(vMapUv * 128.0), ddy = dFdy(vMapUv * 128.0);
     diffuseColor.a *= 1.0 + max(0.0, 0.5 * log2(max(dot(ddx, ddx), dot(ddy, ddy)))) * 0.3; }`;
 // species leaf colour against the season's foliage pair: teak and kulu yellower, mahua, arjun and banyan deeper
 const LEAF_KIND = { semal: [0.9, 1.0, 0.86], teak: [1.06, 1.0, 0.84], mahua: [0.8, 0.9, 0.84], saja: [0.86, 0.95, 0.9], kulu: [1.1, 1.05, 0.8], palash: [0.95, 1.0, 0.86], small: [0.9, 1.0, 0.9], arjun: [0.8, 0.92, 0.88], bamboo: [1.0, 1.08, 0.8], banyan: [0.74, 0.88, 0.84], lantana: [0.9, 1.0, 0.85] };
-function paintedLeafMaterial(key) {
+export function paintedLeafMaterial(key, opt = {}) {
   LEAF_SPRITE = LEAF_SPRITE || leafSpriteTexture();
   const m = toon({
-    map: LEAF_SPRITE, alphaTest: 0.5, vertexColors: true, wind: true, rim: 0.3, key: 'leaf-' + key, patch: (s) => {
+    map: opt.map || LEAF_SPRITE, alphaTest: 0.5, vertexColors: true, wind: true, rim: 0.3, key: 'leaf-' + key, patch: (s) => {
       s.uniforms.uLeafDrop = m.userData.drop; s.uniforms.uLeafTint = m.userData.tint; s.uniforms.uFlower = m.userData.flower;
       Object.assign(s.uniforms, PU);
-      s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\n attribute float aSize; varying float vRand;')
-        .replace('#include <project_vertex>', `${BILLBOARD_VERTEX}
+      if (opt.soft) s.uniforms.tSoft = opt.soft.tex;
+      s.vertexShader = s.vertexShader.replace('#include <common>', `#include <common>\n attribute float aSize; varying float vRand; ${opt.soft ? opt.soft.decl : ''}`)
+        .replace('#include <project_vertex>', `${opt.soft ? opt.soft.vertex : ''}${BILLBOARD_VERTEX}
           vRand = aRand;
           vNormal = normalize(vNormal + vec3(bbC, 0.0) * 0.12);   // a hint of roundness per sprite; the mass's normal leads`);
       s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>
           #define CAM_FADE
+          #define CAM_A ${(opt.fade ? opt.fade[0] : 2).toFixed(1)}
+          #define CAM_B ${(opt.fade ? opt.fade[1] : 5.5).toFixed(1)}
           uniform float uLeafDrop; uniform vec3 uLeafTint, uLeafShade, uLeafLit; uniform vec4 uFlower; varying float vRand;`)
         .replace('#include <map_fragment>', `#include <map_fragment>\n${LEAF_FRAG_DROP}`)
         .replace('#include <color_fragment>', `#include <color_fragment>
@@ -736,16 +689,18 @@ function paintedLeafMaterial(key) {
           diffuseColor.rgb = mix(diffuseColor.rgb, uFlower.rgb * vColor, step(fract(vRand * 7.31), uFlower.a));`);
     },
   });
-  m.userData.drop = { value: 0 }; m.userData.tint = { value: new THREE.Vector3(1, 1, 1) }; m.userData.flower = { value: new THREE.Vector4(0, 0, 0, 0) };
+  m.userData.drop = opt.share ? opt.share.drop : { value: 0 }; m.userData.tint = opt.share ? opt.share.tint : { value: new THREE.Vector3(1, 1, 1) }; m.userData.flower = opt.share ? opt.share.flower : { value: new THREE.Vector4(0, 0, 0, 0) };
+  if (opt.share) m.userData.nearCopy = true;
   return m;
 }
+export const getLeafSprite = () => LEAF_SPRITE;
 function paintedLeafDepth(key, dropRef) {
   const m = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map: LEAF_SPRITE, alphaTest: 0.5 });
   patch(m, 'leafdepth-p-' + key, (s) => {
     s.uniforms.uLeafDrop = dropRef;
     s.vertexShader = s.vertexShader.replace('#include <common>', `#include <common>
-      attribute float aWind; attribute float aRand; attribute float aSize; varying float vRand; uniform float uTime; uniform vec2 uWind; uniform float uWindStrength; ${BEND_DECL}`)
-      .replace('#include <begin_vertex>', `#include <begin_vertex>\n${WIND_VERTEX}${BEND_VERTEX}\n vRand = aRand;`)
+      attribute float aWind; attribute float aRand; attribute float aSize; varying float vRand; uniform float uTime; uniform vec2 uWind; uniform float uWindStrength;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\n${WIND_VERTEX}\n vRand = aRand;`)
       .replace('#include <project_vertex>', BILLBOARD_VERTEX);
     s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>\n uniform float uLeafDrop; varying float vRand;`)
       .replace('#include <map_fragment>', `#include <map_fragment>\n${LEAF_FRAG_DROP}`);
@@ -760,10 +715,11 @@ export function vineParts() {
     const t = 0.06 + i * 0.105, a = rng() * 6.28, P = new THREE.Vector3(Math.cos(a) * 0.12, -t, Math.sin(a) * 0.12);
     sprite(g, P, (i === 0 ? 1.1 : 0.45 + rng() * 0.3), new THREE.Vector3(Math.cos(a), 0.35, Math.sin(a)).normalize(), 0.75 + rng() * 0.3, [1, 1, 1], 0.6, rng());
   }
-  return { leaf, leafGeo: g.geo(), stem: toon({ color: 0x5e6a36, rim: 0.3, key: 'vine-stem' }) };
+  const n = new GB(); for (let i = 0; i < 2; i++) { const a = rng() * 6.28; sprite(n, new THREE.Vector3(Math.cos(a) * 0.09, -0.12 * i, Math.sin(a) * 0.09), 0.24 + rng() * 0.16, new THREE.Vector3(Math.cos(a), 0.35, Math.sin(a)).normalize(), 0.75 + rng() * 0.3, [1, 1, 1], 0.6, rng()); }
+  return { leaf, leafGeo: g.geo(), leafNode: n.geo(), stem: toon({ color: 0x5e6a36, rim: 0.3, key: 'vine-stem' }) };
 }
 // bark: one flat colour per species with soft vertical strokes, darker toward the ground
-const BARK_COL = { semal: '#a8a29a', teak: '#a49482', mahua: '#7a6656', saja: '#857c76', kulu: '#e6e0d6', palash: '#94826e', small: '#94826c', arjun: '#c4b49c', dead: '#9a9088', deadfall: '#8a7a68', stones: '#9a96a4', bamboo: '#b4ac5c', banyan: '#8a8070', lantana: '#6a5a40' };
+export const BARK_COL = { semal: '#a8a29a', teak: '#a49482', mahua: '#7a6656', saja: '#857c76', kulu: '#e6e0d6', palash: '#94826e', small: '#94826c', arjun: '#c4b49c', dead: '#9a9088', deadfall: '#8a7a68', stones: '#9a96a4', bamboo: '#b4ac5c', banyan: '#8a8070', lantana: '#6a5a40' };
 function paintedBarkMaterial(key) {
   return toon({
     color: new THREE.Color(BARK_COL[key] || '#7a6a58'), vertexColors: true, wind: true, rim: 0.6, key: 'bark-' + key, patch: (s) => {
@@ -810,10 +766,10 @@ export class Vegetation {
     this.colliders = []; this.rocks = []; this.perches = []; this.aoTrees = [];
     this.season = 'winter';
     // near detail: the few trees round Vanaj drawn from their detailed meshes instead of their instances
-    this.hidden = new Set(); this.slotMap = new Map(); this.near = []; this.nearT = 0; this.hiCache = new Map();
+    this.hidden = new Set(); this.slotMap = new Map();
     for (const sp of SPECIES_LIST) {
       const arr = [];
-      for (let v = 0; v < sp.variants; v++) arr.push(sp.build(1000 + SP[sp.name] * 37 + v * 11));
+      for (let v = 0; v < sp.variants; v++) { const seed = 1000 + SP[sp.name] * 37 + v * 11, t = sp.build(seed); t.seed = seed; t.spName = sp.name; arr.push(t); }
       this.templates.push(arr);
     }
     // materials per species
@@ -1030,32 +986,7 @@ export class Vegetation {
     }
     return out;
   }
-  // Near detail (painted look): the trees within 20 m of Vanaj, nearest first, up to four, are drawn from their
-  // detailed meshes (smooth limbs, twigs, small leaves round every twig; js/world/flora.js meshSkeletonHi) and
-  // their instances hidden. A detailed mesh is built the first time its kind of tree comes close, one per tick.
-  // Low quality (the phone default) keeps the instances: no extra meshes or memory. Limbs still bend there.
-  updateNear(focus) {
-    if (!PAINTED || --this.nearT > 0) return;
-    this.nearT = 10;
-    const want = this.q.name === 'Low' ? [] : this.climbNear(focus.x, focus.z, 20).filter((t) => t.tmpl && t.tmpl.makeHi)
-      .sort((a, b) => Math.hypot(a.x - focus.x, a.z - focus.z) - Math.hypot(b.x - focus.x, b.z - focus.z)).slice(0, 4);
-    for (const s of this.near) if (!want.includes(s.T)) { this.scene.remove(s.b); if (s.l) this.scene.remove(s.l); this.show(s.T.key); }
-    this.near = this.near.filter((s) => want.includes(s.T));
-    let built = false;
-    for (const T of want) {
-      if (this.near.some((s) => s.T === T)) continue;
-      let hi = this.hiCache.get(T.tmpl);
-      if (!hi) { if (built) { this.nearT = 2; continue; } hi = T.tmpl.makeHi(); this.hiCache.set(T.tmpl, hi); built = true; }
-      const mk = (geo, mat, depth) => { const m = new THREE.InstancedMesh(geo, mat, 1); m.castShadow = true; m.receiveShadow = true; m.frustumCulled = false; if (depth) m.customDepthMaterial = depth; this.scene.add(m); return m; };
-      const lm = this.leafMats[T.spName];
-      const b = mk(hi.bark, this.barkMats[T.spName]), l = hi.leaf && lm ? mk(hi.leaf, lm, lm.userData.depth) : null;
-      writeMat(b, l, 0, T.x, T.y, T.z, T.rot, T.s, T.g);
-      this.hide(T.key);
-      this.near.push({ T, b, l });
-    }
-  }
-  // every kind's detailed mesh up front (about 0.4 s at load), so none is built mid-game
-  prebuildNear() { if (PAINTED && this.q.name !== 'Low') for (const arr of this.templates) for (const t of arr) if (t.makeHi && !this.hiCache.has(t)) this.hiCache.set(t, t.makeHi()); }
+  writeNear(mesh, T) { writeMat(mesh, null, 0, T.x, T.y, T.z, T.rot, T.s, T.g); mesh.instanceMatrix.needsUpdate = true; }
   hide(key) { this.hidden.add(key); const s = this.slotMap.get(key); if (s) { zeroMat(s.m.b0, s.m.l0, s.i); for (const m of [s.m.b0, s.m.l0]) if (m) m.instanceMatrix.needsUpdate = true; } }
   show(key) { this.hidden.delete(key); const s = this.slotMap.get(key); if (s) { writeMat(s.m.b0, s.m.l0, s.i, s.x, s.y, s.z, s.rot, s.s, s.g); for (const m of [s.m.b0, s.m.l0]) if (m) m.instanceMatrix.needsUpdate = true; } }
   nearestTree(x, z, maxD = 3, species) {
@@ -1089,7 +1020,7 @@ function worldClimb(tmpl, x, y, z, rot, s, g, sp) {
   const h = Math.sin(x * 4.898 + z * 7.23) * 1458.5453, f = h - Math.floor(h);
   _we.set((f - 0.5) * 0.07, rot, (((f * 7.13) % 1) - 0.5) * 0.07, 'YXZ'); _wq.setFromEuler(_we);
   _cm.compose(_wp.set(x, y, z), _wq, _ws.set(s * g, s * (1.06 - (g - 0.84) * 0.25), s * g));
-  const rs = s * g, parts = tmpl.climb.map((b) => ({ level: b.level, pts: b.pts.map((q) => _cv.set(q[0], q[1], q[2]).applyMatrix4(_cm).clone()), r: b.pts.map((q) => q[3] * rs) }));
+  const rs = s * g, parts = tmpl.climb.map((b) => ({ level: b.level, bi: b.bi, pts: b.pts.map((q) => _cv.set(q[0], q[1], q[2]).applyMatrix4(_cm).clone()), r: b.pts.map((q) => q[3] * rs) }));
   const trunk = parts.find((b) => b.level === 0) || null, limbs = parts.filter((b) => b.level > 0);
   // lianas: on the giants (and big trees generally) hang from a point well out along a few stout limbs
   const vines = [], big = sp === SP.semal || rs > 1.35, rng = mulberry32(Math.floor(x * 13 + z * 7));

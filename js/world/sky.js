@@ -8,7 +8,8 @@ import { PAINTED, paintedLight, paintedHour } from '../core/palette.js';
 import { RIM } from '../core/toon.js';
 
 const LAT = 21.7 * Math.PI / 180;
-const _sv = new THREE.Vector3(), _sr = new THREE.Vector3(), _su = new THREE.Vector3(), _sa = new THREE.Vector3(), _sUp = new THREE.Vector3(0, 1, 0), _rc = new THREE.Color();
+// (_sUp: the celestial pole at this latitude; north is -z)
+const _sv = new THREE.Vector3(), _sr = new THREE.Vector3(), _su = new THREE.Vector3(), _sa = new THREE.Vector3(), _sUp = new THREE.Vector3(0, Math.sin(LAT), -Math.cos(LAT)), _rc = new THREE.Color();
 
 function kelvin(k) {
   // approx blackbody to linear RGB
@@ -256,15 +257,15 @@ export class SkySystem {
       this.sun.color.copy(this.sunColor);
       this.sun.intensity = 3.2 * smoothstep(-0.05, 0.12, el) * cloudDim;
     }
-    // Shadows hold still. The sun moves every frame (a game minute per second), and re-drawing the shadow map
-    // from a new angle each frame made the self-shadowed edges of trunks crawl and flicker. So the shadow
-    // direction only steps once the sun has moved ~0.25 degrees, and the shadow camera is snapped to whole
-    // shadow-map texels in the light's own frame (snapping in world x/z while following the player's height
-    // let the grid slide under the trees).
+    // Shadows move with the sun, every frame. (They used to step every 0.25 degrees to hide crawling on trunks,
+    // which showed as a visible jump each game minute.) The crawl came from the shadow-map grid turning under the
+    // trees, so the shadow camera is now framed on the celestial pole, the one axis the sun really turns round:
+    // through the day the texels only slide along one grid direction instead of rotating. It is still snapped
+    // to whole texels in the light's own frame, so walking doesn't swim the shadows either.
     const L = this._shadowDir || (this._shadowDir = new THREE.Vector3());
-    const want = _sv.set(ldir.x, Math.max(ldir.y, 0.08), ldir.z).normalize();
-    if (L.lengthSq() === 0 || L.angleTo(want) > 0.0045) L.copy(want);
+    L.set(ldir.x, Math.max(ldir.y, 0.08), ldir.z).normalize();
     const sdist = this.q.shadowDist, tex = (2 * sdist) / this.q.shadow;
+    this.sun.shadow.camera.up.copy(_sUp);
     const right = _sr.crossVectors(_sUp, L); if (right.lengthSq() < 1e-6) right.set(1, 0, 0); right.normalize();
     const up = _su.crossVectors(L, right).normalize();
     const a = Math.round(focus.dot(right) / tex) * tex, b = Math.round(focus.dot(up) / tex) * tex, c = focus.dot(L);

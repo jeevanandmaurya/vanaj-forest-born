@@ -20,7 +20,6 @@
 import * as THREE from 'three';
 import { groundHeight } from '../world/terrain.js';
 import { clamp } from '../core/noise.js';
-import { G } from '../core/shaderlib.js';
 
 const GRAV = 20, ARM = 1.85, REACH = 1.6, HANDS = 1.75;
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3(), _d = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
@@ -70,33 +69,37 @@ export class Canopy {
     this.pose = { mode: null, gripR: new THREE.Vector3(), gripL: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0), yaw: 0, phase: 0, vel: new THREE.Vector3(), trunkC: new THREE.Vector3() };
     this._q = { point: new THREE.Vector3(), dir: new THREE.Vector3(), r: 0 };
     this._hand = new THREE.Vector3(); this._vdir = new THREE.Vector3();
-    // the limb under his weight: a damped spring (droop in m at the load point), drawn by the tree shaders
-    this.bend = { amt: 0, vel: 0, tree: null, limb: null, B: new THREE.Vector3(), P: new THREE.Vector3() };
+    this.off = new THREE.Vector3();   // how far the soft tree has carried the place he holds or stands on
   }
-  // how far the limb he is on sags at the load point: a beam's droop grows with the square of the lever and falls
-  // fast with the limb's thickness; swinging adds the pull of the swing (g + v^2 / length)
+  // His weight on the soft tree (js/world/neartree.js): the limb he is on takes a load along the line of pull, its
+  // droop growing with the square of the lever and falling fast with the limb's thickness; swinging adds the pull of
+  // the swing (g + v^2 / length) and swings it sideways too. this.off is how far that has carried his hold.
   updateBend(dt) {
-    const b = this.bend, h = this.hold;
-    let L = null, at = null, load = 1;
+    this.off.set(0, 0, 0);
+    if (!this.mode || !this.tree || !this.g.near) return;
+    const S = this.g.near.softOf(this.tree); if (!S) return;
+    const h = this.hold, p = this.P.pos, v = this.vel;
+    let L = null, at = null, load = 1; const pull = _g.set(0, -1, 0);
     if (this.mode === 'hang' && h) {
       if (h.kind === 'branch') { L = h.limb; at = h.point; } else if (h.vine.limb) { L = h.vine.limb; at = h.vine.a; }
-      load = 1 + Math.min(2, this.vel.lengthSq() / (Math.max(1, h.len) * GRAV));
-    } else if (this.mode === 'limb') { L = this.limb; at = this.P.pos; load = 1; }
+      load = 1 + Math.min(2, v.lengthSq() / (Math.max(1, h.len) * GRAV));
+      if (h.pivot) pull.subVectors(p, h.pivot).normalize();
+    } else if (this.mode === 'limb') { L = this.limb; at = p; }
     else if (this.mode === 'rope' && this.rope.limb) { L = this.rope.limb; at = this.rope.a; load = 0.7; }
-    let target = 0;
-    if (L) {
-      const q = closestOn(L, at, {}), s = this.sOn(L, q);
-      if (b.limb !== L) { b.limb = L; b.tree = this.tree; }
-      b.B.copy(L.pts[0]); b.P.copy(q.point);
-      target = clamp(0.0012 * s * s / Math.pow(Math.max(0.04, L.r[0]), 1.6), 0, 0.5) * load;
+    else if (this.mode === 'trunk' && this.tree.trunk) {
+      // climbing, the whole tree leans a touch toward him
+      const T = this.tree.trunk, t = clamp((p.y - T.pts[0].y) / Math.max(1, T.pts[T.pts.length - 1].y - T.pts[0].y), 0, 1), s0 = S.simOf(T.bi), o = this.pose.out;
+      if (o) S.droop(s0, t, o.x * 0.012, 0, o.z * 0.012);
+      S.dispAt(s0, t, this.off); return;
     }
-    b.vel += (70 * (target - b.amt) - 4.2 * b.vel) * dt; b.amt += b.vel * dt;
-    if (!L && Math.abs(b.amt) < 0.002 && Math.abs(b.vel) < 0.01) { b.amt = 0; b.vel = 0; b.limb = null; b.tree = null; }
-    if (b.tree) { G.uBendTree.value.set(b.tree.x, b.tree.z); G.uBendB.value.copy(b.B); G.uBendP.value.copy(b.P); }
-    G.uBendAmt.value = b.tree ? b.amt : 0;
+    if (!L) return;
+    const q = closestOn(L, at, {}), s = this.sOn(L, q), tt = s / Math.max(0.1, lengthOf(L)), si = S.simOf(L.bi);
+    const d = clamp(0.00055 * s * s / Math.pow(Math.max(0.04, L.r[0]), 1.6), 0, 0.3) * load;
+    S.droop(si, tt, pull.x * d, pull.y * d, pull.z * d);
+    S.dispAt(si, tt, this.off);
   }
-  // the sag at the limb he holds or stands on (0 elsewhere)
-  sag(L) { return L && this.bend.limb === L ? this.bend.amt : 0; }
+  // the spring of the limb at hand, for a kick when he lands on it
+  kickLimb(L, vx, vy, vz) { const S = this.g.near && this.g.near.softOf(this.tree); if (S && L) S.kick(S.simOf(L.bi), vx, vy, vz); }
   scan(force) {
     this.scanT -= 1;
     if (force || this.scanT <= 0) { this.scanT = 12; const p = this.P.pos; this.trees = this.g.veg.climbNear(p.x, p.z, 26); }
@@ -206,7 +209,6 @@ export class Canopy {
     if (h.kind === 'vine') { h.pivot = h.vine.a.clone(); h.len = h.along + ARM; h.vine.held = true; }
     else { h.pivot = h.point.clone(); h.len = ARM; }
     h.len0 = h.len;
-    this.bend.vel += 0.6 + Math.min(2.5, Math.max(0, -vel.y) * 0.25);   // the limb gives as he takes it
     // keep the velocity across the arm, lose the part along it (a square catch keeps all its speed)
     const n = _a.subVectors(p, h.pivot); if (n.lengthSq() < 1e-4) n.set(0, -1, 0); n.normalize();
     this.vel.copy(vel).addScaledVector(n, -vel.dot(n));
@@ -255,7 +257,7 @@ export class Canopy {
     P.vel.copy(this.vel); P.speed = Math.hypot(this.vel.x, this.vel.z); P.onGround = false;
     // the camera eases round behind the way Vanaj faces (on a trunk: out from the bark, so he is never hidden
     // behind it), unless the player is steering it
-    if (!P.camUserT) P.yaw = P.lerpAngle(P.yaw, this.pose.yaw, Math.min(1, dt * (this.mode === 'trunk' || this.mode === 'rope' ? 2.5 : 1.4)));
+    if (!P.camUserT) P.yaw = P.lerpAngle(P.yaw, this.pose.yaw + (this.mode === 'limb' ? 0.7 : 0), Math.min(1, dt * (this.mode === 'trunk' || this.mode === 'rope' ? 2.5 : 1.4)));
     // tiring: hanging and climbing cost stamina; standing on a limb rests you; spent, you fall
     if (this.mode === 'hang' || this.mode === 'trunk' || this.mode === 'rope') { P.stamina -= (this.mode === 'trunk' ? 2.8 : 2.2) * dt; if (P.stamina <= 0) { g.ui.toast('Arms gave out'); this.toAir(this.vel); this.cool = 1.2; } }
     else if (this.mode === 'limb') P.stamina = Math.min(100, P.stamina + 12 * dt);
@@ -303,6 +305,8 @@ export class Canopy {
     const maxA = Math.max(0.45, dir.y < -0.2 ? Math.min(V.len, (V.a.y - foot - HANDS) / -dir.y) : V.len);
     this.ra = clamp(this.ra - vUp * dt, 0.45, maxA);
     const grip = _b.copy(V.a).addScaledVector(dir, this.ra);
+    // the root itself, bowed by wind and by him; his weight drags on it
+    const ropes = this.g.ropes; if (ropes) { if (ropes.sample(V, this.ra, _f)) grip.copy(_f); ropes.pull(V, this.ra, -Math.cos(this.th) * 2.5, -9.8 * 0.6, -Math.sin(this.th) * 2.5, dt); }
     const tan = _c.set(-Math.sin(this.th), 0, Math.cos(this.th));
     this.th += ix * dt * 2.2 / (V.r + 0.3) * Math.sign(right.dot(tan) || 1);
     const out = _c.set(Math.cos(this.th), 0, Math.sin(this.th));
@@ -338,7 +342,7 @@ export class Canopy {
     along(L, this.s, q);
     if (q.r < 0.06) { this.s -= v * dt; along(L, this.s, q); }   // too thin to stand on further out
     const prev = _c.copy(p);
-    p.copy(q.point); p.y += q.r - this.sag(L);
+    p.copy(q.point).add(this.off); p.y += q.r;
     this.vel.subVectors(p, prev).divideScalar(Math.max(dt, 1e-3)).clampLength(0, 4);
     const dir = _a.copy(q.dir).multiplyScalar(this.face).setY(0).normalize();
     this.pose.yaw = Math.atan2(-dir.x, -dir.z); this.pose.up.set(0, 1, 0);
@@ -357,8 +361,7 @@ export class Canopy {
       if (q.r > 0.035) h.point.copy(q.point);
     }
     // the hold sinks as the limb sags under him
-    if (h.kind === 'vine') h.pivot.copy(h.vine.a).y -= this.sag(h.vine.limb);
-    else h.pivot.copy(h.point).y -= this.sag(h.limb);
+    if (h.kind === 'vine') h.pivot.copy(h.vine.a).add(this.off); else h.pivot.copy(h.point).add(this.off);
     // pendulum: gravity, the player's push, light air drag, and the arm holding the length
     v.y -= GRAV * dt;
     if (h.kind === 'vine' && this.g.input.keys.ShiftLeft && iz !== 0) {
@@ -422,7 +425,7 @@ export class Canopy {
       this.pose.yaw = P.lerpAngle(this.pose.yaw, Math.atan2(-hv.x, -hv.z), Math.min(1, dt * 3));
     }
     P.bodyYaw = this.pose.yaw;
-    if (h.kind === 'vine') h.vine.hand = grip.clone();
+    if (h.kind === 'vine') { h.vine.hand = (h.vine.hand || new THREE.Vector3()).copy(grip); h.vine.holdS = h.along; }
     // ground under a long liana: legs tucked while the swing is going, standing once it has slowed
     const gy = groundHeight(p.x, p.z);
     if (p.y < gy) {
@@ -481,7 +484,7 @@ export class Canopy {
       const q = closestOn(L, p, {});
       if (q.r > 0.1 && q.d < q.r + 0.3 && p.y > q.point.y && p.y < q.point.y + q.r + 0.35 && Math.abs(q.dir.y) < 0.6) {
         this.startLimb(T, L, this.sOn(L, q), 1); p.copy(q.point); p.y += q.r;
-        this.bend.vel += Math.min(3, -v.y * 0.3);   // the limb gives under the landing
+        this.kickLimb(L, v.x * 0.08, v.y * 0.14, v.z * 0.08);   // the limb gives under the landing
         this.g.audio.footstep('rock', 0.8, null, 0.4); return;
       }
     }

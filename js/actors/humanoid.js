@@ -44,7 +44,7 @@ export function skinMaterial(color = 0x5e3d2a, mud = 0.35, key = 'skin') {
 // in the painted look every person is toon-shaded with ink outlines (docs/art-direction.md)
 export function buildHumanoid(opts = {}) {
   const h = buildHumanoidBody(opts);
-  if (PAINTED) toonify(h.root, { soften: 2 });
+  if (PAINTED) toonify(h.root, { soften: 2, outline: opts.outline ?? 0.006 });
   return h;
 }
 function buildHumanoidBody(opts) {

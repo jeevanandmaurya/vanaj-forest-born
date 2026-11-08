@@ -34,6 +34,8 @@ button { font-family:var(--sans); cursor:pointer; }
 #title .loc { font-size:12px; letter-spacing:.22em; text-transform:uppercase; color:var(--ochre); margin:0 0 54px .3em; }
 .menu button { display:block; background:none; border:none; color:var(--bone); font-family:var(--serif); font-size:29px; padding:7px 0 7px .2em; letter-spacing:.04em; transition:color .2s, padding .2s; text-align:left; }
 .menu button:hover { color:var(--ochre); padding-left:.6em; }
+#title-hint { position:absolute; left:8vw; bottom:calc(5vh + 66px); font-family:var(--serif); font-style:italic; font-size:15px; color:rgba(235,227,208,.72); transition:opacity 1.2s; }
+#title-hint.off { opacity:0; }
 #title .foot { position:absolute; left:8vw; bottom:5vh; font-size:12px; color:rgba(235,227,208,.45); letter-spacing:.06em; max-width:520px; line-height:1.6; }
 /* panels */
 .panel { position:fixed; inset:0; z-index:50; display:none; align-items:center; justify-content:center; background:rgba(5,5,4,.55); }
@@ -221,6 +223,7 @@ button { font-family:var(--sans); cursor:pointer; }
         <button id="btn-about">About the forest</button>
       </div>
     </div>
+    <div id="title-hint">Click anywhere to hear the flute</div>
     <div class="foot">Headphones recommended. Click the world to capture the mouse; <kbd>Esc</kbd> releases it. Every sound is synthesised in your browser: models of the bansuri, tanpura, the Pardhan bana fiddle and the Baiga mandar drum.</div>
   </div>
 

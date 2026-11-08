@@ -16,7 +16,9 @@ const sitePos = (k, dx = 0, dz = 0) => { const s = SITES[k]; return V3(s.x + dx,
 export class NPC {
   constructor(g, o) {
     this.g = g; this.name = o.name;
-    this.h = buildHumanoid({ scale: o.scale || 1, skinColor: o.skin || 0x9a6a4a, mud: 0.05, hair: o.hair || 'short', hairColor: o.hairColor, cloth: o.cloth || 'dhoti', clothTex: o.clothTex, topTex: o.topTex, turban: o.turban, lean: o.lean || 1, build: o.build, skinKey: 'skin-npc' + (o.skinKey || '') });
+    // what they wear, as colours for the body paint (the old cloth textures are kept for the real-look renderer)
+    const colOf = (t) => (t === g.T.clothWhite ? '#e6dfce' : t === g.T.clothKhaki ? '#a89468' : t === g.T.clothRed ? '#a33a30' : null);
+    this.h = buildHumanoid({ age: o.age, clothCol: colOf(o.clothTex), topCol: colOf(o.topTex), turbanColor: new THREE.Color(colOf(o.turban) || '#d8d0bc'), scale: o.scale || 1, skinColor: o.skin || 0x9a6a4a, mud: 0.05, hair: o.hair || 'short', hairColor: o.hairColor, cloth: o.cloth || 'dhoti', clothTex: o.clothTex, topTex: o.topTex, turban: o.turban, lean: o.lean || 1, build: o.build, skinKey: 'skin-npc' + (o.skinKey || '') });
     g.scene.add(this.h.root);
     this.pos = this.h.root.position; this.pos.copy(o.pos); this.pos.y = groundHeight(this.pos.x, this.pos.z);
     this.yaw = o.yaw || 0; this.speed = 0; this.path = []; this.state = 'idle'; this.look = null; this.up = 0; this.action = null; this.t = Math.random() * 10;
@@ -751,7 +753,7 @@ export class Story {
     if (this.villageSpawned) return; this.villageSpawned = true;
     const V = VILLAGE;
     const houses = g.props.houses || [];
-    this.aaji = this.npc({ name: 'Aaji Phulwati', pos: V3(V.x + 2, 0, V.z + 3), scale: 0.9, cloth: 'sari', clothTex: g.T.clothRed, hair: 'short', hairColor: 0xd0ccc4, skinKey: 'aaji' });
+    this.aaji = this.npc({ name: 'Aaji Phulwati', pos: V3(V.x + 2, 0, V.z + 3), scale: 0.9, cloth: 'sari', clothTex: g.T.clothRed, hair: 'short', hairColor: 0xd0ccc4, skinKey: 'aaji', age: 1 });
     const looks = [
       { cloth: 'dhoti', clothTex: g.T.clothWhite, topTex: g.T.clothWhite, turban: g.T.clothWhite },
       { cloth: 'dhoti', clothTex: g.T.clothWhite, topTex: g.T.clothKhaki, turban: g.T.clothRed },

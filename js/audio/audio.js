@@ -21,6 +21,8 @@ export class AudioEngine {
     this.verb = ctx.createConvolver(); this.verb.buffer = this.makeIR(2.6, 0.55, 0.35);
     this.verbOut = ctx.createGain(); this.verbOut.gain.value = 0.9; this.verb.connect(this.verbOut); this.verbOut.connect(this.master);
     this.verbSend = ctx.createGain(); this.verbSend.gain.value = 1; this.verbSend.connect(this.verb);
+    // the world's own reverb send, apart from the music's, so the world can be silenced whole on the main menu
+    this.worldVerb = ctx.createGain(); this.worldVerb.connect(this.verbSend);
     this.noise = { white: this.makeNoise('white', 4), pink: this.makeNoise('pink', 4), brown: this.makeNoise('brown', 4) };
     this.buildAmbience();
     this.ready = true;
@@ -28,6 +30,13 @@ export class AudioEngine {
     this.state = { hour: 8, season: 'winter', rain: 0, wind: 0.3, water: 0, night: 0, cave: 0, under: 0, village: 0 };
   }
   resume() { if (this.ctx && this.ctx.state !== 'running') this.ctx.resume().catch(() => {}); }
+  // the world's sound (animals, birds, insects, wind, water, footsteps) on or off; the music has its own bus.
+  // Off on the main menu, where there is only the flute.
+  setWorld(on, fade = 1.2) {
+    if (!this.ready) return;
+    const t = this.ctx.currentTime, v = on ? 1 : 0;
+    for (const n of [this.amb, this.sfx, this.worldVerb]) { n.gain.cancelScheduledValues(t); if (fade <= 0) n.gain.value = v; else n.gain.setTargetAtTime(v, t, fade * 0.35); }
+  }
   // Noise that loops without a seam. The beds (wind, river, rain, fire) loop these buffers; brown noise wanders,
   // so its last sample sat far from its first and the loop clicked every 4 s. The generator runs on past the end,
   // and that continuation is crossfaded into the head, so playback runs from the tail straight into the start.
@@ -76,7 +85,7 @@ export class AudioEngine {
       f.connect(p); out = p;
     }
     out.connect(opts.bus || this.sfx);
-    const send = ctx.createGain(); send.gain.value = opts.verb ?? 0.35; out.connect(send); send.connect(this.verbSend);
+    const send = ctx.createGain(); send.gain.value = opts.verb ?? 0.35; out.connect(send); send.connect(this.worldVerb);
     return g;
   }
   tone(out, t, o) {

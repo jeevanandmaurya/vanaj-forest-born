@@ -8,6 +8,8 @@ import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { patch, NOISE_GLSL } from '../core/shaderlib.js';
 import { sculptBody, eyeMesh } from './sculpt.js';
+import { PAINTED } from '../core/palette.js';
+import { toon } from '../core/toon.js';
 
 const T = { ready: false };
 export function humanRigReady() { return T.ready; }
@@ -121,6 +123,169 @@ function skinMat(color, key, o = {}) {
         reflectedLight.indirectDiffuse += diffuseColor.rgb * vec3(0.16, 0.05, 0.03) * (1.0 - saturate(dot(normal, normalize(vec3(0.0, 1.0, 0.0))) * 0.5 + 0.5));`);
   });
   return m;
+}
+
+// ------------------------------------------------------------------------------------------- Vanaj at fifteen
+// The mannequin's skeleton is a grown man's. These rescale the bones for a thin boy of fifteen, about 1.6 m and
+// six and a half heads tall: shoulders and hips closer in, shorter arms (a span about equal to his height), a
+// slightly shorter trunk. The clips were made for the long bones and write their local offsets every frame, so the
+// same factors are applied on top of the clips each frame (rig.K), and the bind pose is rebuilt to match.
+const TEEN_BONES = { 'DEF-thighL': 0.86, 'DEF-thighR': 0.86, 'DEF-upper_armL': 0.89, 'DEF-upper_armR': 0.89, 'DEF-forearmL': 0.92, 'DEF-forearmR': 0.92, 'DEF-handL': 0.92, 'DEF-handR': 0.92, 'DEF-spine001': 0.95, 'DEF-spine002': 0.95, 'DEF-spine003': 0.95, 'DEF-shoulderL': 0.95, 'DEF-shoulderR': 0.95, 'DEF-neck': 0.92, 'DEF-head': 0.9 };
+function retarget(skel, K) {
+  const bones = skel.bones, idx = new Map(bones.map((b, i) => [b, i]));
+  const oldW = bones.map((b, i) => new THREE.Matrix4().copy(skel.boneInverses[i]).invert()), newW = new Array(bones.length);
+  const solve = (i) => {
+    if (newW[i]) return newW[i];
+    const b = bones[i], pi = idx.get(b.parent);
+    if (pi === undefined) return (newW[i] = oldW[i].clone());
+    const local = new THREE.Matrix4().copy(oldW[pi]).invert().multiply(oldW[i]), k = K[b.name] ?? 1, e = local.elements;
+    e[12] *= k; e[13] *= k; e[14] *= k;
+    return (newW[i] = new THREE.Matrix4().multiplyMatrices(solve(pi), local));
+  };
+  bones.forEach((b, i) => solve(i));
+  skel.boneInverses = newW.map((m) => m.clone().invert());
+  const list = [];
+  for (const b of bones) { const k = K[b.name]; if (k) { list.push({ bone: b, k, raw: b.position.clone() }); b.position.multiplyScalar(k); } }
+  return list;
+}
+// the villagers are built the same way: one sculpted body per build, shared. Grown men fill out, women slighter with
+// a wider pelvis, a child thin with a bigger head; the skeleton shortened to suit, as for Vanaj.
+const WOMAN_BONES = { 'DEF-thighL': 0.92, 'DEF-thighR': 0.92, 'DEF-upper_armL': 0.9, 'DEF-upper_armR': 0.9, 'DEF-forearmL': 0.94, 'DEF-forearmR': 0.94, 'DEF-handL': 0.94, 'DEF-handR': 0.94, 'DEF-shoulderL': 0.97, 'DEF-shoulderR': 0.97 };
+const MAN_BONES = { 'DEF-forearmL': 0.95, 'DEF-forearmR': 0.95, 'DEF-handL': 0.95, 'DEF-handR': 0.95, 'DEF-upper_armL': 0.96, 'DEF-upper_armR': 0.96 };
+const BODY = {
+  man: { limb: 1.32, trunk: 1.24, neck: 1.28, hs: 1.0, wrap: false, bones: MAN_BONES },
+  woman: { limb: 1.12, trunk: 1.06, hip: 1.12, neck: 1.02, hs: 1.03, wrap: false, bones: WOMAN_BONES },
+  child: { limb: 0.96, trunk: 0.94, neck: 0.96, hs: 1.2, wrap: false, bones: TEEN_BONES },
+};
+const bodyCache = {};
+function bodyFor(kind, skeleton, detail) { return bodyCache[kind] || (bodyCache[kind] = sculptBody(skeleton, detail, BODY[kind])); }
+export function prebuildBodies(detail) {
+  if (!T.ready || !PAINTED) return;
+  for (const kind in BODY) { const inst = SkeletonUtils.clone(T.scene); let m; inst.traverse((o) => { if (o.isSkinnedMesh && !m) m = o; }); retarget(m.skeleton, BODY[kind].bones); bodyFor(kind, m.skeleton, detail); }
+}
+const lin = (hex) => { const c = new THREE.Color(hex); return `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`; };
+// His skin, clothes and face, painted on the body in its bind pose, so they follow every bend of the skin exactly:
+// the bark-cloth wrap and hide vest, dust on the shins and feet, and a simple drawn face with big dark eyes that blink
+// and look about. Flat colours and ink lines, in keeping with the painted forest.
+function boySkin(opts, O, A) {
+  const boy = !!opts.clothes;
+  // how far down the cloth reaches: his wrap to mid-thigh; a man's dhoti to the shin, a child's to the knee
+  const hemY = boy ? A.hemY : A.hs > 1.1 ? A.kneeY * 1.02 : A.kneeY * 0.6;
+  const U = { blink: { value: 0 }, look: { value: new THREE.Vector2() }, mouth: { value: 0 }, brow: { value: 0 }, skin: { value: new THREE.Color(opts.skinColor || '#b0744a') }, top: { value: new THREE.Color(boy ? '#6b4c33' : opts.topCol || opts.clothCol || '#a89468') }, cloth: { value: new THREE.Color(boy ? '#c7ae80' : opts.clothCol || '#d8d0bc') } };
+  const f = (v) => v.toFixed(4);
+  const fn = (s) => {
+    s.uniforms.uBlink = U.blink; s.uniforms.uLook = U.look; s.uniforms.uMouth = U.mouth; s.uniforms.uBrow = U.brow; s.uniforms.uSkin = U.skin; s.uniforms.uTopC = U.top; s.uniforms.uClothC = U.cloth;
+    s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\n attribute vec4 aReg; varying vec3 vBP; varying vec4 vReg;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n vBP = position; vReg = aReg;');
+    s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>
+        varying vec3 vBP; varying vec4 vReg; uniform float uBlink, uMouth, uBrow, uWetness; uniform vec2 uLook; uniform vec3 uSkin, uTopC, uClothC;
+        ${NOISE_GLSL}
+        float sdSeg(vec2 p, vec2 a, vec2 b) { vec2 pa = p - a, ba = b - a; float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0); return length(pa - ba * h); }
+        float fillA(float d) { float w = fwidth(d) + 1e-5; return 1.0 - smoothstep(-w, w, d); }`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        {
+          vec3 p = vBP, c = uSkin;
+          float ax = abs(p.x), n = vnoise3(p * 34.0), n2 = vnoise3(p * 11.0);
+          // dust and dried mud up the shins, grime on the hands and knees
+          c = mix(c, ${lin('#6e5236')}, smoothstep(${f(A.footY + 0.2)}, ${f(A.footY - 0.04)}, p.y + (n2 - 0.5) * 0.14) * ${boy ? '0.62' : '0.25'});
+          ${boy ? `c = mix(c, ${lin('#6e5236')}, smoothstep(0.035, 0.012, abs(p.y - ${f(A.kneeY)}) + (n - 0.5) * 0.03) * step(0.0, p.z) * 0.3);` : ''}
+          c = mix(c, c * 0.8, clamp(vReg.x, 0.0, 1.0) * (0.4 + 0.6 * n2));
+          // his vest of soft hide, open down the chest with pale stitches; on villagers a plain short-sleeved top
+          if (vReg.z < 0.3 && ax < ${f(A.armX + (boy ? 0 : 0.11))} && p.y > ${f(A.waistY - 0.012)} && p.y < ${f(A.chestTop + 0.09)}) {
+            float open = ${boy ? `0.011 + max(0.0, ${f(A.chestTop)} - p.y) * 0.05` : '-1.0'};
+            float hole = length(vec2(p.x, (p.z + 0.018) * 0.95)) - 0.074;   // round the neck
+            bool bare = (p.z > 0.0 && ax < open) || (p.y > ${f(A.chestTop - 0.05)} && hole < 0.0);
+            if (!bare) {
+              c = uTopC * mix(1.0, 1.2, smoothstep(0.35, 0.7, n2));
+              ${boy ? `float st = step(0.0, p.z) * (1.0 - smoothstep(0.0012, 0.0024, abs(ax - open - 0.0065))) * step(0.5, fract(p.y * 42.0));
+              c = mix(c, ${lin('#d4c098')}, st);` : ''}
+              c = mix(c, c * 0.72, smoothstep(0.012, 0.0, abs(p.y - ${f(A.waistY + 0.002)}) + (n - 0.5) * 0.008));
+            }
+          }
+          // the wrap: pale bark cloth from the waist to mid-thigh, its folds drawn, a dark band at the torn hem
+          float hem = ${f(hemY)} + (n - 0.5) * ${boy ? '0.016' : '0.004'};
+          if (vReg.z < 0.3 && p.y < ${f(A.waistY - 0.006)} && p.y > hem) {
+            c = uClothC * mix(1.0, 0.86, smoothstep(0.42, 0.62, vnoise(vec2((p.x + p.z * 0.5) * 34.0, p.y * 7.0))));
+            c = mix(c, uClothC * 0.68, 1.0 - smoothstep(0.012, 0.024, p.y - hem));
+            c = mix(c, uClothC * 0.68, (1.0 - smoothstep(0.0, 0.0035, abs(p.x * 0.8 + p.y * 0.35 - 0.33 - sign(p.x) * 0.02))) * step(0.0, p.z) * step(0.0, p.x) * 0.7);
+          }
+          // the face
+          vec3 q = (p - vec3(${f(O.x)}, ${f(O.y)}, ${f(O.z)})) / ${f(A.hs)};
+          if (vReg.z > 0.5 && q.z > 0.02 && abs(q.x) < 0.085 && q.y < 0.08 && q.y > -0.125) {
+            float side = q.x > 0.0 ? 1.0 : -1.0;
+            vec2 e = vec2(abs(q.x) - 0.0365, q.y + 0.012); e.y -= e.x * 0.12;            // outer corner lifted a little
+            float ry = max(0.0009, 0.0128 * (1.0 - uBlink)), rx = 0.0192;
+            float de = length(e / vec2(rx, ry)) - 1.0, eye = fillA(de * ry);
+            vec2 ip = vec2(q.x - side * 0.0365 - uLook.x * 0.0068, q.y + 0.0115 - uLook.y * 0.0036);
+            vec3 ec = ${lin('#f1e8d8')};
+            ec = mix(ec, mix(${lin('#4a2c18')}, ${lin('#26150c')}, smoothstep(-0.011, 0.011, ip.y)), fillA(length(ip) - 0.0112));
+            ec = mix(ec, ${lin('#0c0705')}, fillA(length(ip) - 0.0056));
+            ec = mix(ec, vec3(1.0), fillA(length(ip - vec2(-0.0034, 0.0042)) - 0.0024));
+            ec *= 1.0 - 0.28 * smoothstep(0.1, 0.95, e.y / ry);                         // the lid's shadow
+            c = mix(c, ec, eye);
+            // upper lid: a thick drawn line, running past the outer corner; lower lid: a thin one
+            float up = smoothstep(-0.0015, 0.0015, e.y);
+            float lid = fillA(abs(de * ry) - mix(0.0007, 0.0021, up)) * mix(0.55, 1.0, up);
+            c = mix(c, ${lin('#20130c')}, lid);
+            c = mix(c, ${lin('#20130c')}, fillA(sdSeg(e, vec2(0.0182, 0.0028), vec2(0.0235, -0.0012)) - 0.001));
+            // brows: short, thick, a little worried
+            float by = 0.0205 + uBrow * 0.004;
+            c = mix(c, ${lin(opts.age ? '#b8b2a8' : '#26170f')}, fillA(sdSeg(vec2(abs(q.x), q.y), vec2(0.0185, by + 0.0005), vec2(0.0545, by - 0.0015)) - mix(0.0042, 0.0024, smoothstep(0.02, 0.055, abs(q.x)))));
+            // the underside of the nose, the mouth (a small line that opens when he's out of breath), warm cheeks
+            c = mix(c, ${lin('#6e4226')}, fillA(sdSeg(vec2(q.x, q.y), vec2(-0.0095, -0.0555), vec2(0.0095, -0.0555)) - 0.0012) * 0.8);
+            vec2 m = vec2(q.x, q.y + 0.0795 - q.x * q.x * 4.0);
+            c = mix(c, ${lin('#3a1a12')}, fillA(sdSeg(m, vec2(-0.0165, 0.0), vec2(0.0165, 0.0)) - 0.0011 - uMouth * 0.0065));
+            c = mix(c, c * ${lin('#ffc4b0')} * 1.06, smoothstep(0.03, 0.0, length(vec2(abs(q.x) - 0.047, q.y + 0.045))) * 0.25);
+            ${opts.age ? `// the lines of a long life: at the corners of the eyes, beside the nose and mouth, across the brow
+            float wr = fillA(sdSeg(vec2(abs(q.x), q.y), vec2(0.0595, -0.011), vec2(0.0695, -0.005)) - 0.0007) + fillA(sdSeg(vec2(abs(q.x), q.y), vec2(0.0595, -0.016), vec2(0.0695, -0.02)) - 0.0007)
+              + fillA(sdSeg(vec2(abs(q.x), q.y), vec2(0.016, -0.051), vec2(0.03, -0.077)) - 0.0008) + fillA(abs(q.y - 0.041 - q.x * q.x * 3.0) - 0.0006) * step(abs(q.x), 0.04);
+            c = mix(c, c * 0.62, clamp(wr, 0.0, 1.0) * 0.8);` : ''}
+          }
+          diffuseColor.rgb = c * mix(1.0, 0.82, uWetness);
+        }`);
+  };
+  // (a program per build: their measurements are written into the shader)
+  const key = `boy-${A.hs}-${boy ? 1 : 0}-${opts.age ? 1 : 0}`;
+  const m = PAINTED ? toon({ color: 0xffffff, rim: 0.3, key, patch: fn }) : patch(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.75 }), key + '-real', fn);
+  m.userData.faceU = U;
+  return m;
+}
+// Short shaggy hair that nobody has ever cut straight: thick, tapered chunks falling from the crown, a fringe that
+// stops above the brows, over the tops of the ears at the sides, to the nape behind, a few tufts standing up.
+function shaggyHair(skull, E, seed = 23) {
+  let sd = seed; const rr = () => (sd = (sd * 16807) % 2147483647) / 2147483647;
+  const parts = [], dir = (az, pol, out) => out.set(Math.sin(pol) * Math.sin(az), Math.cos(pol), Math.sin(pol) * Math.cos(az));
+  const p = new THREE.Vector3(), on = (d, k) => new THREE.Vector3(skull.x + d.x * E.x * k, skull.y + d.y * E.y * k, skull.z + d.z * E.z * k);
+  // a lock: rooted at (az, pol), following the skull down to pol1, sweeping sideways, its tip kicking out
+  const lock = (az, pol, pol1, sweep, r0, kick = 0.05) => {
+    const pts = [on(dir(az, pol, p), 0.94)], N = 5;
+    for (let i = 1; i <= N; i++) { const t = i / N; pts.push(on(dir(az + sweep * t, pol + (pol1 - pol) * t, p), 1.17 + 0.03 * Math.sin(t * 3 + az) + kick * t * t)); }
+    parts.push(lockGeo(new THREE.CatmullRomCurve3(pts), r0, r0 * 0.2, rr() * 6.28, 8, 6));
+  };
+  for (let i = 0; i < 15; i++) { const a = -0.86 + i * 0.123 + (rr() - 0.5) * 0.08; lock(a, 0.15 + rr() * 0.3, 1.14 + rr() * 0.2, (a > 0 ? 1 : -1) * (0.14 + rr() * 0.22), 0.03 + rr() * 0.01, 0.03); }    // fringe
+  for (const s of [1, -1]) for (let i = 0; i < 9; i++) { const a = s * (0.95 + i * 0.13 + (rr() - 0.5) * 0.1); lock(a, 0.35 + rr() * 0.35, 1.7 + rr() * 0.38, s * (rr() - 0.3) * 0.25, 0.031 + rr() * 0.011, 0.09); }    // over the ears
+  for (let i = 0; i < 17; i++) { const a = 2.15 + i * 0.118 + (rr() - 0.5) * 0.08; lock(a, 0.3 + rr() * 0.5, 2.25 + rr() * 0.35, (rr() - 0.5) * 0.3, 0.034 + rr() * 0.012, 0.1); }    // to the nape
+  for (let i = 0; i < 12; i++) { const a = rr() * 6.28; lock(a, rr() * 0.28, 0.6 + rr() * 0.32, (rr() - 0.5) * 0.6, 0.027 + rr() * 0.01, 0.2); }   // tufts on the crown
+  // the scalp under the locks, with its hairline above the brow
+  const cap = new THREE.SphereGeometry(1.07, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.56); cap.deleteAttribute('uv'); cap.rotateX(-0.36); cap.scale(E.x, E.y, E.z);
+  cap.computeVertexNormals(); cap.translate(skull.x, skull.y, skull.z - 0.004);
+  const n = cap.attributes.position.count;
+  cap.setAttribute('aT', new THREE.Float32BufferAttribute(new Float32Array(n).fill(0.05), 1)); cap.setAttribute('aPh', new THREE.Float32BufferAttribute(new Float32Array(n), 1));
+  parts.push(cap.toNonIndexed());
+  return mergeGeometries(parts.map((g) => (g.index ? g.toNonIndexed() : g)));
+}
+function boyHairMat(color, U) {
+  const fn = (s) => {
+    s.uniforms.uHairPush = U.push;
+    s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\n attribute float aT, aPh; uniform float uTime; uniform vec3 uHairPush; varying float vT;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        { float sw = aT * aT; transformed += uHairPush * sw;
+          transformed.x += sin(uTime * 1.6 + aPh) * 0.004 * sw; transformed.z += sin(uTime * 1.25 + aPh * 1.3) * 0.003 * sw; }
+        vT = aT;`);
+    s.fragmentShader = s.fragmentShader.replace('#include <common>', '#include <common>\n varying float vT;')
+      .replace('#include <color_fragment>', `#include <color_fragment>\n diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.5, 1.32, 1.15), smoothstep(0.5, 1.0, vT));`);
+  };
+  return PAINTED ? toon({ color, rim: 0.12, key: 'hair-boy', patch: fn }) : patch(new THREE.MeshStandardMaterial({ color, roughness: 0.8 }), 'hair-boy-real', fn);
 }
 
 function bonePos(inst, name, out) { const b = inst.getObjectByName(name); b.getWorldPosition(out); return out; }
@@ -292,10 +457,10 @@ function dress(inst, opts, S, cranium) {
     inst.traverse((o) => { if (!o.isSkinnedMesh) return; const p = o.geometry.attributes.position; for (let i = 0; i < p.count; i++) { const x = p.getX(i); if (Math.abs(p.getY(i) - y) > dy || Math.abs(x) > 0.22) continue; const z = p.getZ(i); x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); } });
     return x1 > x0 ? { cx: (x0 + x1) / 2, cz: (z0 + z1) / 2, rx: (x1 - x0) / 2, rz: (z1 - z0) / 2 } : { cx: 0, cz: 0, rx: 0.15 * G, rz: 0.11 * G };
   };
-  if (opts.cloth === 'loin') {
+  if (opts.cloth === 'loin' || opts.cloth === 'wrap') {
     // a langot: a twisted fibre cord round the waist, a strip of old cloth passed between the legs and tucked
     // under the cord front and back, its frayed ends hanging over the front and behind, and a small hide bag
-    const cy = hy + 0.035, W = section(cy);
+    const wrap = opts.cloth === 'wrap', cy = wrap ? opts.paint.waistY - 0.01 : hy + 0.035, W = section(cy);
     let crotch = hy - 0.12;
     inst.traverse((o) => { if (!o.isSkinnedMesh) return; const p = o.geometry.attributes.position; for (let i = 0; i < p.count; i++) { const y = p.getY(i); if (Math.abs(p.getX(i) - W.cx) < 0.02 && y < hy && y > hy - 0.3) crotch = Math.min(crotch, y); } });
     const bc = new THREE.MeshStandardMaterial({ map: opts.clothTex || null, color: 0xffffff, roughness: 0.97, side: THREE.DoubleSide, alphaTest: 0.5 });
@@ -307,12 +472,12 @@ function dress(inst, opts, S, cranium) {
     add(new THREE.TorusGeometry(0.009, 0.0055, 5, 10).rotateY(0.4).translate(kx, cy - 0.014, kz), cordM, 'DEF-hips');
     for (const [dx, l] of [[-0.006, 0.07], [0.007, 0.05]]) add(new THREE.TubeGeometry(new THREE.CatmullRomCurve3([new THREE.Vector3(kx + dx, cy - 0.02, kz), new THREE.Vector3(kx + dx * 2, cy - 0.02 - l * 0.5, kz + 0.006), new THREE.Vector3(kx + dx * 2.5, cy - 0.02 - l, kz + 0.004)]), 6, 0.0045, 4, false), cordM, 'DEF-hips');
     // strip between the legs: front tuck -> under the crotch -> back tuck; narrow where the thighs close in
-    const strip = new THREE.CatmullRomCurve3([[0, cy - 0.01, W.rz + 0.012], [0, crotch + 0.05, W.rz * 0.8], [0, crotch - 0.012, 0.0], [0, crotch + 0.05, -W.rz * 0.85], [0, cy - 0.01, -W.rz - 0.012]].map(([x, y, z]) => new THREE.Vector3(W.cx + x, y, W.cz + z)));
+    if (!wrap) { const strip = new THREE.CatmullRomCurve3([[0, cy - 0.01, W.rz + 0.012], [0, crotch + 0.05, W.rz * 0.8], [0, crotch - 0.012, 0.0], [0, crotch + 0.05, -W.rz * 0.85], [0, cy - 0.01, -W.rz - 0.012]].map(([x, y, z]) => new THREE.Vector3(W.cx + x, y, W.cz + z)));
     { const pos = [], uv = [], idx = [], P = new THREE.Vector3(), N = 16;
       for (let i = 0; i <= N; i++) { const t = i / N; strip.getPointAt(t, P); const w = 0.024 + 0.026 * Math.abs(Math.cos(t * Math.PI)); pos.push(P.x - w, P.y, P.z, P.x + w, P.y, P.z); uv.push(0.2, 1 - t * 0.7, 0.8, 1 - t * 0.7); }
       for (let i = 0; i < N; i++) idx.push(i * 2, i * 2 + 1, i * 2 + 2, i * 2 + 1, i * 2 + 3, i * 2 + 2);
       const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx); g.computeVertexNormals();
-      add(g, bc, 'DEF-hips'); }
+      add(g, bc, 'DEF-hips'); } }
     // the hanging ends: bunched where they are tucked under the cord, opening out toward the frayed hem in soft
     // folds, wrapped to the curve of the belly / buttocks and falling a little away from the body
     // the cloth hangs from the cord, so it never comes in closer than the furthest the body has reached above
@@ -334,8 +499,17 @@ function dress(inst, opts, S, cranium) {
       }
       g.computeVertexNormals(); return g;
     };
-    add(flap(W.rx * 1.15, 0.22, 1, 1.3), bc, 'DEF-hips');
-    add(flap(W.rx * 1.3, 0.17, -1, 4.1), bc, 'DEF-hips');
+    if (wrap) { add(flap(W.rx * 0.7, 0.15, 1, 1.3), bc, 'DEF-hips'); add(flap(W.rx * 0.85, 0.14, -1, 4.1), bc, 'DEF-hips'); }
+    else { add(flap(W.rx * 1.15, 0.22, 1, 1.3), bc, 'DEF-hips'); add(flap(W.rx * 1.3, 0.17, -1, 4.1), bc, 'DEF-hips'); }
+    if (wrap) {
+      // a tooth on a cord at his throat (Kaali's, when she had it to give), and a band of twisted fibre on one wrist
+      const y0 = neck.y + 0.012, zc = neck.z - 0.006, pts = [];
+      for (let i = 0; i < 20; i++) { const a = i / 20 * Math.PI * 2, f = Math.max(0, Math.cos(a)); pts.push(new THREE.Vector3(Math.sin(a) * 0.056, y0 - 0.062 * f * f, zc + Math.cos(a) * (a > 1.57 && a < 4.71 ? 0.046 : 0.058))); }
+      add(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts, true), 50, 0.0032, 5, true), cordM, 'DEF-spine003');
+      add(new THREE.ConeGeometry(0.0072, 0.03, 6).rotateX(Math.PI).translate(0, y0 - 0.08, zc + 0.062), new THREE.MeshStandardMaterial({ color: 0xe9e0c8, roughness: 0.6 }), 'DEF-spine003');
+      const wr = bonePos(inst, 'DEF-handL', new THREE.Vector3());
+      add(new THREE.TorusGeometry(0.0235, 0.0042, 5, 14).rotateY(Math.PI / 2).translate(wr.x - 0.032, wr.y, wr.z), cordM, 'DEF-forearmL');
+    }
     // a small hide bag hanging flat against the hip from the cord: flint, a fire-stick, whatever he keeps
     const pouchM = new THREE.MeshStandardMaterial({ color: 0x4e3626, roughness: 0.9 });
     const pouch = new THREE.SphereGeometry(0.05, 12, 10); pouch.scale(0.32, 1.1, 0.85);
@@ -343,15 +517,14 @@ function dress(inst, opts, S, cranium) {
     pouch.translate(W.cx + W.rx + 0.014, cy - 0.07, W.cz - W.rz * 0.15); add(pouch, pouchM, 'DEF-hips');
     add(new THREE.TorusGeometry(0.011, 0.003, 4, 10).rotateX(Math.PI / 2).translate(W.cx + W.rx + 0.014, cy - 0.024, W.cz - W.rz * 0.15), cordM, 'DEF-hips');   // drawstring
   } else if (opts.cloth === 'dhoti') {
-    const cm = cloth(opts.clothTex, 0xffffff);
-    add(ring(kneeL.y - 0.05, hy + 0.06, 0.24, 0.17), cm, 'DEF-hips');
+    if (!opts.paint) add(ring(kneeL.y - 0.05, hy + 0.06, 0.24, 0.17), cloth(opts.clothTex, 0xffffff), 'DEF-hips');
   } else if (opts.cloth === 'sari') {
     const cm = cloth(opts.clothTex, 0xffffff);
-    add(ring(footL.y + 0.06, hy + 0.08, 0.27, 0.17, 22), cm, 'DEF-hips');
-    add(ring(chest.y - 0.2, chest.y + 0.08, 0.15, 0.135), cm, 'DEF-spine003');
-    const pallu = new THREE.PlaneGeometry(0.22, 0.75); pallu.rotateZ(0.5); pallu.translate(0.05, chest.y - 0.12, 0.13 * G); add(pallu, cm, 'DEF-spine003');
+    add(ring(footL.y + 0.06, hy + 0.08, 0.27, 0.14, 22), opts.paint ? new THREE.MeshStandardMaterial({ color: opts.clothCol || 0xc0b090, roughness: 0.95, side: THREE.DoubleSide }) : cm, 'DEF-hips');
+    if (!opts.paint) add(ring(chest.y - 0.2, chest.y + 0.08, 0.15, 0.135), cm, 'DEF-spine003');
+    const pallu = new THREE.PlaneGeometry(0.2, 0.62); pallu.rotateZ(0.5); pallu.translate(0.03, chest.y - 0.08, 0.125 * G); add(pallu, opts.paint ? new THREE.MeshStandardMaterial({ color: opts.clothCol || 0xc0b090, roughness: 0.95, side: THREE.DoubleSide }) : cm, 'DEF-spine003');
   }
-  if (opts.topTex) { const tm = cloth(opts.topTex, 0xffffff); add(ring(hy + 0.02, chest.y + 0.1, 0.16, 0.15), tm, 'DEF-spine002'); }
+  if (opts.topTex && !opts.paint) { const tm = cloth(opts.topTex, 0xffffff); add(ring(hy + 0.02, chest.y + 0.1, 0.16, 0.15), tm, 'DEF-spine002'); }
   const hairM = new THREE.MeshStandardMaterial({ color: opts.hairColor || 0x16110d, roughness: 0.9 });
   // the head bone sits at the base of the skull, ~0.26 below the crown: measure the skull from the mesh itself
   // (centre and width of everything above the bone) so hair and turbans sit on the head, not inside it
@@ -365,41 +538,49 @@ function dress(inst, opts, S, cranium) {
   // a sculpted head knows its cranium exactly (the face and ears would throw the measurement off)
   const hr = cranium ? Math.max(cranium.r.x, cranium.r.z) : sn ? rad : 0.115;
   const skull = cranium ? cranium.c.clone() : sn ? new THREE.Vector3(sx / sn, top - hr, sz / sn) : head.clone().setY(head.y + 0.13);
-  if (opts.hair === 'matted') {
+  if (opts.hair === 'shaggy') {
+    const m = add(shaggyHair(skull, cranium ? cranium.r : new THREE.Vector3(hr, hr, hr)), boyHairMat(opts.hairColor || 0x31211a, opts.hairU), 'DEF-head');
+    m.userData.hair = true;
+  } else if (opts.hair === 'matted') {
     add(mattedHair(skull, cranium ? cranium.r : hr), hairMat(opts.hairColor || 0x16110d), 'DEF-head');
-  } else if (opts.hair === 'short') {
-    add(new THREE.SphereGeometry(hr * 1.05, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.5).translate(skull.x, skull.y + 0.012, skull.z - 0.008), hairM, 'DEF-head');
-  } else if (opts.hair === 'bun') {
-    add(new THREE.SphereGeometry(hr * 1.05, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.52).translate(skull.x, skull.y + 0.01, skull.z - 0.008), hairM, 'DEF-head');
-    add(new THREE.SphereGeometry(0.05, 10, 8).translate(skull.x, skull.y, skull.z - hr * 1.05), hairM, 'DEF-head');
+  } else if (opts.hair === 'short' || opts.hair === 'bun') {
+    // a cap of hair over the skull, with a hairline above the brow and down behind the ears
+    const E = cranium ? cranium.r : new THREE.Vector3(hr, hr, hr), cap = new THREE.SphereGeometry(1.17, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.6); cap.rotateX(-0.3); cap.scale(E.x, E.y, E.z); cap.computeVertexNormals(); cap.translate(skull.x, skull.y, skull.z - 0.004);
+    add(cap, hairM, 'DEF-head');
+    if (opts.hair === 'bun') add(new THREE.SphereGeometry(0.046, 12, 9).translate(skull.x, skull.y - 0.018, skull.z - E.z * 1.13), hairM, 'DEF-head');
   }
   if (opts.turban) {
     const tm = new THREE.MeshStandardMaterial({ color: opts.turbanColor || 0xd8d0bc, roughness: 0.95 });
-    const tg = new THREE.TorusGeometry(hr * 1.02, 0.04, 8, 20); tg.rotateX(Math.PI / 2); tg.translate(skull.x, skull.y + 0.03, skull.z);
-    add(tg, tm, 'DEF-head'); add(new THREE.SphereGeometry(hr * 1.05, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.45).translate(skull.x, skull.y + 0.025, skull.z), tm, 'DEF-head');
+    const Et = cranium ? cranium.r : new THREE.Vector3(hr, hr, hr);
+    const tg = new THREE.TorusGeometry(1.14, 0.2, 8, 22); tg.rotateX(Math.PI / 2); tg.scale(Et.x, Et.x, Et.z); tg.translate(skull.x, skull.y + 0.035, skull.z);
+    add(tg, tm, 'DEF-head'); add(new THREE.SphereGeometry(1.19, 16, 8, 0, Math.PI * 2, 0, Math.PI * 0.5).scale(Et.x, Et.y, Et.z).translate(skull.x, skull.y + 0.02, skull.z), tm, 'DEF-head');
   }
   return mats;
 }
 
 export function buildRiggedHuman(opts = {}) {
   const S = opts.scale || 1;
+  if (PAINTED && !opts.sculpt) { opts = { ...opts, sculpt: true }; if (opts.cloth === 'sari' && opts.hair !== 'matted') opts.hair = 'bun'; }
   const inst = SkeletonUtils.clone(T.scene);
-  let face = null, eyes = null;
+  let face = null, eyes = null, paint = null, cranium = null, K = null;
+  const hairU = { push: { value: new THREE.Vector3() } };
   if (opts.sculpt) {
     // swap the mannequin's jointed plates for one continuous body generated around the same skeleton
     const mans = []; inst.traverse((o) => { if (o.isSkinnedMesh) mans.push(o); });
-    const sc = sculptBody(mans[0].skeleton, opts.detail || 1);
+    const kind = !opts.proportions && (opts.build === 'child' ? 'child' : opts.cloth === 'sari' ? 'woman' : 'man');
+    K = retarget(mans[0].skeleton, kind ? BODY[kind].bones : TEEN_BONES); inst.updateMatrixWorld(true);
+    const sc = kind ? bodyFor(kind, mans[0].skeleton, opts.detail || 1.7) : sculptBody(mans[0].skeleton, opts.detail || 1);
     const body = new THREE.SkinnedMesh(sc.geometry); body.name = 'Body';
     mans[0].parent.add(body); body.bind(mans[0].skeleton, mans[0].bindMatrix);
     for (const m of mans) m.parent.remove(m);
-    face = sc.face; eyes = sc.eyes;
+    face = sc.face; eyes = sc.eyes; paint = sc.paint; cranium = sc.cranium;
   } else if (BUILDS[opts.build]) reshape(inst, BUILDS[opts.build]);
   inst.traverse((o) => { if (o.isSkinnedMesh) regions(o); });
   const unit = (1.72 * S) / (T.box.max.y - T.box.min.y);
-  const skin = opts.skin || skinMat(opts.skinColor || 0x5e3d2a, opts.skinKey || 'skin', { dirt: opts.dirt, scars: opts.scars, face });
+  const skin = opts.skin || (paint ? boySkin({ ...opts, clothes: opts.proportions === 'teen' }, face, paint) : skinMat(opts.skinColor || 0x5e3d2a, opts.skinKey || 'skin', { dirt: opts.dirt, scars: opts.scars, face }));
   inst.traverse((o) => { if (o.isMesh) { o.material = skin; o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false; } });
   inst.updateMatrixWorld(true);
-  dress(inst, opts, S, face ? { c: face.clone().add(new THREE.Vector3(0, 0.02, -0.012)), r: new THREE.Vector3(0.078, 0.1, 0.1) } : null);
+  dress(inst, { ...opts, paint, hairU }, S, cranium);
   if (eyes) for (const e of eyes) {
     const em = eyeMesh(e, patch, NOISE_GLSL), m = new THREE.Mesh(em.geometry, em.material);
     m.position.copy(e.c); m.rotation.y = Math.sign(e.c.x) * 0.06; inst.add(m); inst.getObjectByName('DEF-head').attach(m);
@@ -409,12 +590,13 @@ export function buildRiggedHuman(opts = {}) {
   const mixer = new THREE.AnimationMixer(inst);
   const actions = {}; for (const c of T.clips) actions[c.name] = mixer.clipAction(c);
   const bones = {}; inst.traverse((o) => { if (o.isBone) bones[o.name] = o; });
+  const fingers = K ? Object.values(bones).filter((b) => /^DEF-(f_|thumb)/.test(b.name)).map((b) => ({ bone: b, q0: b.quaternion.clone(), right: /R$/.test(b.name) })) : null;
   // grip frames that emulate the old hand joints (fingers along -Y, handle along +Z) so weapons attach as before
   const handR = new THREE.Group(), handL = new THREE.Group(), back = new THREE.Group(); root.add(handR, handL, back);
   // (back: where a weapon is slung while the hands are busy climbing or swimming, diagonally across the shoulders)
   back.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0.5, 1, 0).normalize());
   const j = { handR, handL, back, head: bones['DEF-head'], hips: bones['DEF-hips'] };
-  return { root, j, S, rig: { inst, body, mixer, actions, bones, cur: null, curName: '' }, t: 0, dead: 0, skin, swimS: 0 };
+  return { root, j, S, rig: { inst, body, mixer, actions, bones, cur: null, curName: '', K, fingers }, t: 0, dead: 0, skin, swimS: 0, faceU: skin.userData.faceU || null, hairU };
 }
 
 const ONCE = new Set(['Death01', 'Punch_Jab', 'Jump_Start']);
@@ -444,6 +626,108 @@ const ease = (t) => t * t * (3 - 2 * t);
 const dirOf = (out, fx, ux, rx) => out.set(0, 0, 0).addScaledVector(_f, fx).addScaledVector(_u, ux).addScaledVector(_r, rx).normalize();
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _v4 = new THREE.Vector3();
 
+// ------------------------------------------------------------------------------------------- how he moves
+// Locomotion as a blend space, not a chain of cross-fades: walk, jog and sprint all start on the left foot, so they
+// run on one shared phase and blend by speed with the feet in step. Cadence comes from speed (steps per second,
+// from running-gait figures), and since the clips were made for slower ground speeds than he runs at, each step is
+// lengthened to match the ground: "stride" scales the foot's reach about the hip (the stride scaling of Half-Life:
+// Alyx's locomotion, Parker, SIGGRAPH 2021). Two-bone IK then plants each foot on the real ground and tips it to the
+// slope, dropping the pelvis when one foot has further to reach.
+const ramp = (s, T) => { if (s <= T[0][0]) return T[0][1]; for (let i = 1; i < T.length; i++) if (s <= T[i][0]) { const a = T[i - 1], b = T[i]; return a[1] + (b[1] - a[1]) * (s - a[0]) / (b[0] - a[0]); } return T[T.length - 1][1]; };
+const sstep = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+const CADENCE = [[0.3, 1.3], [1.0, 1.9], [1.8, 2.5], [2.6, 2.6], [3.4, 2.75], [5, 3.4], [7.2, 4.2], [9, 4.6]];
+const STRIDE = [[0.3, 1.0], [1.0, 1.05], [1.8, 1.25], [2.6, 1.12], [3.4, 1.07], [5, 1.1], [7.2, 1.14]];
+// how much of each foot's cycle is on the ground: most of a walk, about a third of a jog, a quarter of a sprint
+const DUTY = [[0.3, 0.66], [1.8, 0.6], [2.6, 0.42], [3.4, 0.37], [5, 0.31], [7.2, 0.26]];
+const LOCO = new Set(['Idle_Loop', 'Walk_Loop', 'Jog_Fwd_Loop', 'Sprint_Loop']);
+function blendMotion(h, R, dt, clip, ts, spd) {
+  const W = R.w || (R.w = {}), T = {};
+  const loco = LOCO.has(clip);
+  if (loco) {
+    const mv = sstep(0.06, 0.35, spd), jog = sstep(1.8, 2.6, spd), spr = sstep(5, 6.6, spd);
+    T.Idle_Loop = 1 - mv; T.Walk_Loop = mv * (1 - jog); T.Jog_Fwd_Loop = mv * jog * (1 - spr); T.Sprint_Loop = mv * jog * spr;
+  } else T[clip] = 1;
+  if (clip !== R.curName) {
+    if (ONCE.has(clip)) { const a = R.actions[clip]; a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; a.reset(); }
+    R.curName = clip;
+  }
+  const k = 1 - Math.pow(2, -dt / (clip === 'Death01' ? 0.09 : 0.055));
+  let sum = 0;
+  for (const n in R.actions) { W[n] = (W[n] || 0) + ((T[n] || 0) - (W[n] || 0)) * k; sum += W[n]; }
+  sum = sum || 1;
+  h.phase = ((h.phase || 0) + ramp(spd, CADENCE) * 0.5 * dt) % 1;
+  for (const n in R.actions) {
+    const a = R.actions[n], w = W[n] / sum;
+    if (w > 0.002) { a.enabled = true; a.play(); a.setEffectiveWeight(w); } else { a.setEffectiveWeight(0); continue; }
+    if (n === 'Idle_Loop') a.timeScale = 1;
+    else if (LOCO.has(n)) { a.timeScale = 0; a.time = h.phase * a.getClip().duration; }
+    else if (n === clip) a.timeScale = ts;
+  }
+  const mv2 = sstep(0.2, 0.9, spd);
+  return loco ? ramp(spd, STRIDE) * mv2 + (1 - mv2) : 1;
+}
+const _ik = { H: new THREE.Vector3(), K: new THREE.Vector3(), A: new THREE.Vector3(), d: new THREE.Vector3(), p: new THREE.Vector3(), t: new THREE.Vector3(), x: new THREE.Vector3(), g: new THREE.Vector3(), n: new THREE.Vector3(), q: new THREE.Quaternion(), q2: new THREE.Quaternion(), inv: new THREE.Matrix4() };
+// point b1 -> b2 -> b3 so that b3 reaches target, bending toward the side the joint already bends (or hint)
+function ik2(b1, b2, b3, target, hint) {
+  const { H, K, A, d, p, x } = _ik;
+  b1.getWorldPosition(H); b2.getWorldPosition(K); b3.getWorldPosition(A);
+  const L1 = H.distanceTo(K), L2 = K.distanceTo(A);
+  d.subVectors(target, H); let D = d.length(); if (D < 1e-5) return; d.multiplyScalar(1 / D);
+  D = Math.max(Math.abs(L1 - L2) + 1e-3, Math.min(L1 + L2 - 1e-3, D));
+  const ca = (L1 * L1 + D * D - L2 * L2) / (2 * L1 * D), sa = Math.sqrt(Math.max(0, 1 - ca * ca));
+  p.subVectors(K, H); if (hint) p.copy(hint); p.addScaledVector(d, -p.dot(d));
+  if (p.lengthSq() < 1e-8) { p.set(0, 0, 1); p.addScaledVector(d, -p.dot(d)); } p.normalize();
+  x.copy(H).addScaledVector(d, L1 * ca).addScaledVector(p, L1 * sa);                  // where the middle joint goes
+  aim(b1, b2, _ik.t.subVectors(x, H).normalize(), 1);
+  b2.getWorldPosition(K);
+  aim(b2, b3, _ik.t.subVectors(target, K).normalize(), 1);
+}
+const _legs = [['L', new THREE.Vector3(), new THREE.Quaternion()], ['R', new THREE.Vector3(), new THREE.Quaternion()]];
+const _upY = new THREE.Vector3(0, 1, 0), FOOT_REST = 0.089;
+function legPass(h, R, dt, a, stride, spd) {
+  const Bn = R.bones, root = h.root, on = a.ground && !a.air && !a.swim && !a.canopy && !a.dead && h.swimS < 0.1;
+  h.ikW = (h.ikW || 0) + ((on ? 1 : 0) - (h.ikW || 0)) * Math.min(1, dt * 14);
+  const w = h.ikW; if (w < 0.01) { h.pelvis = 0; return; }
+  const { g, n, q, q2, inv } = _ik;
+  inv.copy(root.matrixWorld).invert();
+  let low = 0;
+  for (const L of _legs) {
+    Bn['DEF-foot' + L[0]].getWorldPosition(L[1]); L[1].applyMatrix4(inv);
+    L.h = a.ground ? a.ground(L[1].x, L[1].z) : 0; low = Math.min(low, L.h);
+  }
+  h.pelvis = (h.pelvis || 0) + (Math.max(-0.28, low) * w - (h.pelvis || 0)) * (1 - Math.pow(2, -dt / 0.06));
+  root.position.y += h.pelvis; root.updateMatrixWorld(true);
+  for (const L of _legs) {
+    const S = L[0], th = Bn['DEF-thigh' + S], sh = Bn['DEF-shin' + S], ft = Bn['DEF-foot' + S];
+    ft.getWorldQuaternion(L[2]);
+    th.getWorldPosition(g).applyMatrix4(inv);   // the hip, in the body's frame (only its z matters; the pelvis drop is along y)
+    const zc = g.z - 0.015, lift = L[1].y - FOOT_REST;
+    const tx = L[1].x, ty = L[1].y + (L.h - h.pelvis) * w, tz = zc + (L[1].z - zc) * (1 + (stride - 1) * w);
+    g.set(tx, ty, tz).applyMatrix4(root.matrixWorld);
+    // Planted feet stay planted. The clips hardly put the foot down at speed, so from the moment each foot lands
+    // (phase 0.02 left, 0.54 right, in all three loops) until it lifts, its place on the ground is held in the
+    // world and the body travels over it. Height and roll still come from the clip and the ground.
+    const fp = ((S === 'L' ? h.phase - 0.02 : h.phase - 0.54) + 1) % 1, duty = ramp(spd, DUTY), inStance = R.curName !== 'Idle_Loop' && LOCO.has(R.curName) && spd > 0.35 && fp < duty && w > 0.5;
+    if (inStance && !L.lock) { L.lock = true; L.wx = g.x; L.wz = g.z; }
+    if (!inStance) L.lock = false;
+    if (L.lock) { const lw = sstep(0, 0.045, fp) * (1 - sstep(duty - 0.07, duty, fp)); g.x += (L.wx - g.x) * lw; g.z += (L.wz - g.z) * lw; }
+    ik2(th, sh, ft, g);
+    // the sole follows the ground while the foot is down, and the clip's foot swing while it is up
+    const plant = (1 - sstep(0.03, 0.16, lift)) * w;
+    const e = 0.14, gx = a.ground ? a.ground(tx + e, tz) - a.ground(tx - e, tz) : 0, gz = a.ground ? a.ground(tx, tz + e) - a.ground(tx, tz - e) : 0;
+    n.set(-gx / (2 * e), 1, -gz / (2 * e)).normalize().transformDirection(root.matrixWorld);
+    q.setFromUnitVectors(_upY, n); if (plant < 1) q.slerp(q2.identity(), 1 - plant);
+    q2.copy(L[2]).premultiply(q);
+    ft.parent.getWorldQuaternion(q).invert(); ft.quaternion.copy(q.multiply(q2)); ft.updateMatrixWorld(true);
+  }
+}
+// the hands: open and loose, not the clip's permanent fists; the spear hand keeps its grip
+function relaxHands(R, a, spd) {
+  if (!R.fingers) return;
+  const base = a.canopy && a.canopy.mode !== 'limb' ? 0 : a.action ? 0.15 : spd > 5 ? 0.35 : 0.5, armed = a.weapon && a.weapon !== 'none' && a.weapon !== 'fists';
+  for (const f of R.fingers) { const w = f.right && armed ? 0 : base; if (w > 0) f.bone.quaternion.slerp(f.q0, w); }
+}
+
 export function animateRiggedHuman(h, dt, a) {
   const R = h.rig, Bn = R.bones;
   h.t += dt;
@@ -455,18 +739,22 @@ export function animateRiggedHuman(h, dt, a) {
   else if (a.canopy && a.canopy.mode === 'hang') { clip = 'Idle_Loop'; fade = 0.12; }
   else if (a.air) { clip = 'Jump_Start'; fade = 0.12; }
   else if (act && act.type === 'punch') { clip = 'Punch_Jab'; fade = 0.08; ts = 1.4; }
-  else if (a.crouch || low || (a.kneel || 0) > 0.3) { clip = 'Crouch_Fwd_Loop'; ts = spd > 0.2 ? Math.min(1.6, Math.max(0.5, spd / 1.1)) : 0.0001; }
+  else if (a.crouch || low || (a.kneel || 0) > 0.3) { clip = 'Crouch_Fwd_Loop'; ts = spd > 0.2 ? Math.min(R.K ? 2.6 : 1.6, Math.max(0.5, spd / (R.K ? 0.69 : 1.1))) : 0.0001; }
   else if (spd > 0.2) {
     if (spd < 2.6) { clip = 'Walk_Loop'; ts = Math.min(1.8, Math.max(0.5, spd / 1.45)); }
     else if (spd < 5.4) { clip = 'Jog_Fwd_Loop'; ts = Math.min(1.5, Math.max(0.7, spd / 3.4)); }
     else { clip = 'Sprint_Loop'; ts = Math.min(1.4, Math.max(0.8, spd / 6.2)); }
   }
-  play(R, clip, fade, ts);
+  const stride = R.K ? blendMotion(h, R, dt, clip, ts, spd) : (play(R, clip, fade, ts), 1);
+  // proportions on top of the clips (the mixer only writes what changed, so keep its own values to compare with)
+  if (R.K) for (const e of R.K) e.bone.position.copy(e.raw);
   R.mixer.update(dt);
+  if (R.K) { for (const e of R.K) { e.raw.copy(e.bone.position); e.bone.position.multiplyScalar(e.k); } relaxHands(R, a, spd); }
   // swimming: lay the body along the water and pull with the arms
   h.swimS += ((a.swim || 0) - h.swimS) * Math.min(1, dt * 4);
   R.body.rotation.x = h.swimS * 1.25; R.body.position.y = -h.swimS * 0.9;
   R.inst.updateMatrixWorld(true);
+  if (R.K) legPass(h, R, dt, a, stride, spd);
   // body frame in world space
   const rw = h.root.matrixWorld; _f.set(0, 0, 1).transformDirection(rw); _r.set(-1, 0, 0).transformDirection(rw);
   const uaR = Bn['DEF-upper_armR'], faR = Bn['DEF-forearmR'], hR = Bn['DEF-handR'], uaL = Bn['DEF-upper_armL'], faL = Bn['DEF-forearmL'], hL = Bn['DEF-handL'];
@@ -481,7 +769,12 @@ export function animateRiggedHuman(h, dt, a) {
   if (C && !a.dead && C.mode !== 'limb') {
     const thL = Bn['DEF-thighL'], shL = Bn['DEF-shinL'], ftL = Bn['DEF-footL'], thR = Bn['DEF-thighR'], shR = Bn['DEF-shinR'], ftR = Bn['DEF-footR'];
     const reach = (ua, fa, hb, target) => { ua.getWorldPosition(_v1); aim(ua, fa, _v2.subVectors(target, _v1).normalize(), 1); fa.getWorldPosition(_v1); aim(fa, hb, _v2.subVectors(target, _v1).normalize(), 1); };
-    if (C.mode === 'hang' || C.mode === 'trunk') { reach(uaR, faR, hR, C.gripR); reach(uaL, faL, hL, C.gripL); }
+    if (C.mode === 'hang' || C.mode === 'trunk') {
+      if (R.K) {   // a real two-bone reach: elbows out and a little back, straight only when the hold is at full stretch
+        ik2(uaR, faR, hR, C.gripR, _v3.copy(_r).multiplyScalar(0.9).addScaledVector(_f, -0.35));
+        ik2(uaL, faL, hL, C.gripL, _v3.copy(_r).multiplyScalar(-0.9).addScaledVector(_f, -0.35));
+      } else { reach(uaR, faR, hR, C.gripR); reach(uaL, faL, hL, C.gripL); }
+    }
     if (C.mode === 'hang') {
       // legs trail the swing; skimming the ground he tucks them, thighs up and forward, shins hanging
       const down = _v3.copy(C.up).negate().addScaledVector(C.vel, -0.05).normalize(), kick = Math.sin(h.t * 3) * 0.12 * (1 - (C.tuck || 0));
@@ -588,4 +881,24 @@ export function animateRiggedHuman(h, dt, a) {
     }
   }
   h.dead = a.dead ? Math.min(1, (h.dead || 0) + dt * 1.6) : 0;
+  // the painted face: he blinks every few seconds (sometimes twice), his eyes lead his head, his mouth opens when
+  // he's working hard, and his hair lags behind his movement
+  if (h.faceU) {
+    h.blinkT = (h.blinkT ?? 2) - dt; let b = 0;
+    if (h.blinkT < 0) { const q = -h.blinkT / 0.15; if (q < 1) b = Math.sin(q * Math.PI); else h.blinkT = Math.random() < 0.15 ? 0.12 : 1.8 + Math.random() * 4.2; }
+    const U = h.faceU;
+    U.blink.value = a.dead ? 1 : b;
+    const lx = Math.max(-1, Math.min(1, (h.lookY || 0) * 1.5)), ly = Math.max(-1, Math.min(1, (h.lookP || 0) * 1.8));
+    U.look.value.set(lx, ly);
+    const work = a.dead ? 0.2 : Math.max(spd > 5 ? 0.55 : spd > 2.6 ? 0.18 : 0, a.air ? 0.35 : 0, a.canopy && a.canopy.mode !== 'limb' ? 0.3 : 0);
+    U.mouth.value += (work - U.mouth.value) * Math.min(1, dt * 5);
+    U.brow.value += ((a.air ? 0.8 : 0) - U.brow.value) * Math.min(1, dt * 6);
+  }
+  if (h.hairU && head) {
+    h.lastHead = h.lastHead || head.getWorldPosition(new THREE.Vector3()).clone();
+    head.getWorldPosition(_v1); _v2.subVectors(_v1, h.lastHead); h.lastHead.copy(_v1);
+    if (dt > 0) _v2.multiplyScalar(-0.012 / dt).clampLength(0, 0.09);
+    head.getWorldQuaternion(_q2).invert(); _v2.applyQuaternion(_q2);
+    h.hairU.push.value.lerp(_v2, Math.min(1, dt * 7));
+  }
 }

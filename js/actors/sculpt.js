@@ -48,7 +48,7 @@ function field(L, x, y, z) {
 const inBox = (b, x, y, z, e = 0) => x >= b[0] - e && x <= b[3] + e && y >= b[1] - e && y <= b[4] + e && z >= b[2] - e && z <= b[5] + e;
 
 // ---------------------------------------------------------------------------------------------- the body
-function bodyShapes(P) {
+function bodyShapes(P, style = {}) {
   // three passes: the body, then what is carved out of it, then what sits in the carved places (eyelids)
   const U = [], SUB = [], POST = [], v = (x, y, z) => new THREE.Vector3(x, y, z);
   const put = (p, sub) => { (p.post ? POST : sub ? SUB : U).push(p); return p; };
@@ -61,44 +61,40 @@ function bodyShapes(P) {
   const cone = (a, b, r1, r2, bones, k = 0.02, o = {}) => put({ t: CONE, ax: a.x, ay: a.y, az: a.z, bx: b.x, by: b.y, bz: b.z, r1, r2, l2: a.distanceToSquared(b), sq: o.sq || null, bones, k, ...o }, o.sub);
   const lerp = (a, b, t) => a.clone().lerp(b, t);
 
-  // a lean boy's trunk: a V from the armpits to a narrow waist, a boy's narrow pelvis (no flared hips), a flat
-  // belly, and a flat chest (the rib cage as one tapered form, flattened front to back, no breast-like bulges)
-  ell(v(0, 0.94, -0.02), 0.104, 0.085, 0.086, [['DEF-hips', 1]], 0.06);
-  ell(v(0, 1.06, -0.012), 0.103, 0.11, 0.066, [['DEF-spine001', 1]], 0.07);
-  cone(v(0, 1.15, -0.016), v(0, 1.37, -0.02), 0.104, 0.145, [['DEF-spine002', 0.5], ['DEF-spine003', 0.5]], 0.06, { sq: [0, 0, 1, 0.58] });
-  ell(v(0, 1.1, 0.012), 0.07, 0.075, 0.036, [['DEF-spine001', 0.6], ['DEF-spine002', 0.4]], 0.045);   // belly wall
+  // Vanaj at fifteen: a thin, growing boy. A nearly straight trunk (shoulders only a little wider than a narrow
+  // pelvis, no pinched waist), a flat chest, long thin limbs with knobbly knees and elbows, hands and feet a size
+  // too big for him, and a thin neck under a rounder head. Everything hangs off the bones, so it follows the
+  // rig's proportions.
+  const hip = P('DEF-hips'), s1 = P('DEF-spine001'), s2 = P('DEF-spine002'), s3 = P('DEF-spine003'), nk = P('DEF-neck'), hd = P('DEF-head');
+  ell(v(0, hip.y + 0.022, -0.02), 0.096, 0.08, 0.076, [['DEF-hips', 1]], 0.06);                                 // pelvis
+  ell(v(0, s1.y, -0.012), 0.097, 0.1, 0.066, [['DEF-spine001', 1]], 0.07);                                     // waist: hardly narrower
+  cone(v(0, s2.y - 0.03, -0.014), v(0, s3.y + 0.05, -0.02), 0.102, 0.13, [['DEF-spine002', 0.5], ['DEF-spine003', 0.5]], 0.06, { sq: [0, 0, 1, 0.58] });   // ribs, flat
   for (const s of [1, -1]) {
-    const SH = s > 0 ? 'DEF-shoulderL' : 'DEF-shoulderR';
-    ell(v(s * 0.05, 0.885, -0.072), 0.052, 0.068, 0.056, [['DEF-hips', 1]], 0.04);                     // buttock (kept within the hips' width)
-    ell(v(s * 0.075, 1.33, -0.07), 0.064, 0.085, 0.032, [['DEF-spine003', 1]], 0.04);                  // shoulder blade
-    ell(v(s * 0.098, 1.285, -0.035), 0.045, 0.1, 0.058, [['DEF-spine003', 0.7], ['DEF-spine002', 0.3]], 0.05);   // lats: the back widens under the arms
-    // trapezius sloping from the neck down onto the top of the shoulder
-    cone(v(s * 0.02, 1.505, -0.03), v(s * 0.15, 1.447, -0.05), 0.046, 0.032, [['DEF-spine003', 0.5], ['DEF-neck', 0.15], [SH, 0.35]], 0.045, { sig: 0.02 });
-    cone(v(s * 0.03, 1.45, 0.03), v(s * 0.165, 1.452, -0.035), 0.013, 0.013, [[SH, 1]], 0.025);   // collarbone
+    const S = s > 0 ? 'L' : 'R', SH = 'DEF-shoulder' + S, sh = P('DEF-upper_arm' + S);
+    ell(v(s * 0.044, hip.y - 0.032, -0.066), 0.046, 0.058, 0.048, [['DEF-hips', 1]], 0.04);                    // seat
+    ell(v(s * 0.064, s3.y + 0.015, -0.062), 0.05, 0.07, 0.024, [['DEF-spine003', 1]], 0.04);                   // shoulder blade
+    // trapezius from the neck onto the top of the shoulder, and the collarbone that shows on a thin boy
+    cone(v(s * 0.018, nk.y + 0.018, -0.028), v(sh.x - s * 0.02, sh.y + 0.008, sh.z - 0.004), 0.036, 0.026, [['DEF-spine003', 0.5], ['DEF-neck', 0.15], [SH, 0.35]], 0.045, { sig: 0.02 });
+    cone(v(s * 0.024, nk.y - 0.012, 0.03), v(sh.x - s * 0.018, sh.y + 0.012, sh.z + 0.012), 0.0105, 0.0105, [[SH, 1]], 0.025);
   }
-  // neck: a boy's neck, about 10 cm across
-  cone(v(0, 1.43, -0.022), v(0, 1.625, -0.008), 0.058, 0.051, [['DEF-neck', 1]], 0.04);
-  cone(v(0, 1.47, 0.012), v(0, 1.585, 0.03), 0.026, 0.022, [['DEF-neck', 1]], 0.025);   // throat
+  // neck: thin, a boy's
+  cone(v(0, nk.y - 0.03, -0.022), v(0, hd.y + 0.05, -0.004), 0.05, 0.045, [['DEF-neck', 1]], 0.035);
+  cone(v(0, nk.y + 0.01, 0.008), v(0, hd.y + 0.02, 0.02), 0.02, 0.018, [['DEF-neck', 1]], 0.02);                // throat
 
   // arms and hands
   for (const s of [1, -1]) {
     const S = s > 0 ? 'L' : 'R';
     const sh = P('DEF-upper_arm' + S), el = P('DEF-forearm' + S), wr = P('DEF-hand' + S);
-    // the shoulder: a rounded cap over the joint (the bony point and the top of the deltoid) that rides on the
-    // collarbone, so it stays round when the arm hangs; the deltoid itself wraps the top of the arm and tapers
-    // to its insertion a third of the way down, and moves with the arm. Wide skin blends between them.
-    sph(v(sh.x - s * 0.006, sh.y + 0.014, sh.z + 0.002), 0.043, [['DEF-shoulder' + S, 0.65], ['DEF-upper_arm' + S, 0.35]], 0.04, { sig: 0.022 });
-    cone(v(sh.x + s * 0.005, sh.y + 0.006, sh.z), v(sh.x + s * 0.1, sh.y - 0.004, sh.z + 0.004), 0.047, 0.03, [['DEF-upper_arm' + S, 1]], 0.035, { sig: 0.022 });
-    cone(sh, el, 0.042, 0.031, [['DEF-upper_arm' + S, 1]], 0.025);
-    ell(lerp(sh, el, 0.52).add(v(0, 0, 0.013)), 0.068, 0.027, 0.026, [['DEF-upper_arm' + S, 1]], 0.025);                               // biceps
-    ell(lerp(sh, el, 0.42).add(v(0, 0.004, -0.016)), 0.075, 0.03, 0.026, [['DEF-upper_arm' + S, 1]], 0.025);                           // triceps
-    sph(el.clone().add(v(0, 0, -0.004)), 0.029, [['DEF-upper_arm' + S, 0.5], ['DEF-forearm' + S, 0.5]], 0.02);                          // elbow
-    cone(el, wr, 0.034, 0.022, [['DEF-forearm' + S, 1]], 0.02, { sq: [0, 1, 0, 0.78] });
-    ell(lerp(el, wr, 0.28), 0.085, 0.031, 0.036, [['DEF-forearm' + S, 1]], 0.025);                                                       // forearm muscles
-    cone(wr.clone().add(v(-s * 0.012, 0, 0)), wr.clone().add(v(s * 0.022, 0, -0.004)), 0.021, 0.022, [['DEF-forearm' + S, 0.5], ['DEF-hand' + S, 0.5]], 0.012, { sq: [0, 1, 0, 0.72], sig: 0.008 });   // wrist
-    // palm, thenar pad and the back of the hand
-    ell(v(wr.x + s * 0.064, wr.y - 0.001, -0.07), 0.05, 0.0155, 0.04, [['DEF-hand' + S, 1]], 0.012, { sig: 0.006 });
-    ell(v(wr.x + s * 0.036, wr.y - 0.012, -0.04), 0.028, 0.015, 0.02, [['DEF-hand' + S, 0.7], ['DEF-thumb01' + S, 0.3]], 0.012, { sig: 0.006 });
+    sph(v(sh.x - s * 0.004, sh.y + 0.01, sh.z + 0.002), 0.036, [['DEF-shoulder' + S, 0.65], ['DEF-upper_arm' + S, 0.35]], 0.04, { sig: 0.022 });
+    cone(v(sh.x + s * 0.004, sh.y + 0.004, sh.z), v(sh.x + s * 0.085, sh.y - 0.004, sh.z + 0.003), 0.039, 0.027, [['DEF-upper_arm' + S, 1]], 0.035, { sig: 0.022 });
+    cone(sh, el, 0.034, 0.026, [['DEF-upper_arm' + S, 1]], 0.025);
+    sph(el.clone().add(v(0, 0, -0.005)), 0.026, [['DEF-upper_arm' + S, 0.5], ['DEF-forearm' + S, 0.5]], 0.018);       // elbow, knobbly
+    cone(el, wr, 0.027, 0.019, [['DEF-forearm' + S, 1]], 0.02, { sq: [0, 1, 0, 0.8] });
+    ell(lerp(el, wr, 0.26), 0.07, 0.025, 0.028, [['DEF-forearm' + S, 1]], 0.025);
+    cone(wr.clone().add(v(-s * 0.012, 0, 0)), wr.clone().add(v(s * 0.022, 0, -0.004)), 0.02, 0.021, [['DEF-forearm' + S, 0.5], ['DEF-hand' + S, 0.5]], 0.012, { sq: [0, 1, 0, 0.72], sig: 0.008 });
+    // palm, thenar pad and the back of the hand (measured from the wrist)
+    ell(v(wr.x + s * 0.064, wr.y - 0.001, wr.z - 0.005), 0.05, 0.0155, 0.04, [['DEF-hand' + S, 1]], 0.012, { sig: 0.006 });
+    ell(v(wr.x + s * 0.036, wr.y - 0.012, wr.z + 0.025), 0.028, 0.015, 0.02, [['DEF-hand' + S, 0.7], ['DEF-thumb01' + S, 0.3]], 0.012, { sig: 0.006 });
     for (const [f, r] of [['index', 0.0083], ['middle', 0.0088], ['ring', 0.0082], ['pinky', 0.0071]]) {
       const b1 = P(`DEF-f_${f}01${S}`), b2 = P(`DEF-f_${f}02${S}`), b3 = P(`DEF-f_${f}03${S}`), tip = b3.clone().addScaledVector(b3.clone().sub(b2), 0.95);
       const base = b1.clone().add(v(-s * 0.012, 0, 0));
@@ -114,64 +110,58 @@ function bodyShapes(P) {
   }
 
   // legs and feet
+  let hemY = 0;
   for (const s of [1, -1]) {
     const S = s > 0 ? 'L' : 'R';
-    const hp = P('DEF-thigh' + S), kn = P('DEF-shin' + S), an = P('DEF-foot' + S), ball = P('DEF-toe' + S);
-    cone(hp.clone().add(v(s * 0.008, 0.01, -0.01)), kn, 0.066, 0.043, [['DEF-thigh' + S, 1]], 0.04);
-    ell(v(kn.x + s * 0.004, 0.72, kn.z + 0.018), 0.047, 0.15, 0.045, [['DEF-thigh' + S, 1]], 0.035);   // quadriceps
-    ell(v(kn.x, 0.75, kn.z - 0.024), 0.042, 0.14, 0.042, [['DEF-thigh' + S, 1]], 0.035);               // hamstrings
-    sph(kn.clone().add(v(0, 0, 0.004)), 0.041, [['DEF-thigh' + S, 0.5], ['DEF-shin' + S, 0.5]], 0.025);
-    sph(kn.clone().add(v(0, 0.012, 0.036)), 0.02, [['DEF-shin' + S, 0.6], ['DEF-thigh' + S, 0.4]], 0.015);   // kneecap
-    cone(kn, an, 0.04, 0.026, [['DEF-shin' + S, 1]], 0.025);
-    ell(v(kn.x + s * 0.002, 0.405, kn.z - 0.03), 0.038, 0.1, 0.036, [['DEF-shin' + S, 1]], 0.03);    // calf
-    // the ankle runs down into the foot; the foot is one flattened form from heel to ball, with an instep
-    cone(an, v(an.x, 0.045, an.z - 0.012), 0.026, 0.029, [['DEF-shin' + S, 0.45], ['DEF-foot' + S, 0.55]], 0.03, { sig: 0.01 });
-    for (const o of [0.021, -0.019]) sph(v(an.x + s * o, an.y - 0.012, an.z + 0.002), 0.012, [['DEF-shin' + S, 0.5], ['DEF-foot' + S, 0.5]], 0.02, { sig: 0.01 });   // ankle bones
-    sph(v(an.x, 0.034, an.z - 0.03), 0.029, [['DEF-foot' + S, 1]], 0.03, { sig: 0.01 });                                     // heel
+    const hp = P('DEF-thigh' + S), kn = P('DEF-shin' + S), an = P('DEF-foot' + S), ball = P('DEF-toe' + S), TH = [['DEF-thigh' + S, 1]];
+    cone(hp.clone().add(v(s * 0.004, 0.008, -0.01)), kn, 0.056, 0.036, TH, 0.035);
+    ell(v(kn.x + s * 0.002, lerp(hp, kn, 0.5).y, kn.z + 0.012), 0.037, 0.14, 0.037, TH, 0.03);                    // thigh, thin
+    sph(kn.clone().add(v(0, 0, 0.004)), 0.0355, [['DEF-thigh' + S, 0.5], ['DEF-shin' + S, 0.5]], 0.022);            // knee, knobbly
+    sph(kn.clone().add(v(0, 0.01, 0.031)), 0.0175, [['DEF-shin' + S, 0.6], ['DEF-thigh' + S, 0.4]], 0.014);
+    cone(kn, an, 0.033, 0.0235, [['DEF-shin' + S, 1]], 0.022);
+    ell(v(kn.x + s * 0.002, lerp(kn, an, 0.3).y, kn.z - 0.022), 0.029, 0.09, 0.028, [['DEF-shin' + S, 1]], 0.026);  // calf, not much of one yet
+    cone(an, v(an.x, 0.045, an.z - 0.012), 0.024, 0.028, [['DEF-shin' + S, 0.45], ['DEF-foot' + S, 0.55]], 0.03, { sig: 0.01 });
+    for (const o of [0.02, -0.018]) sph(v(an.x + s * o, an.y - 0.012, an.z + 0.002), 0.0115, [['DEF-shin' + S, 0.5], ['DEF-foot' + S, 0.5]], 0.02, { sig: 0.01 });
+    sph(v(an.x, 0.034, an.z - 0.03), 0.029, [['DEF-foot' + S, 1]], 0.03, { sig: 0.01 });
     cone(v(an.x, 0.033, an.z - 0.018), v(ball.x - s * 0.004, 0.021, ball.z - 0.008), 0.032, 0.03, [['DEF-foot' + S, 1]], 0.03, { sq: [0, 1, 0, 0.66], sig: 0.01 });
-    ell(v(an.x - s * 0.004, 0.047, 0.028), 0.028, 0.022, 0.05, [['DEF-foot' + S, 1]], 0.03, { sig: 0.01 });                 // instep
-    ell(v(ball.x - s * 0.004, 0.022, ball.z - 0.01), 0.042, 0.019, 0.03, [['DEF-foot' + S, 0.5], ['DEF-toe' + S, 0.5]], 0.02, { sig: 0.008 });   // ball of the foot
-    // toes: the big toe on the inside, each a little shorter outward
+    ell(v(an.x - s * 0.004, 0.047, an.z + 0.064), 0.028, 0.022, 0.05, [['DEF-foot' + S, 1]], 0.03, { sig: 0.01 });
+    ell(v(ball.x - s * 0.004, 0.022, ball.z - 0.01), 0.042, 0.019, 0.03, [['DEF-foot' + S, 0.5], ['DEF-toe' + S, 0.5]], 0.02, { sig: 0.008 });
     for (const [dx, len, r] of [[-0.025, 0.048, 0.0112], [-0.007, 0.045, 0.0082], [0.008, 0.04, 0.0077], [0.021, 0.034, 0.0072], [0.032, 0.027, 0.0066]]) {
       const a = v(ball.x + s * dx, 0.017, ball.z + 0.005), b = v(ball.x + s * dx * 1.06, 0.012, ball.z + len);
       cone(a, b, r, r * 0.85, [['DEF-toe' + S, 1]], 0.005, { sig: 0.004 });
     }
+    // the wrap: bark cloth over the seat and down the thigh, standing a little proud of the leg so its hem is a real
+    // edge (the colour is painted in the skin shader, up to the same height)
+    const hemP = lerp(hp, kn, 0.46); hemY = hemP.y;
+    if (style.wrap !== false) cone(hp.clone().add(v(0, 0.01, -0.01)), hemP, 0.066, 0.05, TH, 0.008, { sig: 0.012 });
   }
+  if (style.wrap !== false) ell(v(0, hip.y - 0.004, -0.024), 0.112, 0.092, 0.09, [['DEF-hips', 1]], 0.012);        // the cloth over the hips
 
-  // head: a teenager's head, soft-featured, built from the skull outward. O is the centre of the cranium.
-  const hd = P('DEF-head'), O = v(0, hd.y + 0.142, hd.z - 0.005);
-  const o = (x, y, z) => O.clone().add(v(x, y, z)), HEAD = [['DEF-head', 1]];
-  ell(o(0, 0.02, -0.016), 0.074, 0.098, 0.096, HEAD, 0.045);                        // cranium
-  ell(o(0, 0.028, 0.036), 0.066, 0.068, 0.062, HEAD, 0.045);                        // forehead
-  ell(o(0, -0.045, 0.044), 0.056, 0.055, 0.05, HEAD, 0.035);                       // midface
-  ell(o(0, -0.077, 0.02), 0.056, 0.038, 0.058, HEAD, 0.035);                       // jaw
-  ell(o(0, -0.108, 0.064), 0.022, 0.019, 0.019, HEAD, 0.02);                       // chin
+  // head: rounder and a size larger than a grown man's for his height, soft-featured, small jaw, ears that stick
+  // out a little. The eyes, brows and mouth are painted (js/actors/humanrig.js), so the shapes stay simple.
+  const hs = style.hs || 1.08, O = v(0, hd.y + 0.128 * hs, hd.z - 0.004);
+  const o = (x, y, z) => O.clone().add(v(x * hs, y * hs, z * hs)), HEAD = [['DEF-head', 1]];
+  const ehd = (x, y, z, rx, ry, rz, k, opt) => ell(o(x, y, z), rx * hs, ry * hs, rz * hs, HEAD, k, opt);
+  ehd(0, 0.024, -0.012, 0.08, 0.095, 0.095, 0.045);                                 // cranium
+  ehd(0, 0.03, 0.034, 0.07, 0.066, 0.06, 0.045);                                    // forehead
+  ehd(0, -0.034, 0.042, 0.059, 0.056, 0.05, 0.035);                                 // midface
+  ehd(0, -0.074, 0.026, 0.05, 0.036, 0.052, 0.032);                                 // a jaw starting to lengthen
+  ehd(0, -0.105, 0.058, 0.021, 0.018, 0.018, 0.018);                                // chin
   for (const s of [1, -1]) {
-    sph(o(s * 0.05, -0.072, -0.02), 0.021, HEAD, 0.035);                             // angle of the jaw
-    sph(o(s * 0.046, -0.02, 0.058), 0.018, HEAD, 0.03);                              // cheekbone
-    ell(o(s * 0.038, -0.05, 0.058), 0.019, 0.022, 0.018, HEAD, 0.03);               // cheek (lean, not full)
-    // eyelids over the eyeball (centre o(±0.031, -0.005, 0.0815), r 0.0122): the upper lid's edge crosses the
-    // top of the iris, the lower lid sits just under it, leaving an almond-shaped opening
-    ell(o(s * 0.031, 0.0068, 0.0838), 0.0168, 0.0088, 0.0128, HEAD, 0.003, { sig: 0.004, post: true });
-    ell(o(s * 0.031, -0.0172, 0.0815), 0.0148, 0.0068, 0.0118, HEAD, 0.003, { sig: 0.004, post: true });
-    ell(o(s * 0.076, -0.018, -0.006), 0.011, 0.03, 0.019, HEAD, 0.01, { rot: [0, s * 0.25, 0] });   // ear
+    ehd(s * 0.041, -0.04, 0.05, 0.019, 0.024, 0.019, 0.03);                         // cheekbone, still soft
+    ehd(s * 0.081, -0.012, -0.004, 0.0105, 0.028, 0.019, 0.01, { rot: [0, s * 0.42, 0] });    // ear
+    ehd(s * 0.087, -0.014, 0.002, 0.005, 0.015, 0.009, 0.004, { sub: true, rot: [0, s * 0.42, 0] });   // the bowl of the ear
   }
-  cone(o(-0.042, 0.013, 0.081), o(0.042, 0.013, 0.081), 0.0095, 0.0095, HEAD, 0.016);      // brow
-  cone(o(0, 0.003, 0.092), o(0, -0.036, 0.111), 0.0075, 0.0105, HEAD, 0.01);              // bridge of the nose
-  sph(o(0, -0.041, 0.11), 0.0118, HEAD, 0.01);                                             // tip
-  for (const s of [1, -1]) sph(o(s * 0.0125, -0.047, 0.1), 0.0088, HEAD, 0.008);           // nostril wings
-  ell(o(0, -0.068, 0.099), 0.021, 0.0062, 0.009, HEAD, 0.008, { sig: 0.004 });             // upper lip
-  ell(o(0, -0.0795, 0.096), 0.018, 0.0072, 0.009, HEAD, 0.008, { sig: 0.004 });            // lower lip
-  // carved: eye sockets, nostrils, the line of the mouth, the bowl of each ear
-  for (const s of [1, -1]) {
-    sph(o(s * 0.031, -0.005, 0.095), 0.0165, HEAD, 0.007, { sub: true });
-    sph(o(s * 0.0072, -0.0525, 0.104), 0.0036, HEAD, 0.003, { sub: true });
-    ell(o(s * 0.083, -0.02, 0.0), 0.006, 0.016, 0.01, HEAD, 0.004, { sub: true, rot: [0, s * 0.25, 0] });
-  }
-  ell(o(0, -0.0738, 0.104), 0.019, 0.0013, 0.0045, HEAD, 0.002, { sub: true });   // a closed mouth: just the line
+  cone(o(0, -0.002, 0.09), o(0, -0.038, 0.101), 0.0056 * hs, 0.0076 * hs, HEAD, 0.012);    // bridge of the nose
+  sph(o(0, -0.042, 0.1), 0.0088 * hs, HEAD, 0.01);                                          // tip
+  for (const s of [1, -1]) sph(o(s * 0.0098, -0.046, 0.093), 0.0058 * hs, HEAD, 0.008);     // wings
+  ehd(0, -0.076, 0.09, 0.017, 0.006, 0.006, 0.012, { sig: 0.004 });                         // the rise of the lips
 
-  const eyes = [1, -1].map((s) => ({ c: o(s * 0.031, -0.005, 0.0815), r: 0.0122 }));
-  return { shapes: U.concat(SUB, POST), eyes, face: O };
+  // what the skin shader paints, in this body's own measurements
+  const sa = P('DEF-upper_armL');
+  const paint = { hs, hemY, waistY: s1.y + 0.004, chestTop: nk.y - 0.012, armX: sa.x - 0.022, footY: 0.13, kneeY: P('DEF-shinL').y };
+  const cranium = { c: o(0, 0.024, -0.012), r: v(0.08 * hs, 0.095 * hs, 0.095 * hs) };
+  return { shapes: U.concat(SUB, POST), eyes: [], face: O, paint, cranium };
 }
 
 // ---------------------------------------------------------------------------------------------- surface nets
@@ -230,12 +220,21 @@ function polygonize(shapes, lo, hi, h, keep, out) {
 
 // ---------------------------------------------------------------------------------------------- build
 // detail scales every cell size (1 = full; 1.5 on low quality gives roughly half the triangles)
-export function sculptBody(skeleton, detail = 1) {
+// a body's own build: villagers are this same boy's shapes, filled out or scaled down (style: limb, trunk, hip, neck, hs)
+function applyStyle(shapes, st) {
+  for (const p of shapes) {
+    const n = p.bones[0][0], k = /thigh|shin|upper_arm|forearm/.test(n) ? st.limb || 1 : n === 'DEF-hips' ? (st.trunk || 1) * (st.hip || 1) : /spine|shoulder/.test(n) ? st.trunk || 1 : n === 'DEF-neck' ? st.neck || 1 : 1;
+    if (k === 1) continue;
+    if (p.t === SPH) p.r1 *= k; else if (p.t === ELL) { p.rx *= k; p.ry *= k; p.rz *= k; } else { p.r1 *= k; p.r2 *= k; }
+  }
+}
+export function sculptBody(skeleton, detail = 1, style = {}) {
   const t0 = performance.now();
   const bones = skeleton.bones, bi = new Map(bones.map((b, i) => [b.name, i]));
   const bind = bones.map((b, i) => new THREE.Vector3().setFromMatrixPosition(new THREE.Matrix4().copy(skeleton.boneInverses[i]).invert()));
   const P = (n) => bind[bi.get(n)].clone();
-  const { shapes, eyes, face } = bodyShapes(P);
+  const { shapes, eyes, face, paint, cranium } = bodyShapes(P, style);
+  applyStyle(shapes, style);
   for (const p of shapes) {
     let lo, hi;
     if (p.t === SPH) { lo = [p.ax - p.r1, p.ay - p.r1, p.az - p.r1]; hi = [p.ax + p.r1, p.ay + p.r1, p.az + p.r1]; }
@@ -247,9 +246,9 @@ export function sculptBody(skeleton, detail = 1) {
   // fine regions (face, hands, feet) and the coarse trunk; each keeps its own part, overlapping by a cell
   const hd = P('DEF-head'), hL = P('DEF-handL'), hR = P('DEF-handR'), fL = P('DEF-footL'), fR = P('DEF-footR');
   const R = {
-    head: [[-0.1, hd.y - 0.01, -0.13], [0.1, hd.y + 0.285, 0.14], 0.0036],
-    handL: [[hL.x - 0.03, hL.y - 0.1, -0.14], [hL.x + 0.26, hL.y + 0.04, 0.05], 0.0034],
-    handR: [[hR.x - 0.26, hR.y - 0.1, -0.14], [hR.x + 0.03, hR.y + 0.04, 0.05], 0.0034],
+    head: [[-0.125, hd.y - 0.01, -0.145], [0.125, hd.y + 0.32, 0.165], 0.0042],
+    handL: [[hL.x - 0.03, hL.y - 0.1, hL.z - 0.075], [hL.x + 0.26, hL.y + 0.04, hL.z + 0.115], 0.0034],
+    handR: [[hR.x - 0.26, hR.y - 0.1, hR.z - 0.075], [hR.x + 0.03, hR.y + 0.04, hR.z + 0.115], 0.0034],
     footL: [[fL.x - 0.075, -0.01, -0.11], [fL.x + 0.075, 0.14, 0.2], 0.0048],
     footR: [[fR.x - 0.075, -0.01, -0.11], [fR.x + 0.075, 0.14, 0.2], 0.0048],
   };
@@ -257,7 +256,7 @@ export function sculptBody(skeleton, detail = 1) {
   const out = { pos: [], quads: [] }, hb = 0.0105 * detail;
   const inside = (r, x, y, z, e) => x > r[0][0] + e && x < r[1][0] - e && y > r[0][1] + e && y < r[1][1] - e && z > r[0][2] + e && z < r[1][2] - e;
   for (const k in R) { const r = R[k]; polygonize(shapes, r[0], r[1], r[2], (x, y, z) => inside(r, x, y, z, -1e-6), out); }
-  polygonize(shapes, [-0.8, -0.02, -0.22], [0.8, 1.86, 0.24], hb, (x, y, z) => { for (const k in R) if (inside(R[k], x, y, z, hb)) return false; return true; }, out);
+  polygonize(shapes, [-0.8, -0.02, -0.22], [0.8, 2.0, 0.24], hb, (x, y, z) => { for (const k in R) if (inside(R[k], x, y, z, hb)) return false; return true; }, out);
 
   // project every vertex onto the exact surface; normals from the field's gradient; skin weights from the
   // shapes it lies on (bones of shapes whose surfaces are close share it, so joints bend smoothly)
@@ -305,7 +304,7 @@ export function sculptBody(skeleton, detail = 1) {
   g.setIndex(n > 65535 ? new THREE.BufferAttribute(new Uint32Array(idx), 1) : new THREE.BufferAttribute(new Uint16Array(idx), 1));
   g.computeBoundingBox(); g.computeBoundingSphere();
   g.userData.sculpt = { ms: Math.round(performance.now() - t0), verts: n, tris: idx.length / 3 };
-  return { geometry: g, eyes, face };
+  return { geometry: g, eyes, face, paint, cranium };
 }
 
 // An eye: wet sclera, a dark brown iris with fibres, a black pupil; looking along +z. The geometry is centred

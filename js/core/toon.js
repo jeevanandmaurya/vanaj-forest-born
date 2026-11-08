@@ -3,7 +3,7 @@
 // light; a rim of light on edges so forms separate from the background; optional slow wind sway. Built on
 // MeshToonMaterial, so shadows, fog, instancing and skinning keep working.
 import * as THREE from 'three';
-import { patch, WIND_VERTEX, BEND_DECL, BEND_VERTEX } from './shaderlib.js';
+import { patch, WIND_VERTEX } from './shaderlib.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
@@ -25,8 +25,7 @@ export function toon(o = {}) {
     s.uniforms.uRim = RIM;
     if (o.wind) {
       s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\n attribute float aWind; attribute float aRand; uniform float uTime; uniform vec2 uWind; uniform float uWindStrength;')
-        .replace('#include <common>', '#include <common>\n ' + BEND_DECL)
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + WIND_VERTEX + BEND_VERTEX);
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + WIND_VERTEX);
     }
     s.fragmentShader = s.fragmentShader.replace('#include <common>', '#include <common>\n uniform vec3 uRim;')
       .replace('#include <opaque_fragment>', `outgoingLight += uRim * pow(1.0 - saturate(dot(geometryNormal, geometryViewDir)), 3.0) * ${rim};\n#include <opaque_fragment>`);

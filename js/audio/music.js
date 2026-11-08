@@ -271,6 +271,35 @@ export class Music {
       this.flBusyUntil = tt + 12;
     }
   }
+  // The main menu: a tanpura drone and a bansuri alone in the morning forest. It opens on the lullaby (the four
+  // notes the story turns on), then wanders in Bilawal, the morning raga, returning to the lullaby now and then.
+  // Everything runs through one bus, so leaving the menu fades it out whole.
+  titleStart() {
+    if (this.titleBus) return;
+    const t = this.ctx.currentTime;
+    this.titleBus = this.cue(); this.titleBus.dest.gain.value = 1;
+    this.titleNext = t + 1.2; this.titleCount = 0; this.tanT = 0; this.raga = 'bilawal'; this.lastSemi = 0;
+    this.tanG.gain.cancelScheduledValues(t); this.tanG.gain.setTargetAtTime(0.3, t, 1.5);
+  }
+  titleUpdate(dt) {
+    if (!this.titleBus || this.ctx.state !== 'running') return;
+    const t = this.ctx.currentTime;
+    this.tanT -= dt;
+    if (this.tanT <= 0) { this.tanT = 1.25; this.tanpuraTick(t + 0.02); }
+    if (t < this.titleNext) return;
+    const n = this.titleCount++, opts = { gain: 0.17, dest: this.titleBus.dest };
+    let notes;
+    if (n % 5 === 0) notes = THEME.map((s, i) => ({ semi: s, dur: i === 3 ? 2.6 : 0.75, meend: i > 0 }));
+    else if (n % 5 === 3) notes = THEME_ANSWER.map((s, i, a) => ({ semi: s, dur: i === a.length - 1 ? 3 : 0.55, meend: i % 3 === 2 }));
+    else notes = this.makeAlap('bilawal', Math.min(0.7, n * 0.08));
+    this.titleNext = this.flutePhrase(notes, t + 0.05, opts) + 2 + Math.random() * 3;
+  }
+  titleStop(fade = 1.2) {
+    if (!this.titleBus) return;
+    this.titleBus.stop(fade); this.titleBus = null;
+    this.tanG.gain.setTargetAtTime(0, this.ctx.currentTime, fade * 0.4);
+    this.nextSession = 25;
+  }
   setCombat(level) { this.combat = level; }
   update(dt, hour, season, opts = {}) {
     const t = this.ctx.currentTime;

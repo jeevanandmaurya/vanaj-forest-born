@@ -159,17 +159,27 @@ I saw or measured, why it matters, and the fix. Research sources are listed at t
 - Animation: no more turning round at each end of a swing, so the camera stays steady; hands take turns on ropes; the
   weapon slings across his back while climbing, hanging or swimming.
 
+**Fourth pass: character, feel and soft trees** (same method: stepped simulation and canvas frames)
+- Standing still: a bug from the physics pass. The controller's small corrections were fed back as velocity, so he crept at about 0.1 m/s forever after walking. He now stops within 0.2 s and 0.18 m with zero drift (16 of 16 slope tests).
+- Sun: shadows stepped every 0.25 degrees, one game minute. They now move every frame, framed on the celestial pole so the shadow grid slides instead of turning; 0.12% of pixels flickered over 16 frames.
+- Menu: only the flute and tanpura, the lullaby then Bilawal phrases; no forest sound. Browsers need a first click or key, and the menu says so when that applies.
+- Vanaj redesigned as a thin boy of fifteen, 1.6 m: real bone proportions, a painted face that blinks and looks about, short shaggy hair, hide vest, bark-cloth wrap, a tooth on a cord.
+- Villagers rebuilt from the same body, in four builds (man, woman, elder, child) with painted faces and clothes. The old mannequins are gone from the painted look.
+- Movement: walk, jog and sprint blend in step; cadence comes from speed; planted feet stay put (median skate 0 at all tested speeds; it was 0.18 m/s at a walk and 3.5 m/s at a jog); feet sit on real slopes; hands relax; arms reach holds with elbows; catching a hold eases instead of snapping.
+- Soft bodies: each near tree's branches are springs carrying one another, moved by wind, his weight and the pull of a swing. Banyan roots and lianas are Verlet ropes that sway, bow, get pushed aside by his body and pin to his hands.
+- Near trees: smooth limbs with collars, twigs, species bark, real leaf shapes, leaf sprays, semal thorns, fungi, moss, climbers, on all climbable species including banyan and bamboo. Medium draws five such trees, plus any tree he is in; Low draws one.
+- Cost: game update about 1.4 ms a frame (near trees 0.03, ropes 0.27); boot adds the near-tree and villager builds.
+
 **Still open**
-- Banyan and bamboo are not in the detail tier, so banyan limbs still look angular up close.
-- Taking a liana from the ground can snap him up by as much as 0.8 m in one frame; it isn't smoothed yet.
 - An arrow barely moves anything heavier than a small stone. The masses are realistic, but it may not feel rewarding.
 
 **Not verifiable here**
 - Sound changes were checked in code and by counting step timings; they need listening.
 - Touch controls were tested in a 375×812 emulation only, not on a real phone; phone frame rate is unmeasured.
 - Climbing and hanging have no hand-made animation clips; their poses are procedural.
-- The third pass ran while the browser pane was throttled, so swing feel, camera motion and the limb's spring were checked in
+- The third and fourth passes ran while the browser pane was throttled, so swing feel, camera motion and the limb's spring were checked in
   numbers and still frames, not watched in real time.
+- The flute was checked as signal level and scheduled notes, not by ear. Phone frame rate is still unmeasured, including the near tree on Low.
 
 ## Sources
 
