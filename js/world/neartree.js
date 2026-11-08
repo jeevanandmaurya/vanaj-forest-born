@@ -419,12 +419,16 @@ export class SoftTree {
 export class NearTrees {
   constructor(game) {
     this.g = game; this.veg = game.veg; this.scene = game.scene; const q = game.q;
-    this.max = !PAINTED ? 0 : q.name === 'Low' ? 1 : q.name === 'Medium' ? 5 : q.name === 'High' ? 7 : SLOTS;
-    this.R = q.name === 'Low' ? 9 : q.name === 'Medium' ? 22 : q.name === 'High' ? 26 : 30;
+    this.applyQuality();
     this.cache = new Map(); this.slots = []; this.t = 0; this.mats = {};
     this.W = MAXB * 2; this.data = new Float32Array(this.W * SLOTS * 4);
     const tex = new THREE.DataTexture(this.data, this.W, SLOTS, THREE.RGBAFormat, THREE.FloatType);
     tex.minFilter = tex.magFilter = THREE.NearestFilter; tex.needsUpdate = true; this.tex = tex; this.tSoft = { value: tex };
+  }
+  applyQuality() {
+    const q = this.g.q;
+    this.max = !PAINTED ? 0 : q.name === 'Low' ? 1 : q.name === 'Medium' ? 5 : q.name === 'High' ? 7 : SLOTS;
+    this.R = q.name === 'Low' ? 9 : q.name === 'Medium' ? 22 : q.name === 'High' ? 26 : 30;
   }
   mat(name) {
     if (this.mats[name]) return this.mats[name];

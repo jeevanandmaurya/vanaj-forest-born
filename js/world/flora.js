@@ -824,12 +824,30 @@ export class Vegetation {
         per.push({
           b0: mk(t.bark, this.barkMats[name], c0, true), l0: lm ? mk(t.leaf, lm, c0, true, lm.userData.depth) : null,
           b1: mk(t.bark1, this.barkMats[name], c1, false), l1: lm ? mk(t.leaf1, lm, c1, false) : null,
-          c0, c1, n0: 0, n1: 0,
+          c0, c1, n0: 0, n1: 0, capMul,
         });
       }
       this.meshes.push(per);
     }
     this.setSeason('winter');
+  }
+  // a new graphics level: how many trees may be drawn (buffers grow when they must; a lower limit just uses less of them)
+  applyQuality() {
+    const cap0 = this.q.treeCap0 || 1400, cap1 = this.q.treeCap1 || 6000, aa = !!this.q.aa;
+    const grow = (mesh, cap) => {
+      if (!mesh || mesh.instanceMatrix.count >= cap) return mesh;
+      const n = new THREE.InstancedMesh(mesh.geometry, mesh.material, cap);
+      n.count = 0; n.frustumCulled = false; n.castShadow = mesh.castShadow; n.receiveShadow = mesh.receiveShadow;
+      if (mesh.customDepthMaterial) n.customDepthMaterial = mesh.customDepthMaterial;
+      n.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      this.scene.remove(mesh); mesh.dispose(); this.scene.add(n);
+      return n;
+    };
+    for (const per of this.meshes) for (const m of per) {
+      m.c0 = Math.ceil(cap0 * m.capMul); m.c1 = Math.ceil(cap1 * m.capMul);
+      m.b0 = grow(m.b0, m.c0); m.l0 = grow(m.l0, m.c0); m.b1 = grow(m.b1, m.c1); m.l1 = grow(m.l1, m.c1);
+    }
+    for (const name in this.leafMats) { const lm = this.leafMats[name]; if (lm.alphaToCoverage !== aa) { lm.alphaToCoverage = aa; lm.needsUpdate = true; } }
   }
   setSeason(season) {
     this.season = season;
@@ -1222,6 +1240,19 @@ export class Grass {
     this.short = new THREE.InstancedMesh(tuftCards(5, 0.5, 0.9, 3), this.mat, quality.grassCap || 9000);
     this.tall = new THREE.InstancedMesh(tuftCards(9, 1.35, 1.1, 3), this.matT, Math.floor((quality.grassCap || 9000) * 0.6));
     for (const m of [this.short, this.tall]) { m.count = 0; m.frustumCulled = false; m.receiveShadow = true; m.castShadow = false; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage); scene.add(m); }
+  }
+  // a new graphics level: reach, density (written into the cells, so they are made afresh) and how many tufts fit
+  applyQuality() {
+    const q = this.q, cap = q.grassCap || 9000;
+    this.radius.value = q.grassR; this.cells.clear(); this.last.set(1e9, 0, 1e9);
+    const grow = (mesh, n) => {
+      if (mesh.instanceMatrix.count === n) return mesh;
+      const m = new THREE.InstancedMesh(mesh.geometry, mesh.material, n);
+      m.count = 0; m.frustumCulled = false; m.receiveShadow = true; m.castShadow = false; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      this.scene.remove(mesh); mesh.dispose(); this.scene.add(m);
+      return m;
+    };
+    this.short = grow(this.short, cap); this.tall = grow(this.tall, Math.floor(cap * 0.6));
   }
   setSeason(season) { this.heightMul.value = season === 'summer' ? 0.65 : season === 'winter' ? 0.85 : season === 'monsoon' ? 1.0 : 1.25; }
   genCell(cx, cz) {

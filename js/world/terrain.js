@@ -610,7 +610,8 @@ export function createPaintedTerrainMaterial(far, lq = false) {
 export class TerrainManager {
   constructor(scene, tex, quality) {
     this.scene = scene; this.q = quality;
-    const lq = quality.name === 'Low';
+    this.tex = tex;
+    const lq = this.lq = quality.name === 'Low';
     this.mat = PAINTED ? createPaintedTerrainMaterial(false, lq) : createTerrainMaterial(tex, false, lq);
     this.farMat = PAINTED ? createPaintedTerrainMaterial(true, lq) : createTerrainMaterial(tex, true, lq);
     this.chunks = new Map();
@@ -625,6 +626,20 @@ export class TerrainManager {
     this.far.frustumCulled = false;
     this.far.renderOrder = -1;
     scene.add(this.far);
+  }
+  // a new graphics level: how far chunks reach, their detail, and Low's simpler ground shader
+  applyQuality() {
+    this.R = this.q.chunkR; this.center = { cx: 1e9, cz: 1e9 };
+    const lq = this.q.name === 'Low';
+    if (lq === this.lq) return;
+    this.lq = lq;
+    const oldM = this.mat, oldF = this.farMat, near = oldF.userData.near && oldF.userData.near.value;
+    this.mat = PAINTED ? createPaintedTerrainMaterial(false, lq) : createTerrainMaterial(this.tex, false, lq);
+    this.farMat = PAINTED ? createPaintedTerrainMaterial(true, lq) : createTerrainMaterial(this.tex, true, lq);
+    if (near && this.farMat.userData.near) this.farMat.userData.near.value.copy(near);
+    this.far.material = this.farMat;
+    for (const c of this.chunks.values()) c.mesh.material = this.mat;
+    oldM.dispose(); oldF.dispose();
   }
   lodFor(d) { return d <= 1 ? (this.q.name === 'Low' ? 64 : 128) : d <= 2 ? 32 : 16; }
   update(px, pz, budgetMs = 6, force = false) {

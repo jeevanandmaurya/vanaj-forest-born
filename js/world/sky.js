@@ -63,6 +63,12 @@ export class SkySystem {
     Object.assign(this.sun.shadow.camera, { left: -sd, right: sd, top: sd, bottom: -sd, near: 1, far: 600 });
     this.sun.shadow.bias = -0.0004; this.sun.shadow.normalBias = 0.6;
     scene.add(this.sun); scene.add(this.sun.target);
+    this.applyQuality = () => {
+      const S = this.sun.shadow, q = this.q, d = q.shadowDist;
+      if (S.mapSize.x !== q.shadow && S.map) { S.map.dispose(); S.map = null; }
+      S.mapSize.set(q.shadow, q.shadow);
+      Object.assign(S.camera, { left: -d, right: d, top: d, bottom: -d }); S.camera.updateProjectionMatrix();
+    };
     this.hemi = new THREE.HemisphereLight(0x9fb4d0, 0x5a4630, 0.5);
     scene.add(this.hemi);
 

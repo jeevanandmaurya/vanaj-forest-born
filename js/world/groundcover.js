@@ -69,16 +69,18 @@ function stoneGeometry(seed) {
   g.computeVertexNormals(); return g;
 }
 
+const litterLevel = (q) => (q.grassR > 60 ? 1.5 : q.grassR > 45 ? 1.1 : q.grassR > 30 ? 0.8 : 0.45);
 export class GroundCover {
   constructor(scene, T, quality) {
     this.scene = scene; this.q = quality; this.T = T;
-    const lv = quality.grassR > 60 ? 1.5 : quality.grassR > 45 ? 1.1 : quality.grassR > 30 ? 0.8 : 0.45;
+    const lv = litterLevel(quality);
     this.R = 12 + lv * 12;                      // radius of 3D litter
     this.dens = lv;
     this.leafMul = 1; this.fresh = SEASON_FRESH.winter;
     this.cells = new Map(); this.last = new THREE.Vector3(1e9, 0, 1e9);
     this.pressed = new Map(); this.dirty = false; this.rebuiltAt = 0;
-    const capL = Math.floor(9000 + lv * 16000), capT = Math.floor(600 + lv * 1400), capS = Math.floor(900 + lv * 2200);
+    // (room for the highest level, which the graphics setting can switch to at any time; only what is in use gets drawn)
+    const top = 1.5, capL = Math.floor(9000 + top * 16000), capT = Math.floor(600 + top * 1400), capS = Math.floor(900 + top * 2200);
     this.uR = { value: this.R };
 
     // --- leaves
@@ -154,6 +156,7 @@ export class GroundCover {
     this._m = new THREE.Matrix4(); this._q = new THREE.Quaternion(); this._e = new THREE.Euler(); this._v = new THREE.Vector3(); this._s = new THREE.Vector3();
     this._up = new THREE.Vector3(0, 1, 0); this._n = new THREE.Vector3(); this._qa = new THREE.Quaternion();
   }
+  applyQuality() { const lv = litterLevel(this.q); this.R = 12 + lv * 12; this.dens = lv; this.uR.value = this.R; this.cells.clear(); this.last.set(1e9, 0, 1e9); }
   setSeason(s) { this.leafMul = PAINTED ? 0 : SEASON_LEAF[s] ?? 1; this.fresh = SEASON_FRESH[s] ?? 0.06; this.cells.clear(); this.pressed.clear(); this.last.set(1e9, 0, 1e9); }
   // a foot came down here: dry leaves under it crumble into the print, so leave the 3D leaves out of that spot.
   // Kept per cell for half a game day, which is longer than any print lasts.

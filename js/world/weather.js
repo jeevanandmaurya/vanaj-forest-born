@@ -53,15 +53,16 @@ export class Weather {
     this.timer = 6 + this.rng() * 10; // game hours
   }
   force(state) { this.forced = state; this.pick(state); }
+  applyQuality() { this.rain.geometry.instanceCount = this.q.rainDrops || 5000; }
   buildRain() {
-    const N = this.q.rainDrops || 5000;
+    const N = 6000;   // the most any level draws (see applyQuality)
     const geo = new THREE.PlaneGeometry(0.012, 0.55);
     const inst = new THREE.InstancedBufferGeometry();
     inst.index = geo.index; inst.attributes.position = geo.attributes.position; inst.attributes.uv = geo.attributes.uv;
     const offs = new Float32Array(N * 4); const r = mulberry32(5);
     for (let i = 0; i < N; i++) { offs[i * 4] = r(); offs[i * 4 + 1] = r(); offs[i * 4 + 2] = r(); offs[i * 4 + 3] = r(); }
     inst.setAttribute('aOff', new THREE.InstancedBufferAttribute(offs, 4));
-    inst.instanceCount = N;
+    inst.instanceCount = this.q.rainDrops || 5000;
     this.rainU = { uT: { value: 0 }, uInt: { value: 0 }, uCam: { value: new THREE.Vector3() }, uWindR: { value: new THREE.Vector2() }, uLight: { value: 1 } };
     const mat = new THREE.ShaderMaterial({
       uniforms: this.rainU, transparent: true, depthWrite: false, fog: false,

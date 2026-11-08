@@ -113,8 +113,8 @@ class Game {
     // phones and tablets start on Low (unless a quality was chosen) and draw at CSS-pixel resolution
     const touch = isTouchDevice(), chosen = (store.get('vanaj-settings') || {}).qualityChosen;
     this.q = { ...(QUALITY[qp.get('q') || (touch && !chosen ? 'low' : this.settings.quality)] || QUALITY.medium) };
-    if (touch) this.q.pr = 1;
-    if (qp.get('pr')) this.q.pr = +qp.get('pr');
+    this.prFixed = qp.get('pr') ? +qp.get('pr') : touch ? 1 : 0;   // a render scale that no quality level may change
+    if (this.prFixed) this.q.pr = this.prFixed;
     this.noRender = qp.has('norender'); if (this.noRender) { this.q.env = false; }
     this.cooldowns = new Map();
   }
@@ -249,8 +249,12 @@ class Game {
   }
   buildComposer() {
     const r = this.renderer, w = window.innerWidth, h = window.innerHeight;
+    this.godrays = this.bloom = this.smaa = null;
     const rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: this.q.aa ? 4 : 0 });
     this.composer = new EffectComposer(r, rt);
+    // (given its own target, the composer assumes a render scale of 1: Low drew the whole scene at full size, then squeezed
+    // it into its smaller canvas, paying full price for a blurrier picture)
+    this.composer.setPixelRatio(r.getPixelRatio());
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     if (this.q.name !== 'Low' && !PAINTED) {
       this.godrays = new ShaderPass(GodRaysShader);
@@ -263,6 +267,35 @@ class Game {
     if (PAINTED) { this.grade.uniforms.uGrain.value = 0; this.grade.uniforms.uVig.value = 0.45; }
     this.composer.addPass(new OutputPass());
     if (!this.q.aa && this.q.name !== 'Low') { this.smaa = new SMAAPass(w * r.getPixelRatio(), h * r.getPixelRatio()); this.composer.addPass(this.smaa); }
+  }
+  // Change the graphics level in the running game. All the systems read the same quality object, so it is updated in
+  // place; each then adjusts what it built from it: buffers sized for the old level, the shadow map, the post-processing.
+  // The settings panel is only open at the title or paused, so the short stall of rebuilding interrupts no play.
+  async applyQuality(name) {
+    const Q = QUALITY[name]; if (!Q) return;
+    const me = this._qApply = (this._qApply || 0) + 1, note = $('set-quality-note'), sel = $('set-quality');
+    if (this.q.name === Q.name) { note.textContent = ''; return; }
+    note.textContent = 'Applying...'; sel.disabled = true;
+    try {
+      await nextFrame(); if (me !== this._qApply) return;
+      const lowBefore = this.q.name === 'Low';
+      Object.assign(this.q, Q); if (this.prFixed) this.q.pr = this.prFixed;
+      const r = this.renderer, P = this.player;
+      r.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.q.pr));
+      r.setSize(window.innerWidth, window.innerHeight);
+      for (const p of this.composer.passes) if (p.dispose) p.dispose();
+      this.composer.dispose();
+      this.buildComposer();
+      this.sky.applyQuality(); this.weather.applyQuality(); this.veg.applyQuality(); this.grass.applyQuality(); this.cover.applyQuality(); this.terrain.applyQuality(); this.near.applyQuality();
+      await tick();
+      if (lowBefore) { this.near.prebuild(); await tick(); }
+      const focus = this.playing ? P.pos : this.camera.position, see = this.playing && !this.arrival ? this.camera.position : focus;
+      this.terrain.update(focus.x, focus.z, 1e9, true); await tick();
+      this.veg.update(see, true); this.grass.update(see, true); this.cover.update(see, true);
+      if (this.playing) { this.near.t = 0; this.near.update(P.pos, 0.016, P.canopy.mode ? P.canopy.tree : null); this.phys.sync(P.pos, true); }
+      note.textContent = `${Q.name} is on.`;
+    } catch (e) { console.error(e); note.textContent = 'Could not switch. Reload the page to apply it.'; }
+    finally { sel.disabled = false; }
   }
   updateGodRays() {
     const gp = this.godrays; if (!gp) return;
@@ -456,7 +489,8 @@ class Game {
     bindRange('set-sens', 'sens', (v) => v.toFixed(2)); bindRange('set-fov', 'fov'); bindRange('set-master', 'master', (v) => Math.round(v * 100) + '%'); bindRange('set-music', 'music', (v) => Math.round(v * 100) + '%');
     $('set-perf').value = g.perf.mode; $('set-perf').onchange = (e) => g.perf.setMode(e.target.value);
     $('set-invert').checked = S.invert; $('set-invert').onchange = (e) => { S.invert = e.target.checked; g.applySettings(); };
-    $('set-quality').value = S.quality; $('set-quality').onchange = (e) => { S.quality = e.target.value; S.qualityChosen = true; g.applySettings(); $('set-quality-note').textContent = 'Reload to fully apply view distance and shadow quality.'; };
+    // (it shows the level really running: a phone starts on Low, whatever was saved)
+    $('set-quality').value = g.q.name.toLowerCase(); $('set-quality').onchange = (e) => { S.quality = e.target.value; S.qualityChosen = true; g.applySettings(); g.applyQuality(e.target.value); };
     $('set-view').value = S.view; $('set-view').onchange = (e) => { S.view = e.target.value; g.player.setView(S.view); g.applySettings(); };
   }
   anyPanel() { return !!document.querySelector('.panel.show'); }
@@ -864,7 +898,7 @@ class Game {
     try { this.update(dt, rdt); } catch (e) { console.error(e); }
     this.render(rdt);
     this.input.endFrame();
-    this.perf.frameEnd({ scene: this.scene, composer: this.composer, quality: (this.settings.quality || '').replace(/^./, (c) => c.toUpperCase()), animals: this.eco ? this.eco.animals.length : undefined });
+    this.perf.frameEnd({ scene: this.scene, composer: this.composer, quality: this.q.name, animals: this.eco ? this.eco.animals.length : undefined });
   }
   update(dt, rdt) {
     const P = this.player;
