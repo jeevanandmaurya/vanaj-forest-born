@@ -42,6 +42,9 @@ export function patchMore(m, key, fn) {
 
 // Ink lines for the living (art rule 7): an inverted hull, the mesh drawn again slightly swollen along smooth
 // normals with only its back faces, in a dark warm ink. Skinned meshes get a skinned hull on the same skeleton.
+// The ink is unlit, so it dims with the daylight by hand (INK_LIGHT, set each frame from the sky): at a fixed colour it stayed
+// brighter than the unlit body it outlines after dark, and read as a pale brown line.
+export const INK_LIGHT = { value: 1 };
 const INK = new THREE.Color('#2a1c16'), _ws = new THREE.Vector3(), hulls = new Map();
 function hullGeometry(g) {
   if (hulls.has(g)) return hulls.get(g);
@@ -53,9 +56,11 @@ function hullGeometry(g) {
 function inkMaterial(w) {
   const m = new THREE.MeshBasicMaterial({ color: INK, side: THREE.BackSide });
   patch(m, 'ink', (s) => {
-    s.uniforms.uInk = m.userData.w;
+    s.uniforms.uInk = m.userData.w; s.uniforms.uInkLight = INK_LIGHT;
     s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\n uniform float uInk;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\n transformed += normalize(normal) * uInk;');
+    s.fragmentShader = s.fragmentShader.replace('#include <common>', '#include <common>\n uniform float uInkLight;')
+      .replace('#include <opaque_fragment>', 'outgoingLight *= uInkLight;\n#include <opaque_fragment>');
   });
   m.userData.w = { value: w };
   return m;

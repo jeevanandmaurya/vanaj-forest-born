@@ -5,7 +5,7 @@ import { Sky } from 'three/addons/objects/Sky.js';
 import { G, NOISE_GLSL } from '../core/shaderlib.js';
 import { mulberry32, clamp, smoothstep, lerp } from '../core/noise.js';
 import { PAINTED, paintedLight, paintedHour } from '../core/palette.js';
-import { RIM } from '../core/toon.js';
+import { RIM, INK_LIGHT } from '../core/toon.js';
 
 const LAT = 21.7 * Math.PI / 180;
 // (_sUp: the celestial pole at this latitude; north is -z)
@@ -211,6 +211,7 @@ export class SkySystem {
     desat(p.sky, this.hemi.color); desat(p.gnd, this.hemi.groundColor);
     this.hemi.intensity = p.hemiI * 5.9 * (1 - cov * 0.2) + this.flash * 6;
     RIM.value.copy(p.sky).multiplyScalar(0.3 * p.hemiI).add(_rc.copy(p.sun).multiplyScalar(0.05 * p.sunI * dim));
+    INK_LIGHT.value = lerp(0.02, 1, smoothstep(0.02, 0.6, this.day)) + this.flash * 0.5;
     const u = this.paintU, sunUp = el > -0.1;
     u.uTop.value.copy(p.top).lerp(p.haze, cov * 0.5); u.uHor.value.copy(p.hor).lerp(p.haze, cov * 0.4); u.uHaze.value.copy(p.haze);
     u.uSunC.value.copy(p.sun); u.uSunD.value.copy(sunUp ? sd : md);
