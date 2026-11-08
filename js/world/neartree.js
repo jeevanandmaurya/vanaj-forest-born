@@ -91,6 +91,16 @@ function meshBark(nb, BR, plan, hi, rng) {
     const S = b.pts, n = S.length; if (n < 2 || b.noMesh) return;
     const lv = b.level, segs = lv >= 3 ? 4 : Math.max(lv === 0 ? 20 : 7, Math.round((b.segs || 8) * 1.7)), sub = lv >= 3 ? 1 : 3;
     const start = nb.p.length / 3, ph1 = rng() * 6.28, ph2 = rng() * 6.28, knob = lv === 0 ? 0.03 : lv === 1 ? 0.045 : lv === 2 ? 0.03 : 0, r00 = b.r[0];
+    // Where a branch leaves its parent. A side branch swells into a collar, but never wider than the wood it grows from (its
+    // first ring is inside that wood, so a wider one stood out as an open lip). A branch carrying straight on from its
+    // parent's tip has no collar at all: the same width, the same place, so the two read as one piece of wood.
+    const par = b.parent >= 0 ? BR[b.parent] : null, onTip = !par || b.tA >= 0.999;
+    let collar = 0;
+    if (par && !onTip && lv <= 2) { const f = b.tA * (par.r.length - 1), i0 = Math.min(par.r.length - 2, Math.floor(f)), pr = par.r[i0] + (par.r[i0 + 1] - par.r[i0]) * (f - i0); collar = clamp(pr * 0.94 / r00 - 1, 0, 0.55); }
+    b.collar = r00 * (1 + collar);
+    // the wind moves wood by how far out it is; each branch starts with what its parent has at that point, or the join opens up in a gust
+    const windOf = (level, hfv) => (level === 0 ? Math.pow(hfv, 2.2) * 0.12 : 0.05 + 0.08 * Math.min(level, 2) * hfv), w00 = par ? windOf(par.level, clamp(S[0].y / H, 0, 1)) : 0;
+    let lastW = 0, lastAo = 1, lastR = r00, sbL = 0, stL = 0;
     let L = 0; for (let i = 1; i < n; i++) L += S[i].distanceTo(S[i - 1]);
     let len = 0, rows = 0, prev = null;
     for (let i = 0; i < n; i++) for (let k = 0; k < (i === n - 1 ? 1 : sub); k++) {
@@ -111,10 +121,11 @@ function meshBark(nb, BR, plan, hi, rng) {
       if (rows > 0) len += _p.distanceTo(last); last.copy(_p); rows++;
       let r = b.r[i] + (b.r[i1] - b.r[i]) * t;
       if (lv === 0) r *= 1 + flare * Math.exp(-Math.max(0, _p.y) * 1.5);
-      else if (lv <= 2) r *= 1 + 0.55 * Math.exp(-len / Math.max(0.06, r00 * 2.2));          // a collar where it leaves its parent
-      const hf = clamp(_p.y / H, 0, 1), wv = lv === 0 ? Math.pow(hf, 2.2) * 0.12 : 0.05 + 0.08 * Math.min(lv, 2) * hf;
+      else if (collar > 0) r *= 1 + collar * Math.exp(-len / Math.max(0.06, r00 * 2.2));
+      const hf = clamp(_p.y / H, 0, 1), wv0 = windOf(lv, hf), wf = clamp(len / Math.max(0.3, L * 0.5), 0, 1), wv = par ? w00 + (wv0 - w00) * wf * wf * (3 - 2 * wf) : wv0;
       const ao = (0.62 + 0.38 * clamp((_p.y + 0.2) / 2.4, 0, 1)) * (lv === 0 ? 1 : 0.94);
       const [sb, st] = softRef(BR, plan, bi, (len + (L > 0 ? 0 : 0)) / Math.max(1e-3, L));
+      lastW = wv; lastAo = ao; lastR = r; sbL = sb; stL = st;
       for (let j = 0; j <= segs; j++) {
         const a = (j / segs) * Math.PI * 2, c = Math.cos(a), sn = Math.sin(a);
         let m = 1 + knob * (Math.sin(a * 3 + ph1 + len * 1.7) + Math.sin(a * 5 + ph2 - len * 2.3)) * 0.5;
@@ -126,6 +137,11 @@ function meshBark(nb, BR, plan, hi, rng) {
     for (let i = 0; i < rows - 1; i++) for (let j = 0; j < segs; j++) {
       const a = start + i * (segs + 1) + j, bb = a + 1, c = a + segs + 1, d = c + 1;
       nb.i.push(a, c, bb, bb, c, d);
+    }
+    // the end of the branch is closed, a blunt point, so there is no looking up into a hollow tube
+    if (rows > 0) {
+      const tip = nb.v(_p.x + _t.x * lastR * 0.7, _p.y + _t.y * lastR * 0.7, _p.z + _t.z * lastR * 0.7, _t.x, _t.y, _t.z, 0.5, len, lastAo * base, lastAo * base, lastAo * base, lastW, rng(), sbL, stL, lastR), e = start + (rows - 1) * (segs + 1);
+      for (let j = 0; j < segs; j++) nb.i.push(e + j, tip, e + j + 1);
     }
   });
   // the surface roots, as they are on the instanced tree
@@ -250,17 +266,30 @@ function blob(nb, c, rx, ry, rz, C, rng, sb, st, Y = 8, X = 6) {   // a squashed
 function meshExtras(nb, cards, hi, BR, plan, name, rng) {
   const trunk = BR[0]; if (!trunk || name === 'bamboo') return;
   const pts = trunk.pts, top = pts[pts.length - 1].y, H0 = Math.min(top, 12);
-  const ptOn = (y) => { for (let i = 0; i < pts.length - 1; i++) if (y <= pts[i + 1].y) { const t = (y - pts[i].y) / Math.max(1e-3, pts[i + 1].y - pts[i].y); return { p: pts[i].clone().lerp(pts[i + 1], t), r: trunk.r[i] + (trunk.r[i + 1] - trunk.r[i]) * t }; } return { p: pts[pts.length - 1].clone(), r: trunk.r[trunk.r.length - 1] }; };
-  const out = new THREE.Vector3();
+  const ptOn = (y) => { for (let i = 0; i < pts.length - 1; i++) if (y <= pts[i + 1].y) { const t = (y - pts[i].y) / Math.max(1e-3, pts[i + 1].y - pts[i].y); return { p: pts[i].clone().lerp(pts[i + 1], t), r: trunk.r[i] + (trunk.r[i + 1] - trunk.r[i]) * t, f: i + t }; } return { p: pts[pts.length - 1].clone(), r: trunk.r[trunk.r.length - 1], f: pts.length - 1 }; };
+  const out = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0), _s1 = new THREE.Vector3(), _s2 = new THREE.Vector3();
+  // How far out the bark really is at this height and direction: the flare at the foot and the flutes or buttresses, as the
+  // bark mesh has them. (Going by the plain radius sank fungi and climbers into the trunk low down.)
+  const fl = hi.P && hi.P.flute, flPh = (hi.sk && hi.sk.flPh) || 0, flare = hi.P ? hi.P.flare : 0;
+  const surf = (q, y, d) => {
+    let r = q.r * (1 + flare * Math.exp(-Math.max(0, y) * 1.5));
+    if (fl && trunk.q) {
+      const f = clamp(q.f ?? 0, 0, trunk.q.length - 1), sq = trunk.q[Math.round(f)];
+      _s1.set(1, 0, 0).applyQuaternion(sq); _s2.crossVectors(_s1, up).normalize();
+      const a = Math.atan2(d.dot(_s2), d.dot(_s1));
+      r *= 1 + fl.amp * Math.pow(Math.max(0, Math.cos(a * fl.n + flPh + y * 0.15)), 1.6) * Math.exp(-Math.max(0, y + 0.3) / fl.h);
+    }
+    return r;
+  };
   // the silk-cotton's conical thorns, thick on the young bole
   if (name === 'semal') {
     const C = col(BARK_COL.semal).map((v) => v * 0.85), T = col('#b4aa98');
-    for (let i = 0; i < 110; i++) { const y = 0.6 + rng() * rng() * H0, q = ptOn(y), a = rng() * 6.283; out.set(Math.cos(a), 0.15, Math.sin(a)).normalize(); cone(nb, q.p.clone().addScaledVector(out, q.r * 0.93), out, 0.05 + rng() * 0.07, 0.022 + rng() * 0.02, C, T, 0, bend(y / top)); }
+    for (let i = 0; i < 110; i++) { const y = 0.6 + rng() * rng() * H0, q = ptOn(y), a = rng() * 6.283; out.set(Math.cos(a), 0.15, Math.sin(a)).normalize(); cone(nb, q.p.clone().addScaledVector(out, surf(q, y, out) * 0.95), out, 0.05 + rng() * 0.07, 0.022 + rng() * 0.02, C, T, 0, bend(y / top)); }
   }
   // bracket fungi in shelves on the shaded side of older trunks
   if (name !== 'kulu' && rng() < 0.75) {
     const a0 = rng() * 6.283, C = col(rng() < 0.5 ? '#d8bd8a' : '#b98a54'), n = 3 + Math.floor(rng() * 4), y0 = 0.5 + rng() * 2.2;
-    for (let i = 0; i < n; i++) { const y = y0 + i * (0.09 + rng() * 0.07), q = ptOn(y), a = a0 + (rng() - 0.5) * 0.7, s = 0.05 + rng() * 0.07; out.set(Math.cos(a), 0, Math.sin(a)); blob(nb, q.p.clone().addScaledVector(out, q.r * 0.96 + s * 0.4), s, s * 0.28, s, C, rng, 0, bend(y / top)); }
+    for (let i = 0; i < n; i++) { const y = y0 + i * (0.09 + rng() * 0.07), q = ptOn(y), a = a0 + (rng() - 0.5) * 0.7, s = 0.05 + rng() * 0.07; out.set(Math.cos(a), 0, Math.sin(a)); blob(nb, q.p.clone().addScaledVector(out, surf(q, y, out) * 0.98 + s * 0.4), s, s * 0.28, s, C, rng, 0, bend(y / top)); }
   }
   // moss in cushions along the tops of the big limbs and in the forks
   const moss = col('#5f7f35'), moss2 = col('#7d9440');
@@ -269,17 +298,24 @@ function meshExtras(nb, cards, hi, BR, plan, name, rng) {
     for (let i = 0; i < b.pts.length; i++) {
       if (rng() > 0.62 || b.r[i] < 0.05) continue;
       const k = 3 + Math.floor(rng() * 4), [sb, st] = softRef(BR, plan, bi, i / (b.pts.length - 1));
-      for (let m = 0; m < k; m++) { const s = b.r[i] * (0.22 + rng() * 0.3) + 0.012, c = b.pts[i].clone().add(out.set((rng() - 0.5) * b.r[i] * 1.2, b.r[i] * 0.86, (rng() - 0.5) * b.r[i] * 1.2)); blob(nb, c, s, s * 0.18, s, rng() < 0.5 ? moss : moss2, rng, sb, st, 7, 4); }
+      // on the top of the limb, flat to its surface; a limb rising steeply has no top for moss to lie on
+      const dir = _s1.subVectors(b.pts[Math.min(b.pts.length - 1, i + 1)], b.pts[Math.max(0, i - 1)]).normalize();
+      if (Math.abs(dir.y) > 0.62) continue;
+      const nor = _s2.copy(up).addScaledVector(dir, -dir.y).normalize(), side = new THREE.Vector3().crossVectors(dir, nor);
+      for (let m = 0; m < k; m++) {
+        const s = b.r[i] * (0.22 + rng() * 0.3) + 0.012, an = (rng() - 0.5) * 1.1, c = b.pts[i].clone().addScaledVector(dir, (rng() - 0.5) * b.r[i] * 2).addScaledVector(nor, Math.cos(an) * b.r[i] * 0.98).addScaledVector(side, Math.sin(an) * b.r[i] * 0.98);
+        blob(nb, c, s, s * 0.18, s, rng() < 0.5 ? moss : moss2, rng, sb, st, 9, 5);
+      }
     }
   });
   // on some trees a climber winds up the trunk with its own small leaves
   if (name !== 'kulu' && name !== 'dead' && rng() < 0.55) {
-    const a0 = rng() * 6.283, turns = 2 + rng() * 2.5, h = Math.min(H0, 5 + rng() * 5), n = 30, stem = col('#58602f'), leaf = [0.72, 1.0, 0.6], base = nb.p.length / 3, seg = 4, up = new THREE.Vector3(), dir = new THREE.Vector3();
+    const a0 = rng() * 6.283, turns = 2 + rng() * 2.5, h = Math.min(H0, 5 + rng() * 5), n = 96, stem = col('#58602f'), leaf = [0.72, 1.0, 0.6], base = nb.p.length / 3, seg = 4, up = new THREE.Vector3(), dir = new THREE.Vector3();
     for (let i = 0; i <= n; i++) {
-      const t = i / n, y = 0.1 + t * h, q = ptOn(y), a = a0 + t * turns * 6.283, r = q.r * 1.04 + 0.02 * (1 - t) + 0.012 * Math.sin(t * 40);
-      out.set(Math.cos(a), 0, Math.sin(a)); const c = q.p.clone().addScaledVector(out, r), rv = 0.02 * (1 - t * 0.6);
+      const t = i / n, y = 0.1 + t * h, q = ptOn(y), a = a0 + t * turns * 6.283;
+      out.set(Math.cos(a), 0, Math.sin(a)); const r = surf(q, y, out) * 1.03 + 0.012 + 0.012 * Math.sin(t * 40), c = q.p.clone().addScaledVector(out, r), rv = 0.02 * (1 - t * 0.6);
       for (let j = 0; j <= seg; j++) { const an = j / seg * 6.283, nx = out.x * Math.cos(an), nz = out.z * Math.cos(an), ny = Math.sin(an); nb.v(c.x + nx * rv, c.y + ny * rv, c.z + nz * rv, nx, ny, nz, 0, 0, stem[0], stem[1], stem[2], 0, 0, 0, bend(y / top)); }
-      if (i % 2 === 0 && cards) { dir.copy(out).multiplyScalar(0.8); dir.y = -0.5; dir.normalize(); up.set(out.x * 0.5, 1, out.z * 0.5).normalize(); leafCard(cards, c, dir, up, 0.1 + rng() * 0.06, leaf, rng(), 0, bend(y / top), 0.9); }
+      if (i % 6 === 0 && cards) { dir.copy(out).multiplyScalar(0.8); dir.y = -0.5; dir.normalize(); up.set(out.x * 0.5, 1, out.z * 0.5).normalize(); leafCard(cards, c, dir, up, 0.1 + rng() * 0.06, leaf, rng(), 0, bend(y / top), 0.9); }
     }
     for (let i = 0; i < n; i++) for (let j = 0; j < seg; j++) { const a = base + i * (seg + 1) + j, b = a + 1, cc = a + seg + 1, d = cc + 1; nb.i.push(a, cc, b, b, cc, d); }
   }

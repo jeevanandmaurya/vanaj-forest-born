@@ -64,6 +64,14 @@ function tube(gb, pts, rads, radial, windFn, rnd, uRep, colMul = 1, shape = null
     const a = base + s * (radial + 1) + k, b = a + 1, c = a + radial + 1, d = c + 1;
     gb.i.push(a, c, b, b, c, d);
   }
+  capEnd(gb, base + (n - 1) * (radial + 1), radial, pts[n - 1], pts[n - 2] || pts[n - 1], rads[n - 1], windFn(pts[n - 1]), rnd, colMul);
+}
+// closes the end of a tube with a blunt point: e is the first vertex of its last ring, p and q the last two axis points
+function capEnd(gb, e, radial, p, q, r, wind, rnd, ao = 1) {
+  let tx = p[0] - q[0], ty = p[1] - q[1], tz = p[2] - q[2]; const l = Math.hypot(tx, ty, tz) || 1; tx /= l; ty /= l; tz /= l;
+  const tip = gb.p.length / 3;
+  gb.vert(p[0] + tx * r * 0.7, p[1] + ty * r * 0.7, p[2] + tz * r * 0.7, tx, ty, tz, 0.5, 0, ao, ao, ao, wind, rnd);
+  for (let k = 0; k < radial; k++) gb.i.push(e + k, tip, e + k + 1);
 }
 
 const _v = new THREE.Vector3(), _u = new THREE.Vector3(), _rt = new THREE.Vector3(), _nm = new THREE.Vector3();
@@ -302,8 +310,10 @@ function meshSkeleton(gb, sk, P, rng, detail, H) {
       if (i > 0) len += S.p.distanceTo(secs[i - 1].p);
       let r = S.r;
       if (b.level === 0) r *= 1 + P.flare * Math.exp(-Math.max(0, S.p.y) * 1.5);
-      const hf = clamp(S.p.y / H, 0, 1);
-      const wv = (b.level === 0 ? Math.pow(hf, 2.2) * 0.22 : 0.16 + 0.22 * b.level * hf);
+      const hf = clamp(S.p.y / H, 0, 1), wv0 = (b.level === 0 ? Math.pow(hf, 2.2) * 0.22 : 0.16 + 0.22 * b.level * hf);
+      // (starting from what its parent has at the join, or the two part company in the wind)
+      let wv = wv0;
+      if (b.level > 0 && b.parent >= 0) { const pl = sk.branches[b.parent].level, h0 = clamp(secs[0].p.y / H, 0, 1), w0 = pl === 0 ? Math.pow(h0, 2.2) * 0.22 : 0.16 + 0.22 * pl * h0, f = clamp(i / Math.max(1, secs.length - 1) * 2, 0, 1); wv = w0 + (wv0 - w0) * f * f * (3 - 2 * f); }
       const ao = (0.62 + 0.38 * clamp((S.p.y + 0.2) / 2.4, 0, 1)) * (b.level === 0 ? 1 : 0.92);
       for (let j = 0; j <= segs; j++) {
         const a = (j / segs) * Math.PI * 2;
@@ -318,6 +328,7 @@ function meshSkeleton(gb, sk, P, rng, detail, H) {
       const a = base + i * (segs + 1) + j, bb = a + 1, c = a + segs + 1, d = c + 1;
       gb.i.push(a, c, bb, bb, c, d);
     }
+    { const L = secs[secs.length - 1], Q = secs[secs.length - 2] || L, h = clamp(L.p.y / H, 0, 1); capEnd(gb, base + (secs.length - 1) * (segs + 1), segs, [L.p.x, L.p.y, L.p.z], [Q.p.x, Q.p.y, Q.p.z], L.r, b.level === 0 ? Math.pow(h, 2.2) * 0.22 : 0.16 + 0.22 * b.level * h, rng()); }
   }
 }
 
@@ -442,7 +453,7 @@ function buildBanyan(seed) {
   for (let b = 0; b < limbs; b++) {
     const phi = b / limbs * 6.28 + rng() * 0.4, th = 1.15 + rng() * 0.3;
     const dir = new THREE.Vector3(Math.cos(phi) * Math.sin(th), Math.cos(th), Math.sin(phi) * Math.sin(th));
-    const start = new THREE.Vector3(0, 5 + rng() * 1.5, 0);
+    const start = new THREE.Vector3(0, 4.3 + rng() * 1.3, 0);   // (inside the fused stems, which end at 6 m)
     ctx.cur = 0; ctx.curT = 0.85;
     growBranch(gb, leaves, rng, start, dir, 10 + rng() * 5, 0.55, 0, { ...spec, gnarl: 0.12 }, ctx);
     // aerial roots
@@ -691,7 +702,13 @@ export function paintedLeafMaterial(key, opt = {}) {
         .replace('#include <map_fragment>', `#include <map_fragment>\n${LEAF_FRAG_DROP}`)
         .replace('#include <color_fragment>', `#include <color_fragment>
           diffuseColor.rgb *= mix(uLeafShade, uLeafLit, 0.5) * uLeafTint * (0.97 + 0.06 * fract(vRand * 13.7));
-          diffuseColor.rgb = mix(diffuseColor.rgb, uFlower.rgb * vColor, step(fract(vRand * 7.31), uFlower.a));`);
+          // Flowers are spots of colour among the leaves, not a whole leaf mass painted red (up close that was a huge flat red
+          // shape). They run together into a blush at a distance, where single spots would only shimmer.
+          if (fract(vRand * 7.31) < uFlower.a) {
+            vec2 fu = vMapUv * 7.0 + vRand * 17.0; float fw = fwidth(fu.x) + fwidth(fu.y);
+            float spot = 1.0 - smoothstep(0.24, 0.3 + fw, length(fract(fu) - 0.5));
+            diffuseColor.rgb = mix(diffuseColor.rgb, uFlower.rgb * vColor, mix(spot, 0.62, clamp(fw * 1.6, 0.0, 1.0)));
+          }`);
     },
   });
   m.userData.drop = opt.share ? opt.share.drop : { value: 0 }; m.userData.tint = opt.share ? opt.share.tint : { value: new THREE.Vector3(1, 1, 1) }; m.userData.flower = opt.share ? opt.share.flower : { value: new THREE.Vector4(0, 0, 0, 0) };
