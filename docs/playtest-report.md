@@ -116,12 +116,60 @@ I saw or measured, why it matters, and the fix. Research sources are listed at t
 - Phone: touch joystick, drag-look, action buttons (Jump/Grab is hold-to-grip), Low quality by default, a HUD layout for
   narrow screens.
 
-**Not yet done or not verifiable here**
-- Sound changes were checked in code and by counting step timings; I can't hear the browser, so they need listening.
+**Second pass (also verified in the browser)**
+- Langur race: after the swing lesson, a young langur leads a six-tree route through the semal crowns. It waits at each
+  tree until you're up beside it, scolds you if you drop to the ground, and ends kindly after four minutes if you can't
+  keep up.
+- Banyan and bamboo are climbable. Leaning bamboo culms are holds to hang and swing from. (Banyan aerial roots became climbing ropes in the third pass.)
+- Animation: hard landings are absorbed in a short crouch with dust; the climbing heave keeps time with the hands;
+  arms go out for balance on a limb.
+- New beats:
+  - Ch 4: free a fawn from thorns; its mother waits for it as Kaali did.
+  - Ch 5: climb above the forest and see smoke where it ends.
+  - Ch 6: your hand on the wall beside the ochre hunters.
+  - Ch 7: stand still in the first rain.
+  - Ch 8: hold the shivering pup and name her.
+  - Ch 9: sit where the river took them.
+  - Ch 12: a last visit to Kaali's resting place.
+- Storybook HUD: parchment cards and panels, ink text, rounded ink-outlined bars; death and choice screens stay dark.
+  Stale narration is cleared on chapter change, a place banner waits for the chapter title, and the compass no longer
+  covers the objective on narrow windows.
+
+**Third pass: physics, swinging, trees, water** (checked by stepping the simulation and reading frames from the canvas)
+- Water: ripples and foam use river coordinates (distance along the centreline, offset across it), so they turn with the
+  river; checked on reaches running both ways. Lakes and pools keep the still pattern.
+- Physics (Rapier):
+  - Leaps and swings sweep a ball at the feet: a swing into a trunk stops at the bark and bounces; a leap can land on the
+    tower deck. Trunk, root and limb movement still follow the tree's skeleton, without collision.
+  - Swimming goes through its own controller, so the bed and banks stop him; he can swim to a bank and walk out.
+  - Villagers are solid capsules that slide round trunks (8 of 8 test walks arrived). One held up for 2.5 s, as by a house
+    wall, passes through so a story beat can't hang.
+  - Loose stones and sticks are rigid bodies that keep where they were left. Walking shoved a stick 2.2 m; a thrown spear
+    moved a stick 0.5 m and small stones 0.2-0.4 m. Heavy stones barely move.
+- Swinging:
+  - Run at a liana and Space takes it on your momentum; if the slope would lift him more than 0.8 m, Space jumps instead and
+    holding it catches the liana in the air.
+  - Holding a direction pumps along that line (about 1.3 m to 5 m high in 12 s, capped at 14 m/s); with no keys the swing dies away.
+  - On low arcs he tucks his legs and skims the ground instead of stopping dead.
+- Climbing: banyan aerial roots are ropes (W/S hand over hand, onto the limb at the top); Shift+W/S climbs a liana the same way.
+- Trees:
+  - Limbs sag under him as a damped spring, sized by thickness and lever (0.23 m on a semal limb), and spring back.
+  - The four nearest trees within 20 m use a detailed mesh: smooth curved limbs, twigs and small leaves. It adds about
+    0.4 s and an estimated 20 MB at load. Low quality skips it; limbs still bend there.
+- Animation: no more turning round at each end of a swing, so the camera stays steady; hands take turns on ropes; the
+  weapon slings across his back while climbing, hanging or swimming.
+
+**Still open**
+- Banyan and bamboo are not in the detail tier, so banyan limbs still look angular up close.
+- Taking a liana from the ground can snap him up by as much as 0.8 m in one frame; it isn't smoothed yet.
+- An arrow barely moves anything heavier than a small stone. The masses are realistic, but it may not feel rewarding.
+
+**Not verifiable here**
+- Sound changes were checked in code and by counting step timings; they need listening.
 - Touch controls were tested in a 375×812 emulation only, not on a real phone; phone frame rate is unmeasured.
-- Chapters 4–12 have no new emotional beats yet; the langurs in the lesson don't yet race you through the trees.
-- There are still no clips for climbing or landing; tree poses are procedural. Bamboo and banyan can't be climbed.
-- The HUD still has the old dark styling rather than a storybook look.
+- Climbing and hanging have no hand-made animation clips; their poses are procedural.
+- The third pass ran while the browser pane was throttled, so swing feel, camera motion and the limb's spring were checked in
+  numbers and still frames, not watched in real time.
 
 ## Sources
 

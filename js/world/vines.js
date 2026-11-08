@@ -23,6 +23,7 @@ export class VineSystem {
     let n = 0;
     for (const T of this.trees) for (const V of T.vines) {
       if (n >= MAX) break;
+      if (V.fixed) continue;   // banyan roots are part of the tree's own mesh
       if (V.held && V.hand) {
         // the liana runs straight from its anchor to the hands
         _d.subVectors(V.hand, V.a); const L = _d.length(); _d.multiplyScalar(1 / L);

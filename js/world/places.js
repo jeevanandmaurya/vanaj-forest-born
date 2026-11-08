@@ -45,6 +45,8 @@ export class PlaceTracker {
   }
   show(p) {
     if (!this.el) return;
+    const card = document.getElementById('card');
+    if (card && card.classList.contains('show')) { setTimeout(() => this.show(p), 3000); return; }
     this.el.innerHTML = `<div class="pn">${p.name}</div><div class="ps">${p.sub}</div>`;
     this.el.classList.remove('show'); void this.el.offsetWidth; this.el.classList.add('show');
   }

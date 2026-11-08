@@ -21,6 +21,13 @@ export const G = {
   uDry: { value: 0.3 },        // 0 = wet season, 1 = peak dry summer (litter bleach, burn scars, cracked soil)
   tGroundAO: { value: (() => { const t = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1); t.needsUpdate = true; return t; })() },
   uAORect: { value: new THREE.Vector4(0, 0, 0, 0) }, // x0, z0, 1/size, enabled
+  // a limb bending under Vanaj's weight (js/actors/canopy.js): the tree (its origin's x, z), the limb's base and the
+  // load point in world space, the droop at the load point (m) and how far round the limb the bend reaches
+  uBendTree: { value: new THREE.Vector2(1e9, 1e9) },
+  uBendB: { value: new THREE.Vector3() },
+  uBendP: { value: new THREE.Vector3(0, 1, 0) },
+  uBendAmt: { value: 0 },
+  uBendR: { value: 2.5 },
 };
 G.uSunDirF = G.uSunDir;
 
@@ -128,4 +135,19 @@ export const WIND_VERTEX = /* glsl */`
   transformed.x += (lw.x * sway * 0.5 + flut) * aWind;
   transformed.z += (lw.y * sway * 0.5 + flut * 0.7) * aWind;
   transformed.y += flut * 0.4 * aWind;
+`;
+// The limb Vanaj hangs from or stands on sags under him like a loaded cantilever: nothing at the base, the most
+// at the load point (the curve of a beam with a load at its end, x^2 (3L - x)), carried on straight beyond it,
+// fading off to the sides so only that limb, its twigs and its leaves move. Only the vertices of the one tree
+// (matched by its origin) pay for it. Needs BEND_DECL, and runs after WIND_VERTEX (wM, iPos).
+export const BEND_DECL = 'uniform vec2 uBendTree; uniform vec3 uBendB; uniform vec3 uBendP; uniform float uBendAmt; uniform float uBendR;';
+export const BEND_VERTEX = /* glsl */`
+  if (abs(uBendAmt) > 0.0005 && distance(iPos.xz, uBendTree) < 0.25) {
+    vec3 bw = (wM * vec4(transformed, 1.0)).xyz, ax = uBendP - uBendB;
+    float bt = max(0.0, dot(bw - uBendB, ax) / max(dot(ax, ax), 0.01));
+    float bf = bt < 1.0 ? bt * bt * (3.0 - bt) * 0.5 : 1.0 + 1.5 * (bt - 1.0);
+    float lat = length(bw - (uBendB + ax * min(bt, 1.8)));
+    float bd = uBendAmt * min(bf, 2.2) * exp(-lat * lat / (uBendR * uBendR));
+    transformed += inverse(mat3(wM)) * vec3(0.0, -bd, 0.0);
+  }
 `;

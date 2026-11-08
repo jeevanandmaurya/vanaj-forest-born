@@ -410,8 +410,10 @@ export function buildRiggedHuman(opts = {}) {
   const actions = {}; for (const c of T.clips) actions[c.name] = mixer.clipAction(c);
   const bones = {}; inst.traverse((o) => { if (o.isBone) bones[o.name] = o; });
   // grip frames that emulate the old hand joints (fingers along -Y, handle along +Z) so weapons attach as before
-  const handR = new THREE.Group(), handL = new THREE.Group(); root.add(handR, handL);
-  const j = { handR, handL, head: bones['DEF-head'], hips: bones['DEF-hips'] };
+  const handR = new THREE.Group(), handL = new THREE.Group(), back = new THREE.Group(); root.add(handR, handL, back);
+  // (back: where a weapon is slung while the hands are busy climbing or swimming, diagonally across the shoulders)
+  back.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0.5, 1, 0).normalize());
+  const j = { handR, handL, back, head: bones['DEF-head'], hips: bones['DEF-hips'] };
   return { root, j, S, rig: { inst, body, mixer, actions, bones, cur: null, curName: '' }, t: 0, dead: 0, skin, swimS: 0 };
 }
 
@@ -472,14 +474,21 @@ export function animateRiggedHuman(h, dt, a) {
   // in the trees (no clips exist for this, so it is posed): hands on the hold, legs hanging and trailing the
   // swing; on a trunk, hand over hand with the knees braced; in a leap, arms reaching up and ahead for the next hold
   const C = a.canopy;
+  if (C && !a.dead && C.mode === 'limb') {   // out on a limb: arms held out for balance
+    aim(uaR, faR, _v1.copy(_r).multiplyScalar(0.9).add(_v2.set(0, -0.25, 0)).normalize(), 0.65);
+    aim(uaL, faL, _v1.copy(_r).multiplyScalar(-0.9).add(_v2.set(0, -0.25, 0)).normalize(), 0.65);
+  }
   if (C && !a.dead && C.mode !== 'limb') {
     const thL = Bn['DEF-thighL'], shL = Bn['DEF-shinL'], ftL = Bn['DEF-footL'], thR = Bn['DEF-thighR'], shR = Bn['DEF-shinR'], ftR = Bn['DEF-footR'];
     const reach = (ua, fa, hb, target) => { ua.getWorldPosition(_v1); aim(ua, fa, _v2.subVectors(target, _v1).normalize(), 1); fa.getWorldPosition(_v1); aim(fa, hb, _v2.subVectors(target, _v1).normalize(), 1); };
     if (C.mode === 'hang' || C.mode === 'trunk') { reach(uaR, faR, hR, C.gripR); reach(uaL, faL, hL, C.gripL); }
     if (C.mode === 'hang') {
-      const down = _v3.copy(C.up).negate().addScaledVector(C.vel, -0.05).normalize(), kick = Math.sin(h.t * 3) * 0.12;
-      aim(thL, shL, _v4.copy(down).addScaledVector(_r, -0.12).addScaledVector(_f, kick).normalize(), 1); aim(shL, ftL, _v4.copy(down).addScaledVector(_f, -0.15).normalize(), 1);
-      aim(thR, shR, _v4.copy(down).addScaledVector(_r, 0.12).addScaledVector(_f, -kick).normalize(), 1); aim(shR, ftR, _v4.copy(down).addScaledVector(_f, -0.15).normalize(), 1);
+      // legs trail the swing; skimming the ground he tucks them, thighs up and forward, shins hanging
+      const down = _v3.copy(C.up).negate().addScaledVector(C.vel, -0.05).normalize(), kick = Math.sin(h.t * 3) * 0.12 * (1 - (C.tuck || 0));
+      h.tuck = (h.tuck || 0) + ((C.tuck || 0) - (h.tuck || 0)) * Math.min(1, dt * 10);
+      const tk = h.tuck, th = (s) => _v4.copy(down).multiplyScalar(1 - tk * 0.85).addScaledVector(_f, tk * 0.95 + s * kick).addScaledVector(_r, -0.12 * s).normalize();
+      aim(thL, shL, th(1), 1); aim(shL, ftL, _v4.copy(down).addScaledVector(_f, -0.15 - tk * 0.2).normalize(), 1);
+      aim(thR, shR, th(-1), 1); aim(shR, ftR, _v4.copy(down).addScaledVector(_f, -0.15 - tk * 0.2).normalize(), 1);
     } else if (C.mode === 'trunk') {
       const inn = _v3.copy(C.out).negate(), ph = C.phase * Math.PI;
       for (const [th, sh, ft, s, o] of [[thL, shL, ftL, -1, 0], [thR, shR, ftR, 1, Math.PI]]) {
@@ -557,6 +566,8 @@ export function animateRiggedHuman(h, dt, a) {
     grip.parent.worldToLocal(grip.position);
     grip.quaternion.premultiply(_q.setFromRotationMatrix(_m.extractRotation(grip.parent.matrixWorld)).invert());
   }
+  // the sling follows the upper back
+  { const sp = Bn['DEF-spine003']; if (sp && h.j.back) { sp.getWorldPosition(_a); h.j.back.position.copy(h.root.worldToLocal(_a)); h.j.back.position.z -= 0.16; } }
   // the head turns toward something worth watching, smoothly and within a natural range (world-space, so it does
   // not depend on the bone's own axes): right is negative yaw about the up axis, up is positive about body-right
   const head = Bn['DEF-head'];

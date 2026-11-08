@@ -177,12 +177,14 @@ export class UI {
     for (const l of [].concat(lines)) { const words = l.replace(/<[^>]+>/g, '').split(/\s+/).length; this.subQ.push({ text: `<em>${l}</em>`, dur: Math.max(3, words * 0.38 + 1.2) }); }
   }
   say(text, dur = 4) { this.subQ.push({ text, dur }); }
+  // drop any lines still waiting (a new chapter, or back to the title)
+  clearNarration() { this.subQ.length = 0; this.subT = 0; this.sub.classList.remove('show'); }
   toast(text, ttl = 3) {
     const e = el('div', 'toast', text); this.toastBox.appendChild(e);
     this.toasts.push({ el: e, ttl });
     if (this.toasts.length > 6) { const t = this.toasts.shift(); t.el.remove(); }
   }
-  setObjective(chapter, text) { this.chap.textContent = chapter || ''; this.obj.innerHTML = text || ''; this.obj.classList.remove('flash'); void this.obj.offsetWidth; this.obj.classList.add('flash'); }
+  setObjective(chapter, text) { this.chap.textContent = chapter || ''; this.obj.innerHTML = text || ''; if (this.obj.parentElement) this.obj.parentElement.classList.toggle('blank', !chapter && !text); this.obj.classList.remove('flash'); void this.obj.offsetWidth; this.obj.classList.add('flash'); }
   setPrompt(text) { if (text !== this._prompt) { this.prompt.innerHTML = text || ''; this.prompt.style.opacity = text ? 1 : 0; this._prompt = text; } }
   hitmarker(kill) { this.hitT = 0.18; if (kill) { this.hitKill = true; this.hitT = 0.45; } }
   damage(relAngle, d) {

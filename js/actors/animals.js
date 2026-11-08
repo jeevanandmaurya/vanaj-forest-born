@@ -503,6 +503,7 @@ export class Animal {
     this.speed += clamp(this.targetSpeed - this.speed, -acc * dt, acc * dt);
     if (this.limp) this.speed = Math.min(this.speed, this.d.run * (1 - this.limp * 0.55));
     if (this.stagger > 0) { this.stagger -= dt; this.speed *= 0.9; }
+    const x0 = this.pos.x, z0 = this.pos.z;
     const nx = this.pos.x + Math.sin(this.yaw) * this.speed * dt, nz = this.pos.z + Math.cos(this.yaw) * this.speed * dt;
     // water avoidance
     const gy = groundHeight(nx, nz), wl = waterAt(nx, nz);
@@ -513,10 +514,13 @@ export class Animal {
     if (Math.abs(this.pos.x) > HALF - 40) this.pos.x = Math.sign(this.pos.x) * (HALF - 40);
     if (Math.abs(this.pos.z) > HALF - 40) this.pos.z = Math.sign(this.pos.z) * (HALF - 40);
     if (!this.perch && this.dist2(W.player.pos) < 90 * 90) {
-      const hv = W.veg ? W.veg.collide(this.pos, this.radius * 0.6) : false;
-      const hp = W.props && W.props.collide ? W.props.collide(this.pos, this.radius * 0.7) : false;
+      // near the player, animals move through the physics world (sliding round trunks, rocks and walls, and solid
+      // to the player); further off, the cheap circle tests
+      let blocked;
+      if (W.phys && this.dist2(W.player.pos) < 45 * 45 && !this.air) blocked = W.phys.moveActor(this, x0, z0);
+      else blocked = (W.veg ? W.veg.collide(this.pos, this.radius * 0.6) : false) | (W.props && W.props.collide ? W.props.collide(this.pos, this.radius * 0.7) : false);
       // slide round the obstacle instead of grinding into it
-      if ((hv || hp) && this.speed > 0.3) { if (!this.avoidT || this.avoidT <= 0) { this.avoidSide = Math.random() < 0.5 ? -1 : 1; } this.avoidT = 0.8; }
+      if (blocked && this.speed > 0.3) { if (!this.avoidT || this.avoidT <= 0) { this.avoidSide = Math.random() < 0.5 ? -1 : 1; } this.avoidT = 0.8; }
       if (this.avoidT > 0) { this.avoidT -= dt; this.yaw += this.avoidSide * 2.2 * dt * clamp(this.speed / 3, 0.4, 1.4); }
     }
     const g2 = groundHeight(this.pos.x, this.pos.z);

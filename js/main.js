@@ -12,10 +12,12 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { G } from './core/shaderlib.js';
+import { Physics, initPhysics } from './core/physics.js';
+import { LooseThings } from './world/loose.js';
 import { PAINTED, setPaintedSeason } from './core/palette.js';
 import { clamp, lerp, smoothstep } from './core/noise.js';
 import { buildTextures } from './world/textures.js';
-import { TerrainManager, groundHeight, waterAt, renderMapCanvas, height, biomeAt, nearestWaterPoint } from './world/terrain.js';
+import { TerrainManager, groundHeight, waterAt, renderMapCanvas, height, biomeAt, nearestWaterPoint, riverX, riverY, RIVER_W } from './world/terrain.js';
 import { Vegetation, Grass, SP } from './world/flora.js';
 import { VineSystem } from './world/vines.js';
 import { SkySystem } from './world/sky.js';
@@ -122,6 +124,7 @@ class Game {
     // let the bar paint between steps; a hidden tab gets no animation frames, so a timer keeps loading going there
     const prog = (p, t) => { $('load-bar').style.width = (p * 100).toFixed(0) + '%'; $('load-step').textContent = t; return new Promise((r) => { requestAnimationFrame(() => setTimeout(r, 0)); setTimeout(r, 120); }); };
     await prog(0.02, 'Waking the renderer');
+    const physReady = initPhysics();   // Rapier's WASM compiles while the world builds
     const q = this.q;
     const renderer = this.renderer = new THREE.WebGLRenderer({ antialias: q.aa, powerPreference: 'high-performance', stencil: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, q.pr));
@@ -149,6 +152,8 @@ class Game {
     this.vines = new VineSystem(this.scene, this.veg);
     this.cover = new GroundCover(this.scene, this.T || T, q);
     if (PAINTED) this.cover.leaves.visible = false;   // the painted ground draws its own fallen leaves
+    await prog(0.44, 'Shaping the trees close at hand');
+    this.veg.prebuildNear();
     await prog(0.5, 'Placing rocks, termite mounds, the den, the shrine and the village');
     this.props = new Props(this.scene, this.T, this.veg); this.props.build();
     this.groundAO = new GroundAO(256);
@@ -176,19 +181,35 @@ class Game {
     const den = SITES.den; this.player.pos.set(den.x + 3, height(den.x + 3, den.z + 6), den.z + 6);
     this.terrain.update(this.player.pos.x, this.player.pos.z, 1e9, true);
     this.veg.update(this.player.pos, true); this.grass.update(this.player.pos, true); this.cover.update(this.player.pos, true); this.pickups.update(this.player.pos, true);
+    await prog(0.82, 'Waking the physics');
+    await physReady; this.phys = new Physics(this); this.phys.buildProps(this.props); this.phys.sync(this.player.pos, true);
+    this.loose = new LooseThings(this.scene, this.phys);
     await prog(0.86, 'Post-processing');
     this.buildComposer();
     this.setSeason('winter', 'mist'); this.setTime(6.5);
     await prog(0.92, 'Compiling shaders');
     try { this.sky.update(0.016, this.time.hour, this.seasonCfg.decl, this.weather.env, this.camera, this.player.pos, this.season); if (!this.noRender) this.warmShaders(); } catch (e) { console.warn(e); }
+    this.titleShot(4); { const c = this.camera.position; this.terrain.update(c.x, c.z, 1e9, true); this.veg.update(c, true); this.grass.update(c, true); }
     await prog(1, 'Ready');
     window.addEventListener('resize', () => this.resize());
     this.setupMenus();
     $('loading').classList.add('hide');
     $('title').classList.add('show');
-    this.titleCam = 0;
+    this.titleCam = 4;   // past the reach's opening dip to black
     this.last = performance.now();
     requestAnimationFrame((t) => this.frame(t));
+  }
+  // The title drifts down the Pench along its edges: over the water a few metres out from one bank, sweeping
+  // slowly across to the other, always looking downstream (south). The reach runs 1.5-2.9 km from the village at
+  // the river's north end and never looks that way, so the village stays hidden until the story reaches it.
+  // At the end of the reach the picture dips to black and starts again.
+  titleShot(t) {
+    const Z0 = -250, LEN = 1350, SPEED = 3.2, d = (t * SPEED) % LEN, z = Z0 + d;
+    const side = Math.sin(t * 0.045), x = riverX(z) + side * (RIVER_W - 2.5);
+    this.camera.position.set(x, riverY(z) + 4.2 + Math.sin(t * 0.11) * 1.1, z);
+    const zt = z + 45;
+    this.camera.lookAt(riverX(zt) - side * 6, riverY(zt) + 1.6, zt);
+    if (!this.starting) { const f = $('fade'), k = Math.max(0, 1 - d / 12, 1 - (LEN - d) / 12); f.style.transition = 'none'; f.style.opacity = k; }
   }
   // Build every shader program the game will need before play. Three keys a program on the render target it
   // draws to (colour space, tone mapping), so compiling against the screen, as before, made programs the
@@ -253,7 +274,7 @@ class Game {
   makeWorldInterface() {
     const g = this;
     return {
-      get player() { return g.player; }, get night() { return g.sky.night; }, get isDay() { return g.sky.day > 0.5; }, get season() { return g.season; },
+      get player() { return g.player; }, get phys() { return g.phys; }, get night() { return g.sky.night; }, get isDay() { return g.sky.day > 0.5; }, get season() { return g.season; },
       fx: this.fx, audio: this.audio, veg: this.veg,
       nearestPredator: (a, r) => g.eco.nearestPredator(a, r), nearestPrey: (a, r) => g.eco.nearestPrey(a, r),
       damagePlayer: (d, from, o) => g.player.hurt(d, from, o),
@@ -297,6 +318,7 @@ class Game {
     const P = this.player; P.pos.copy(p); P.pos.y = groundHeight(p.x, p.z); P.vel.set(0, 0, 0); P.yaw = yaw; P.bodyYaw = yaw; P.spawn.copy(P.pos);
     P.camPos.set(p.x + Math.sin(yaw) * 3, P.pos.y + 2, p.z + Math.cos(yaw) * 3);
     this.terrain.update(p.x, p.z, 1e9, true); this.veg.update(P.pos, true); this.grass.update(P.pos, true); this.cover.update(P.pos, true); this.pickups.update(P.pos, true);
+    if (this.phys) this.phys.sync(P.pos, true);
     if (this.companion) { this.companion.pos.set(p.x + 2, groundHeight(p.x + 2, p.z + 2), p.z + 2); }
     for (const a of [...this.eco.animals]) if (!a.persistent && a.dist2(P.pos) > 400 * 400) this.eco.remove(a);
   }
@@ -421,6 +443,7 @@ class Game {
   // picture fades in. (It used to freeze on the title for ~3 s: 0.9 s of building, 1.9 s compiling shaders.)
   async startGame(ch, opts = {}) {
     this.requestLock();
+    this.starting = true;
     await this.ui.fade(true, 250);
     $('title').classList.remove('show');
     this.player.revive();
@@ -429,7 +452,7 @@ class Game {
     if (opts.chapterSelect) this.giveChapterKit(ch);
     this.story.start(ch);
     await nextFrame(); await nextFrame();
-    this.ui.fade(false, 900);
+    this.ui.fade(false, 900); this.starting = false;
   }
   giveChapterKit(ch) {
     // sensible starting kit when jumping straight into a later chapter
@@ -447,6 +470,7 @@ class Game {
   }
   async freeRoam() {
     this.requestLock();
+    this.starting = true;
     await this.ui.fade(true, 250);
     this.player.revive();
     $('title').classList.remove('show');
@@ -459,11 +483,12 @@ class Game {
     this.story.ensureChingari();
     this.ui.setObjective('Free roam', 'Press <b>N</b> to change season. Explore Pench.');
     await nextFrame(); await nextFrame();
-    this.ui.fade(false, 900);
+    this.ui.fade(false, 900); this.starting = false;
   }
   // back to the title without reloading: the world stays built, so the next start is instant
   async toTitle() {
     this.save();
+    this.starting = true;
     await this.ui.fade(true, 300);
     this.story.stop();
     this.playing = false; this.paused = false; this.uiBlocking = true;
@@ -472,9 +497,10 @@ class Game {
     this.ui.close(); this.ui.setObjective('', ''); this.ui.setPrompt('');
     if (this.music) this.music.setCombat(0);
     $('btn-continue').style.display = store.get('vanaj-save-v1') ? '' : 'none';
-    this.titleCam = 0;
+    this.titleCam = 4;   // past the reach's opening dip to black
     $('title').classList.add('show');
-    this.ui.fade(false, 900);
+    this.titleShot(4);
+    await this.ui.fade(false, 900); this.starting = false;
   }
   pause() { if (this.paused) return; this.paused = true; this.uiBlocking = true; $('pause').classList.add('show'); }
   resume() { this.paused = false; this.uiBlocking = false; $('pause').classList.remove('show'); $('settings').classList.remove('show'); this.requestLock(); }
@@ -490,6 +516,7 @@ class Game {
   }
   onKey(e) {
     if (e.code === 'F3') { e.preventDefault(); this.perf.cycle(); return; }
+    if (e.code === 'F4' && this.phys) { e.preventDefault(); this.phys.toggleDebug(this.scene); return; }   // show the colliders
     if (!this.playing) return;
     const ui = this.ui;
     if (e.code === 'Tab') { e.preventDefault(); if (!this.paused && !this.player.dead) ui.toggle('inv'); return; }
@@ -744,12 +771,9 @@ class Game {
     G.uTime.value += dt;
     // title screen camera: slow drift over the forest
     if (!this.playing) {
-      this.titleCam += rdt * 0.025;
-      const den = SITES.den; const a = this.titleCam;
-      const cx = den.x - 60 + Math.cos(a) * 80, cz = den.z - 40 + Math.sin(a) * 80;
-      this.camera.position.set(cx, groundHeight(cx, cz) + 14 + Math.sin(a * 2) * 3, cz);
-      this.camera.lookAt(den.x + Math.cos(a + 0.6) * 40, groundHeight(den.x, den.z) + 6, den.z + Math.sin(a + 0.6) * 40);
-      this.time.hour = 7.35 + Math.sin(this.titleCam * 0.3) * 0.15;
+      this.titleCam += rdt;
+      this.titleShot(this.titleCam);
+      this.time.hour = 7.35 + Math.sin(this.titleCam * 0.012) * 0.15;
     } else if (dt > 0) {
       // wheel/look
       if (this.input.wheel && !this.uiBlocking) { const ws = this.inv.weapons(); const i = ws.indexOf(this.inv.equipped); P.equip(ws[(i + this.input.wheel + ws.length) % ws.length]); }
@@ -766,6 +790,8 @@ class Game {
     // world streaming
     this.terrain.update(focus.x, focus.z, 4);
     this.veg.update(this.camera.position); this.grass.update(this.camera.position); this.cover.update(this.camera.position); this.pickups.update(focus);
+    if (this.phys && this.playing) { this.phys.sync(P.pos); this.loose.update(P.pos); }
+    if (this.playing) this.veg.updateNear(P.pos);
     this.vines.update(dt || rdt * 0.2, this.camera.position);
     pf.mark('streaming');
     // sky & weather
@@ -776,6 +802,7 @@ class Game {
     pf.mark('sky');
     // animals
     if (this.playing && dt > 0) { this.eco.update(dt, this.W); try { this.birds.update(dt); this.tracks.update(dt); this.places.update(dt, this.player.pos.x, this.player.pos.z, this.time.day * 1440 + this.time.hour * 60); } catch (e) { if (!this._birdErr) { this._birdErr = 1; console.error('birds', e); } } }
+    if (this.phys && this.playing) this.phys.step(dt);
     pf.mark('animals');
     // fires: campfires burn down
     this.nearFire = false;

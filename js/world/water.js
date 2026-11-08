@@ -24,8 +24,8 @@ const PAINTED_WATER = {
 const PAINTED_FRAG = /* glsl */`
   ${NOISE_GLSL}
   ${ATMOS_GLSL}
-  uniform float uTime, uRain, uDay, uSunVis, uFlash, uTreeline; uniform vec3 uSunDir, uSunCol, uSkyZen, uSkyHor, uShallow, uDeep, uLeafShade; uniform vec2 uFlow;
-  varying vec3 vWP; varying float vDepth; varying vec2 vFD;
+  uniform float uTime, uRain, uDay, uSunVis, uFlash, uTreeline, uFlowSpd; uniform vec3 uSunDir, uSunCol, uSkyZen, uSkyHor, uShallow, uDeep, uLeafShade; uniform vec2 uFlow;
+  varying vec3 vWP; varying float vDepth; varying vec2 vFD; varying vec2 vRiv;
   float aaStep(float e, float x) { float w = fwidth(x) * 0.75 + 1e-4; return smoothstep(e - w, e + w, x); }
   void main(){
     vec2 p = vWP.xz; float t = uTime, depth = max(vDepth, 0.0);
@@ -42,8 +42,9 @@ const PAINTED_FRAG = /* glsl */`
     refl = mix(refl, mix(uLeafShade, uShallow, 0.35) * 0.8 * light, 1.0 - aaStep(tl, R.y));   // the forest's reflection: a soft green, not a dark slab
     col = mix(col, refl, (0.2 + 0.35 * aaStep(0.5, 1.0 - NdV)) * 0.75);
     // ripple lines: contour lines of slow noise; along the current they stretch into streaks
-    vec2 fd = normalize(vFD + vec2(1e-4, 0.0));
-    vec2 q = mix(p * 0.35, vec2(dot(p, vec2(fd.y, -fd.x)) * 0.9, dot(p, fd) * 0.12 - t * uFlow.y * 0.9), 1.0 - still);
+    // streaks laid out in the river's own coordinates (vRiv: metres along its centreline, metres across it), so
+    // they follow every bend; world position projected on a local direction skewed them where the river turned
+    vec2 q = mix(p * 0.35, vec2(vRiv.y * 0.9, vRiv.x * 0.12 - t * uFlowSpd * 0.12), 1.0 - still);   // carried at uFlowSpd m/s
     float rn = vnoise(q + t * 0.04 * still) * 0.7 + vnoise(q * 2.3 - t * 0.06) * 0.3;
     float fadeD = 1.0 - smoothstep(30.0, 140.0, distance(cameraPosition, vWP));
     float lineL = aaStep(0.94, sin(rn * 12.0)) * fadeD, lineD = aaStep(0.96, sin(rn * 12.0 + 2.2)) * fadeD;
@@ -67,7 +68,7 @@ const PAINTED_FRAG = /* glsl */`
     float foam = 1.0 - smoothstep(wd * 0.5, wd, abs(depth - lap));
     foam = max(foam, (1.0 - smoothstep(wd * 0.5, wd, abs(depth - lap * 2.6))) * 0.5);
     foam = max(foam, (1.0 - smoothstep(wd * 0.6, wd * 1.4, vDepth)) * smoothstep(-wd * 1.5, 0.0, vDepth));   // the waterline itself, not the dry bank past it
-    foam = max(foam, (1.0 - still) * aaStep(0.66, vnoise(p * 1.4 + fd * t * 1.6)) * (1.0 - smoothstep(0.15, 0.5, depth)) * 0.8);
+    foam = max(foam, (1.0 - still) * aaStep(0.66, vnoise(vec2(vRiv.y, vRiv.x - t * uFlowSpd) * 1.4)) * (1.0 - smoothstep(0.15, 0.5, depth)) * 0.8);
     foam = max(foam, ring);
     col = mix(col, vec3(0.92, 0.94, 0.9) * light, foam * 0.85);
     col += vec3(0.8, 0.85, 1.0) * uFlash * 0.3;
@@ -81,14 +82,14 @@ function waterMaterial(riseRef, flow, treeline) {
     uRise: riseRef, uRain: { value: 0 }, uSkyZen: { value: new THREE.Color() }, uSkyHor: { value: new THREE.Color() },
     uFlow: { value: new THREE.Vector2(0, flow) }, uDay: { value: 1 }, uTreeline: { value: treeline },
     uTurb: { value: 1 }, uScatter: { value: new THREE.Color(0.05, 0.08, 0.07) }, uTreeCol: { value: new THREE.Color(0.06, 0.08, 0.045) }, uAlgae: { value: 0 },
-    uShallow: { value: new THREE.Color() }, uDeep: { value: new THREE.Color() }, uLeafShade: PU.uLeafShade,
+    uShallow: { value: new THREE.Color() }, uDeep: { value: new THREE.Color() }, uLeafShade: PU.uLeafShade, uFlowSpd: { value: 0.5 },
   };
   const m = new THREE.ShaderMaterial({
     uniforms: u, transparent: true, depthWrite: false, fog: false,
     vertexShader: `
-      attribute float aDepth; attribute vec2 aFlowDir;
-      uniform float uRise; varying vec3 vWP; varying float vDepth; varying vec2 vFD;
-      void main(){ vec3 p = position; p.y += uRise; vec4 w = modelMatrix * vec4(p,1.0); vWP = w.xyz; vDepth = aDepth + uRise; vFD = aFlowDir;
+      attribute float aDepth; attribute vec2 aFlowDir; attribute vec2 aRiver;
+      uniform float uRise; varying vec3 vWP; varying float vDepth; varying vec2 vFD; varying vec2 vRiv;
+      void main(){ vec3 p = position; p.y += uRise; vec4 w = modelMatrix * vec4(p,1.0); vWP = w.xyz; vDepth = aDepth + uRise; vFD = aFlowDir; vRiv = aRiver;
         gl_Position = projectionMatrix * viewMatrix * w; }`,
     fragmentShader: PAINTED ? PAINTED_FRAG : `
       ${NOISE_GLSL}
@@ -192,16 +193,18 @@ export class Water {
     this.buildRiver(); this.buildLake(); this.buildHoles();
   }
   buildRiver() {
-    const pos = [], dep = [], fd = [], idx = [];
+    const pos = [], dep = [], fd = [], idx = [], riv = [];
     const W2 = RIVER_W + 10, across = 36, step = 2;   // fine enough that per-vertex depth follows the banks
-    let rows = 0;
+    let rows = 0, sAlong = 0, prevX = riverX(-HALF);
     for (let z = -HALF; z <= RIVER_END_Z + 60; z += step) {
       const cx = riverX(z), y = riverY(z);
+      if (rows) sAlong += Math.hypot(cx - prevX, step); prevX = cx;
       const dxdz = (riverX(z + 1) - riverX(z - 1)) / 2;
       const fl = new THREE.Vector2(dxdz, 1).normalize();
       for (let k = 0; k <= across; k++) {
         const x = cx - W2 + (2 * W2) * (k / across);
         pos.push(x, y, z); dep.push(y - height(x, z)); fd.push(fl.x, fl.y);
+        riv.push(sAlong + (x - cx) * fl.x, (x - cx) * fl.y);   // along the centreline, across it
       }
       rows++;
     }
@@ -209,7 +212,7 @@ export class Water {
       const a = r * (across + 1) + k, b = a + 1, c = a + across + 1, d = c + 1;
       idx.push(a, c, b, b, c, d);
     }
-    this.river = this.mesh(pos, dep, fd, idx, this.riseRiver, 1.0, 0.58);
+    this.river = this.mesh(pos, dep, fd, idx, this.riseRiver, 1.0, 0.58, riv);
   }
   buildLake() {
     const pos = [], dep = [], fd = [], idx = [];
@@ -247,11 +250,13 @@ export class Water {
       this.holes.push(this.mesh(pos, dep, fd, idx, this.riseHole, 0, clamp(14 / (w.r + 6), 0.25, 0.6)));
     }
   }
-  mesh(pos, dep, fd, idx, rise, flow, treeline = 0.3) {
+  mesh(pos, dep, fd, idx, rise, flow, treeline = 0.3, riv = null) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.setAttribute('aDepth', new THREE.Float32BufferAttribute(dep, 1));
     g.setAttribute('aFlowDir', new THREE.Float32BufferAttribute(fd, 2));
+    if (!riv) { riv = []; for (let i = 0; i < pos.length; i += 3) riv.push(pos[i + 2], pos[i]); }   // still water: world coordinates
+    g.setAttribute('aRiver', new THREE.Float32BufferAttribute(riv, 2));
     g.setIndex(idx); g.computeBoundingSphere();
     const mat = waterMaterial(rise, flow, treeline);
     this.mats.push(mat);
@@ -267,6 +272,7 @@ export class Water {
       m.uniforms.uAlgae.value = c.algae;
       const pw = PAINTED_WATER[season] || PAINTED_WATER.winter;
       m.uniforms.uShallow.value.set(pw[0]); m.uniforms.uDeep.value.set(pw[1]);
+      m.uniforms.uFlowSpd.value = { winter: 0.5, summer: 0.25, monsoon: 2.2, post: 0.9 }[season] ?? 0.5;   // m/s: clear and slow in winter, a spate in the rains
     }
   }
   update(sky, rain) {

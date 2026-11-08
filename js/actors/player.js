@@ -20,7 +20,7 @@ export const WEAPONS = {
 };
 
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _n = new THREE.Vector3();
-const _qt = new THREE.Quaternion(), _up0 = new THREE.Vector3(0, 1, 0);
+const _qt = new THREE.Quaternion(), _up0 = new THREE.Vector3(0, 1, 0), _v4 = new THREE.Vector3();
 
 export class Player {
   constructor(game) {
@@ -51,7 +51,7 @@ export class Player {
     this.vmFire = new THREE.PointLight(0xff8a3a, 0, 3, 1.5); this.vmScene.add(this.vmFire);
     this.vmSkin = skinMaterial(0x7a5038, 0.4, 'skin-vm');
     this.vm = buildViewArms(this.vmSkin); this.vmScene.add(this.vm.root);
-    if (PAINTED) toonify(this.vm.root, { outline: 0.004, soften: 2 });
+    if (PAINTED) toonify(this.vm.root, { outline: 0, soften: 2 });   // no ink here: at the arms' tiny scale the hull swelled round the camera and inked the whole screen
     this.vmW = buildWeapons(g.T);
     this.vmFlame = this.makeVmFlame(); this.vmScene.add(this.vmFlame);
     this.equip('fists');
@@ -124,6 +124,7 @@ export class Player {
     input.mdx = 0; input.mdy = 0;
     if (this.climb) { this.updateClimb(dt, input); this.postUpdate(dt, input); return; }
     if (this.canopy.mode) { this.canopy.update(dt, input); this.postUpdate(dt, input); return; }
+    this.canopy.updateBend(dt);   // a limb he just left springs back
     // movement intent
     const k = g.uiBlocking ? {} : input.keys;
     let ix = (k.KeyD ? 1 : 0) - (k.KeyA ? 1 : 0), iz = (k.KeyW ? 1 : 0) - (k.KeyS ? 1 : 0);
@@ -162,7 +163,7 @@ export class Player {
     }
     // slope sliding
     groundNormal(this.pos.x, this.pos.z, _n);
-    if (this.onGround && _n.y < 0.62 && !this.swimming) { this.vel.x += _n.x * 14 * dt; this.vel.z += _n.z * 14 * dt; }
+    if (!g.phys && this.onGround && _n.y < 0.62 && !this.swimming) { this.vel.x += _n.x * 14 * dt; this.vel.z += _n.z * 14 * dt; }
     // Space facing a trunk climbs it
     if (input.pressed('Space') && this.onGround && !this.swimming && !this.blocking && !this.aim && !g.uiBlocking && this.canopy.tryTrunk()) { this.postUpdate(dt, input); return; }
     // jump / gravity
@@ -174,21 +175,47 @@ export class Player {
       if (input.pressed('Space') && this.onGround && !this.blocking && this.stamina > 8 && !g.uiBlocking) { this.vel.y = 5.4; this.onGround = false; this.stamina -= 8; g.audio.footstep(this.surface(), 0.8); }
       this.vel.y -= 20 * dt;
     }
-    this.pos.addScaledVector(this.vel, dt);
-    // collisions
-    g.veg.collide(this.pos, 0.35); g.props.collide(this.pos, 0.35);
-    for (const n of g.npcs || []) { const dx = this.pos.x - n.pos.x, dz = this.pos.z - n.pos.z, d = Math.hypot(dx, dz); if (d < 0.6 && d > 0.01) { this.pos.x = n.pos.x + dx / d * 0.6; this.pos.z = n.pos.z + dz / d * 0.6; } }
-    for (const a of g.eco.animals) { if (a.dead || a.perch) continue; const rr = a.radius + 0.3; const dx = this.pos.x - a.pos.x, dz = this.pos.z - a.pos.z, d2 = dx * dx + dz * dz; if (d2 < rr * rr && d2 > 1e-4) { const d = Math.sqrt(d2); this.pos.x = a.pos.x + dx / d * rr; this.pos.z = a.pos.z + dz / d * rr; } }
+    // Movement through the physics world: Rapier's character controller slides Vanaj along trunks, rocks, walls,
+    // animals and villagers, steps him up small ledges, holds him to the ground going down slopes and shoves loose
+    // stones and sticks. Swimming keeps its own buoyancy (above) but the river bed, banks and rocks still stop him.
+    let phys = null;
+    if (g.phys && this.swimming) {
+      const m = g.phys.movePlayer(this.pos, _v4.copy(this.vel).multiplyScalar(dt), true);
+      this.pos.x += m.x; this.pos.y += m.y; this.pos.z += m.z;
+      if (dt > 0) { this.vel.x = m.x / dt; this.vel.z = m.z / dt; }
+    } else if (g.phys) {
+      const want = _v4.copy(this.vel).multiplyScalar(dt);
+      // standing on the ground, press down only lightly: a full gravity step into a slope is slid along it by the
+      // controller, and he crept downhill while standing still
+      if (this.onGround && this.vel.y <= 0) want.y = -0.002;
+      phys = g.phys.movePlayer(this.pos, want);
+      if (Math.abs(want.x) + Math.abs(want.z) < 1e-5) { phys.x = 0; phys.z = 0; }
+      this.pos.x += phys.x; this.pos.y += phys.y; this.pos.z += phys.z;
+      if (dt > 0) { this.vel.x = phys.x / dt; this.vel.z = phys.z / dt; }   // what he actually managed, sliding along a wall
+      if (this.vel.y > 0 && phys.y < this.vel.y * dt * 0.5) this.vel.y = 0;   // head against a limb
+    } else {
+      this.pos.addScaledVector(this.vel, dt);
+      g.veg.collide(this.pos, 0.35); g.props.collide(this.pos, 0.35);
+    }
+    if (!g.phys) for (const n of g.npcs || []) { const dx = this.pos.x - n.pos.x, dz = this.pos.z - n.pos.z, d = Math.hypot(dx, dz); if (d < 0.6 && d > 0.01) { this.pos.x = n.pos.x + dx / d * 0.6; this.pos.z = n.pos.z + dz / d * 0.6; } }
+    if (!phys) for (const a of g.eco.animals) { if (a.dead || a.perch) continue; const rr = a.radius + 0.3; const dx = this.pos.x - a.pos.x, dz = this.pos.z - a.pos.z, d2 = dx * dx + dz * dz; if (d2 < rr * rr && d2 > 1e-4) { const d = Math.sqrt(d2); this.pos.x = a.pos.x + dx / d * rr; this.pos.z = a.pos.z + dz / d * rr; } }
     const lim = HALF - 60; this.pos.x = clamp(this.pos.x, -lim, lim); this.pos.z = clamp(this.pos.z, -lim, lim);
     let gy2 = groundHeight(this.pos.x, this.pos.z);
     // keep the player on the watchtower platform (railings)
     { const t = g.props.towerTop; if (t && this.pos.y > t.y - 0.6 && this.pos.y < t.y + 3 && Math.abs(this.pos.x - t.x) < 3 && Math.abs(this.pos.z - t.z) < 3) { this.pos.x = clamp(this.pos.x, t.x - 1.7, t.x + 1.7); this.pos.z = clamp(this.pos.z, t.z - 1.7, t.z + 1.7); } }
     const plat = g.props.platformHeight ? g.props.platformHeight(this.pos) : -1e9;
     if (plat > gy2) gy2 = plat;
-    if (!this.swimming) {
+    if (phys) {
+      const vy = this.vel.y;
+      if (phys.grounded && vy <= 0) {
+        if (!this.onGround) { if (vy < -12) this.hurt((-vy - 12) * 6, null, { kind: 'fall' }); this.landed(vy); }
+        this.vel.y = 0; this.onGround = true;
+      } else this.onGround = false;
+      if (this.pos.y < gy2 - 0.5) { this.pos.y = gy2; this.vel.y = 0; this.onGround = true; }   // never through the ground if a collider is late
+    } else if (!this.swimming) {
       if (this.pos.y <= gy2) {
         if (!this.onGround && this.vel.y < -12) { const dmg = (-this.vel.y - 12) * 6; this.hurt(dmg, null, { kind: 'fall' }); }
-        if (!this.onGround) { g.audio.footstep(this.surface(), 1.1, null, 0.4); this.dip.v += Math.max(-4, this.vel.y * 0.16); }   // weight lands in the knees
+        if (!this.onGround) this.landed(this.vel.y);
         this.pos.y = gy2; this.vel.y = 0; this.onGround = true;
       } else if (this.onGround && this.pos.y - gy2 < 0.45 && this.vel.y <= 0) { this.pos.y = gy2; this.vel.y = 0; }
       else this.onGround = false;
@@ -217,6 +244,14 @@ export class Player {
     // combat input
     this.combat(dt, input);
     this.postUpdate(dt, input);
+  }
+  // touching down: the weight goes into the knees (a dip on a spring); from a real drop he absorbs it in a short
+  // crouch and kicks up dust
+  landed(vy) {
+    const g = this.g;
+    g.audio.footstep(this.surface(), 1.1, null, 0.4);
+    this.dip.v += Math.max(-4, vy * 0.16);
+    if (vy < -8) { this.landT = Math.min(0.45, 0.2 + (-vy - 8) * 0.03); g.fx.dust(this.pos, Math.min(2, (-vy - 6) * 0.15)); }
   }
   // true on the frame a foot plants. Each foot's height (from the animation, relative to the body root) is tracked
   // against its own recent low and high, so it works for any clip, speed and body size. Without a rig: a timer at
@@ -264,7 +299,15 @@ export class Player {
       kneel: a && (a.type === 'harvest' || a.type === 'finish') ? Math.sin(Math.min(1, a.t / a.dur) * Math.PI) : 0,
     };
     if (this.climb) { anim.speed = 2; anim.air = false; }
+    this.landT = Math.max(0, (this.landT || 0) - dt);
+    if (this.landT > 0 && this.onGround) { anim.crouch = 1; anim.speed = Math.min(anim.speed, 1); }
     const cm = this.canopy.mode;
+    // hands busy (climbing, hanging, swimming): the weapon goes on his back, and back in hand after
+    const stow = (!!cm && cm !== 'limb') || this.swimming;
+    if (stow !== !!this.stowed) {
+      this.stowed = stow; const w = g.inv.equipped, m = this.W3[w];
+      if (m && w !== 'fists') { if (stow && this.body.j.back) { this.body.j.back.add(m); m.position.set(0, 0, -0.3); } else this.equip(w); }
+    }
     if (cm) { anim.canopy = this.canopy.pose; anim.air = cm === 'air'; anim.speed = cm === 'limb' ? this.speed : 0; anim.crouch = 0; }
     // something to watch: the nearest animal ahead, or Kaali when standing about (picked a few times a second)
     this.look.t -= dt;
@@ -352,8 +395,9 @@ export class Player {
         const px = tgt.x + dir.x * dist * s, pz = tgt.z + dir.z * dist * s, py = tgt.y + dir.y * dist * s;
         if (py < groundHeight(px, pz) + 0.35) { d = dist * (s - 0.25) + 0.3; break; }
       }
-      // trunks, boulders and walls along the boom (vertical cylinders)
-      { const ex = tgt.x + dir.x * d, ez = tgt.z + dir.z * d;
+      // trunks, limbs, rocks and walls along the boom: a physics ray from the shoulder back to the camera
+      if (g.phys) { const toi = g.phys.rayStatic(tgt, dir, d); if (toi !== null) d = Math.max(0.35, toi - 0.25); }
+      else { const ex = tgt.x + dir.x * d, ez = tgt.z + dir.z * d;
         const f = Math.min(g.veg.segmentHit(tgt.x, tgt.z, ex, ez, 0.28), g.props.segmentHit ? g.props.segmentHit(tgt.x, tgt.z, ex, ez, 0.28) : 1);
         if (f < 1) d = Math.max(0.35, d * f); }
       const want = _v3.copy(tgt).addScaledVector(dir, d);
@@ -604,15 +648,21 @@ export class Player {
         continue;
       }
       const gy = groundHeight(p.pos.x, p.pos.z);
-      // swept test against trunks and boulders so fast arrows cannot tunnel through
-      const prevX = p.pos.x - step.x, prevZ = p.pos.z - step.z;
-      const fT = p.pos.y < gy + 9 ? Math.min(g.veg.segmentHit(prevX, prevZ, p.pos.x, p.pos.z, 0.02), g.props.segmentHit ? g.props.segmentHit(prevX, prevZ, p.pos.x, p.pos.z, 0.02) : 1) : 1;
+      // swept test so fast arrows cannot tunnel: a physics ray through the static world (trunks, limbs, rocks,
+      // props, ground), or without physics the trunk and boulder circles
+      const prevX = p.pos.x - step.x, prevZ = p.pos.z - step.z, sl = step.length();
+      let fT = 1;
+      if (g.phys && sl > 1e-4) { const toi = g.phys.rayStatic(_v1.set(prevX, p.pos.y - step.y, prevZ), _v2.copy(step).multiplyScalar(1 / sl), sl); if (toi !== null) fT = toi / sl; }
+      else if (p.pos.y < gy + 9) fT = Math.min(g.veg.segmentHit(prevX, prevZ, p.pos.x, p.pos.z, 0.02), g.props.segmentHit ? g.props.segmentHit(prevX, prevZ, p.pos.x, p.pos.z, 0.02) : 1);
       const tr = fT < 1;
       if (tr) { p.pos.set(prevX + step.x * fT, p.pos.y - step.y * (1 - fT), prevZ + step.z * fT); p.mesh.position.copy(p.pos).addScaledVector(dirN, 0.12); }
+      // a loose stone or stick: knocked away, and the shaft drops to the ground beside it
+      const knocked = tr && g.phys && g.phys.knock(_v2.copy(step).normalize(), p.kind === 'spear' ? 9 : 3, p.pos);
+      if (knocked) { p.pos.y = gy + 0.05; p.mesh.position.copy(p.pos); p.mesh.quaternion.setFromUnitVectors(_v1.set(0, 1, 0), _v3.set(dirN.x, 0.02, dirN.z).normalize()); }
       if (p.pos.y < gy || tr || p.life <= 0) {
         p.done = true;
         if (p.pos.y < gy) p.pos.y = gy + 0.1;
-        g.audio.impact(tr ? 'wood' : 'whiff', p.pos, 0.6);
+        g.audio.impact(knocked ? 'stone' : tr ? 'wood' : 'whiff', p.pos, 0.6);
         const wl = waterAt(p.pos.x, p.pos.z);
         if (wl > gy) { g.audio.splash(p.pos, 0.4); g.scene.remove(p.mesh); continue; }
         this.stuck.push({ mesh: p.mesh, item: p.kind === 'spear' ? 'spear' : (Math.random() < 0.7 ? 'arrow' : null), ground: p.pos.clone() });

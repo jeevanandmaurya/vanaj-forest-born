@@ -2,8 +2,8 @@
 // seasonal foliage (leaf fall, palash/mahua flowering), wind, grass tufts, trunk collision and langur perches.
 import * as THREE from 'three';
 import { mulberry32, hash2, clamp, smoothstep } from '../core/noise.js';
-import { G, patch, WIND_VERTEX, NOISE_GLSL } from '../core/shaderlib.js';
-import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { G, patch, WIND_VERTEX, BEND_DECL, BEND_VERTEX, NOISE_GLSL } from '../core/shaderlib.js';
+import { mergeVertices, mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { height, biomeAt, waterAt, CHUNK, WATERHOLES, lakeE } from './terrain.js';
 import { PAINTED, PU, ACCENT } from '../core/palette.js';
 import { toon } from '../core/toon.js';
@@ -183,6 +183,7 @@ function growBranch(gb, leaves, rng, start, dir, L, r0, depth, spec, ctx) {
     p.addScaledVector(d, L / segs);
   }
   tube(gb, pts, rads, depth === 0 ? 6 : 4, (q) => 0.18 + 0.5 * clamp((q[1] - ctx.H * 0.4) / ctx.H, 0, 1) * (depth + 1) * 0.5, rng(), 1);
+  if (ctx.paths && depth === 0) ctx.paths.push({ level: 1, pts: pts.map((q, i) => [q[0], q[1], q[2], rads[i]]) });
   // sub-branches
   if (depth < 1) {
     for (let k = 0; k < spec.sub; k++) {
@@ -283,7 +284,7 @@ function growSkeleton(P, rng) {
 }
 
 function meshSkeleton(gb, sk, P, rng, detail, H) {
-  const fl = P.flute, flPh = rng() * 6.28;
+  const fl = P.flute, flPh = sk.flPh ?? (sk.flPh = rng() * 6.28);   // (the near-detail mesh reuses the phase)
   for (const b of sk.branches) {
     if (detail === 1 && b.level >= 2) continue;
     if (b.level >= 3) continue;   // finest twigs sit inside the leaf clusters; not worth their vertices
@@ -316,6 +317,60 @@ function meshSkeleton(gb, sk, P, rng, detail, H) {
   }
 }
 
+// The near-detail bark (Vegetation.updateNear): the same skeleton, but every branch a smooth Catmull-Rom curve
+// through its sections (three rings per section, so the limbs Vanaj climbs bend instead of kinking), rounder
+// rings, and the finest twigs too. Rings are framed on the curve's own tangent, keeping the sections' twist so
+// the flutes line up with the instanced version it replaces.
+const _h = { p0: new THREE.Vector3(), p1: new THREE.Vector3(), p2: new THREE.Vector3(), p3: new THREE.Vector3(), pos: new THREE.Vector3(), tan: new THREE.Vector3(), N: new THREE.Vector3(), B: new THREE.Vector3(), X: new THREE.Vector3(), d: new THREE.Vector3(), q: new THREE.Quaternion() };
+function meshSkeletonHi(gb, sk, P, rng, H) {
+  const fl = P.flute, flPh = sk.flPh || 0, { p0, p1, p2, p3, pos, tan, N, B, X, d, q } = _h;
+  for (const b of sk.branches) {
+    const S = b.sections, n = S.length; if (n < 2) continue;
+    const segs = b.level >= 3 ? 4 : Math.max(5, Math.round(b.segs * 1.6)), sub = b.level >= 3 ? 1 : 3;
+    const base = gb.p.length / 3, uRep = Math.max(1, Math.round(2 * Math.PI * S[0].r / 0.9));
+    let len = 0, rows = 0; const last = new THREE.Vector3();
+    for (let i = 0; i < n; i++) for (let k = 0; k < (i === n - 1 ? 1 : sub); k++) {
+      const t = k / sub, i1 = Math.min(n - 1, i + 1);
+      p0.copy(S[Math.max(0, i - 1)].p); p1.copy(S[i].p); p2.copy(S[i1].p); p3.copy(S[Math.min(n - 1, i + 2)].p);
+      const t2 = t * t, t3 = t2 * t;
+      pos.set(0, 0, 0).addScaledVector(p1, 2).addScaledVector(d.subVectors(p2, p0), t)
+        .addScaledVector(d.copy(p0).multiplyScalar(2).addScaledVector(p1, -5).addScaledVector(p2, 4).sub(p3), t2)
+        .addScaledVector(d.copy(p3).sub(p0).addScaledVector(p1, 3).addScaledVector(p2, -3), t3).multiplyScalar(0.5);
+      tan.subVectors(p2, p0).addScaledVector(d.copy(p0).multiplyScalar(2).addScaledVector(p1, -5).addScaledVector(p2, 4).sub(p3), 2 * t)
+        .addScaledVector(d.copy(p3).sub(p0).addScaledVector(p1, 3).addScaledVector(p2, -3), 3 * t2);
+      q.copy(S[i].q).slerp(S[i1].q, t);
+      if (tan.lengthSq() < 1e-8) tan.set(0, 1, 0).applyQuaternion(q);
+      tan.normalize();
+      X.set(1, 0, 0).applyQuaternion(q); N.copy(X).addScaledVector(tan, -X.dot(tan)); if (N.lengthSq() < 1e-6) N.set(0, 0, 1).cross(tan); N.normalize();
+      B.crossVectors(N, tan);
+      if (rows > 0) len += pos.distanceTo(last); last.copy(pos); rows++;
+      let r = S[i].r + (S[i1].r - S[i].r) * t;
+      if (b.level === 0) r *= 1 + P.flare * Math.exp(-Math.max(0, pos.y) * 1.5);
+      const hf = clamp(pos.y / H, 0, 1);
+      const wv = b.level === 0 ? Math.pow(hf, 2.2) * 0.22 : 0.16 + 0.22 * Math.min(b.level, 2) * hf;
+      const ao = (0.62 + 0.38 * clamp((pos.y + 0.2) / 2.4, 0, 1)) * (b.level === 0 ? 1 : 0.92);
+      for (let j = 0; j <= segs; j++) {
+        const a = (j / segs) * Math.PI * 2, c = Math.cos(a), s = Math.sin(a);
+        let m = 1;
+        if (fl && b.level === 0) m = 1 + fl.amp * Math.pow(Math.max(0, Math.cos(a * fl.n + flPh + pos.y * 0.15)), 1.6) * Math.exp(-Math.max(0, pos.y + 0.3) / fl.h);
+        const nx = N.x * c + B.x * s, ny = N.y * c + B.y * s, nz = N.z * c + B.z * s, rr = r * m, gro = fl && b.level === 0 ? 0.8 + 0.2 * clamp(m - 0.6, 0, 1) : 1;
+        gb.vert(pos.x + nx * rr, pos.y + ny * rr, pos.z + nz * rr, nx, ny, nz, (j / segs) * uRep, len / 1.7, ao * gro, ao * gro, ao * gro, wv, rng());
+      }
+    }
+    for (let i = 0; i < rows - 1; i++) for (let j = 0; j < segs; j++) {
+      const a = base + i * (segs + 1) + j, bb = a + 1, c = a + segs + 1, dd = c + 1;
+      gb.i.push(a, c, bb, bb, c, dd);
+    }
+  }
+}
+// the tail of an indexed geometry from vertex v0 and index i0 on (the roots, appended after the skeleton)
+function tailOf(g, v0, i0) {
+  const out = new THREE.BufferGeometry();
+  for (const k in g.attributes) { const a = g.attributes[k]; out.setAttribute(k, new THREE.Float32BufferAttribute(a.array.slice(v0 * a.itemSize), a.itemSize)); }
+  out.setIndex(Array.from(g.index.array.slice(i0), (i) => i - v0));
+  return out;
+}
+
 function buildGeneric(specName, seed) {
   const P = GROW[specName], spec = SPEC[specName], rng = mulberry32(seed);
   const sk = growSkeleton(P, rng);
@@ -324,7 +379,7 @@ function buildGeneric(specName, seed) {
   meshSkeleton(gb, sk, P, rng, 0, H);
   meshSkeleton(lb, sk, P, mulberry32(seed + 7), 1, H);
   // surface roots running out from the base into the litter
-  const r0 = sk.r0;
+  const r0 = sk.r0, rootV = gb.p.length / 3, rootI = gb.i.length;
   // they rise out of the flare, meander a little, run half-buried and dive under the litter within a few trunk
   // widths, tapering fast; shorter secondary roots between the main ones. Bark at its true scale (it used to be
   // wrapped once round each root, which stretched it smooth and plastic), darker where they meet the soil.
@@ -369,7 +424,27 @@ function buildGeneric(specName, seed) {
   }
   // the climbable skeleton: trunk and every limb thick enough to grip (x, y, z, radius per section)
   const climb = sk.branches.filter((b) => b.level <= 2 && b.sections[0].r > 0.045).map((b) => ({ level: b.level, pts: b.sections.map((q) => [q.p.x, q.p.y, q.p.z, q.r]) }));
-  return { bark: gb.geo(), leaf: sk.leaves.length ? leafG.geo() : null, bark1: lb.geo(), leaf1: sk.leaves.length ? leaf1.geo() : null, H, trunkR: r0 * (1.25 + (P.flute ? P.flute.amp * 0.5 : 0)), crownY: crownC.y || H * 0.7, crownR, barkKind: spec.bark, leafKind: spec.leaf, climb };
+  const tmpl = { bark: gb.geo(), leaf: sk.leaves.length ? leafG.geo() : null, bark1: lb.geo(), leaf1: sk.leaves.length ? leaf1.geo() : null, H, trunkR: r0 * (1.25 + (P.flute ? P.flute.amp * 0.5 : 0)), crownY: crownC.y || H * 0.7, crownR, barkKind: spec.bark, leafKind: spec.leaf, climb };
+  // near detail, built the first time a tree of this kind stands close to Vanaj: the smooth bark (with the same
+  // roots), and the crown with a scatter of small leaf sprites round every twig
+  if (PAINTED) tmpl.makeHi = () => {
+    const hb = new GB(), hr = mulberry32(seed + 13);
+    meshSkeletonHi(hb, sk, P, hr, H);
+    const bark = mergeGeometries([hb.geo(), tailOf(tmpl.bark, rootV, rootI)]); bark.computeBoundingSphere();
+    let leaf = null;
+    if (tmpl.leaf) {
+      const lh = new GB(), size = (P.leafSize[0] + P.leafSize[1]) * 0.5, O = new THREE.Vector3(), Nn = new THREE.Vector3();
+      for (const l of sk.leaves) for (let k = 0; k < 3; k++) {
+        const p = l.p.clone().add(O.set(hr() - 0.5, hr() - 0.4, hr() - 0.5).multiplyScalar(size * 0.45));
+        Nn.subVectors(p, crownC).normalize(); Nn.y += 0.3; Nn.normalize();
+        const ao = (0.7 + 0.3 * clamp((p.y - crownC.y) / Math.max(1, crownR) + 0.5, 0, 1)) * (0.92 + hr() * 0.16);
+        sprite(lh, p, size * (0.3 + hr() * 0.16), Nn, ao, spec.tint, 0.7 + 0.3 * clamp((p.y - H * 0.35) / H, 0, 1), hr());
+      }
+      leaf = mergeGeometries([tmpl.leaf, lh.geo()]); leaf.computeBoundingSphere();
+    }
+    return { bark, leaf };
+  };
+  return tmpl;
 }
 
 function buildBamboo(seed) {
@@ -378,6 +453,7 @@ function buildBamboo(seed) {
   const lb = new GB(), ll = new GB();
   const crownC = new THREE.Vector3(0, 7, 0);
   let maxH = 0;
+  const culms = [];
   for (let c = 0; c < N; c++) {
     const a = rng() * 6.28, rad = Math.sqrt(rng()) * 1.1;
     const bx = Math.cos(a) * rad, bz = Math.sin(a) * rad;
@@ -391,6 +467,7 @@ function buildBamboo(seed) {
       rads.push(r0 * (1 - 0.5 * t));
     }
     tube(gb, pts, rads, 5, (p) => clamp(p[1] / H, 0, 1) ** 1.6 * 0.9, rng(), 1);
+    if (c % 3 === 1 && rad > 0.5) culms.push({ level: 1, pts: pts.slice(2).map((q, i) => [q[0], q[1], q[2], Math.max(0.04, rads[i + 2])]) });
     if (c % 3 === 0) tube(lb, [pts[0], pts[4], pts[8]], [rads[0], rads[4], rads[8]], 3, (p) => clamp(p[1] / H, 0, 1) ** 1.6 * 0.9, 0.5, 1);
     for (let s = 3; s <= 8; s++) {
       const p = new THREE.Vector3(...pts[s]);
@@ -400,13 +477,14 @@ function buildBamboo(seed) {
       if (s % 3 === 0 && c % 2 === 0) card(ll, p, up, sz * 2.2, sz * 2.2, crownC, 7, 0.8, rng(), rng, [1, 1, 1]);
     }
   }
-  return { bark: gb.geo(), leaf: lg.geo(), bark1: lb.geo(), leaf1: ll.geo(), H: maxH, trunkR: 1.1, crownY: 7, crownR: 5, barkKind: 'bamboo', leafKind: 'bamboo' };
+  const climb = [{ level: 0, pts: [[0, -1, 0, 1.0], [0, maxH * 0.35, 0, 0.85], [0, maxH * 0.7, 0, 0.55]] }, ...culms];
+  return { bark: gb.geo(), leaf: lg.geo(), bark1: lb.geo(), leaf1: ll.geo(), H: maxH, trunkR: 1.1, crownY: 7, crownR: 5, barkKind: 'bamboo', leafKind: 'bamboo', climb };
 }
 
 function buildBanyan(seed) {
   const rng = mulberry32(seed); const gb = new GB(), lg = new GB(); const leaves = [];
   const spec = { gnarl: 0.15, sub: 3, perTip: 5 };
-  const ctx = { H: 16, cardS: 2.6 };
+  const ctx = { H: 16, cardS: 2.6, paths: [], roots: [] };
   // fused trunks
   for (let k = 0; k < 4; k++) {
     const a = k / 4 * 6.28 + rng(), o = 0.5 + rng() * 0.3;
@@ -427,6 +505,7 @@ function buildBanyan(seed) {
       const pts = [[p.x, p.y, p.z], [p.x + (rng() - 0.5) * 0.3, p.y * 0.5, p.z + (rng() - 0.5) * 0.3], [p.x + (rng() - 0.5) * 0.4, -1, p.z + (rng() - 0.5) * 0.4]];
       const rr = 0.04 + rng() * 0.1;
       tube(gb, pts, [rr, rr * 1.2, rr * 1.6], 4, (q) => clamp(q[1] / 12, 0, 1) * 0.1, rng(), 1);
+      ctx.roots.push({ top: pts[0], bot: pts[2], r: rr * 1.3 });
     }
   }
   const crownC = new THREE.Vector3(0, 9, 0), crownR = 13;
@@ -439,7 +518,8 @@ function buildBanyan(seed) {
   const lb = new GB(), ll = new GB();
   tube(lb, [[0, -1.5, 0], [0, 6, 0]], [1.6, 1.3], 6, () => 0, 0.5, null);
   for (let i = 0; i < leaves.length; i += 18) { const l = leaves[i]; const up = l.C.clone().sub(crownC).normalize().multiplyScalar(0.5).add(new THREE.Vector3(0, 1, 0)).normalize(); card(ll, l.C, up, 9, 9, crownC, crownR, 0.4, rng(), rng, [1, 1, 1]); }
-  return { bark: gb.geo(), leaf: lg.geo(), bark1: lb.geo(), leaf1: ll.geo(), H: 18, trunkR: 1.8, crownY: 9, crownR, barkKind: 'banyan', leafKind: 'banyan' };
+  const climb = [{ level: 0, pts: [[0, -1.5, 0, 1.6], [0, 3, 0, 1.45], [0, 6.5, 0, 1.2]] }, ...ctx.paths];
+  return { bark: gb.geo(), leaf: lg.geo(), bark1: lb.geo(), leaf1: ll.geo(), H: 18, trunkR: 1.8, crownY: 9, crownR, barkKind: 'banyan', leafKind: 'banyan', climb, roots: ctx.roots };
 }
 
 function buildLantana(seed) {
@@ -664,8 +744,8 @@ function paintedLeafDepth(key, dropRef) {
   patch(m, 'leafdepth-p-' + key, (s) => {
     s.uniforms.uLeafDrop = dropRef;
     s.vertexShader = s.vertexShader.replace('#include <common>', `#include <common>
-      attribute float aWind; attribute float aRand; attribute float aSize; varying float vRand; uniform float uTime; uniform vec2 uWind; uniform float uWindStrength;`)
-      .replace('#include <begin_vertex>', `#include <begin_vertex>\n${WIND_VERTEX}\n vRand = aRand;`)
+      attribute float aWind; attribute float aRand; attribute float aSize; varying float vRand; uniform float uTime; uniform vec2 uWind; uniform float uWindStrength; ${BEND_DECL}`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\n${WIND_VERTEX}${BEND_VERTEX}\n vRand = aRand;`)
       .replace('#include <project_vertex>', BILLBOARD_VERTEX);
     s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>\n uniform float uLeafDrop; varying float vRand;`)
       .replace('#include <map_fragment>', `#include <map_fragment>\n${LEAF_FRAG_DROP}`);
@@ -729,6 +809,8 @@ export class Vegetation {
     this.lastPos = new THREE.Vector3(1e9, 0, 1e9);
     this.colliders = []; this.rocks = []; this.perches = []; this.aoTrees = [];
     this.season = 'winter';
+    // near detail: the few trees round Vanaj drawn from their detailed meshes instead of their instances
+    this.hidden = new Set(); this.slotMap = new Map(); this.near = []; this.nearT = 0; this.hiCache = new Map();
     for (const sp of SPECIES_LIST) {
       const arr = [];
       for (let v = 0; v < sp.variants; v++) arr.push(sp.build(1000 + SP[sp.name] * 37 + v * 11));
@@ -859,7 +941,7 @@ export class Vegetation {
     const r = Math.ceil(R1 / CHUNK);
     const pcx = Math.floor(cam.x / CHUNK), pcz = Math.floor(cam.z / CHUNK);
     for (const per of this.meshes) for (const m of per) { m.n0 = 0; m.n1 = 0; }
-    this.colliders.length = 0; this.rocks.length = 0; this.perches.length = 0; this.aoTrees.length = 0;
+    this.colliders.length = 0; this.rocks.length = 0; this.perches.length = 0; this.aoTrees.length = 0; this.slotMap.clear();
     const R0s = R0 * R0, R1s = R1 * R1;
     let gen = 0;
     for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
@@ -884,7 +966,15 @@ export class Vegetation {
         if (near && !deb && sp !== SP.lantana && sp !== SP.bamboo && dist2 < 70 * 70) this.perches.push(x, y + tmpl.crownY * s * 0.85, z, sp);
         if (dist2 < R0s) {
           if (deb && dist2 > R0s * 0.6) continue;
-          if (m.n0 < m.c0) { writeMat(m.b0, m.l0, m.n0, x, y, z, d[i + 3], s, gth, deb); m.n0++; }
+          if (m.n0 < m.c0) {
+            // (remember where the trees close by went, so the near-detail swap can hide and show them in place)
+            if (!deb && dist2 < 60 * 60) {
+              const key = Math.round(x * 100) * 1e6 + Math.round(z * 100);
+              this.slotMap.set(key, { m, i: m.n0, x, y, z, rot: d[i + 3], s, g: gth });
+              if (this.hidden.has(key)) zeroMat(m.b0, m.l0, m.n0); else writeMat(m.b0, m.l0, m.n0, x, y, z, d[i + 3], s, gth, deb);
+            } else writeMat(m.b0, m.l0, m.n0, x, y, z, d[i + 3], s, gth, deb);
+            m.n0++;
+          }
         } else if (!deb && (sp !== SP.lantana || dist2 < R1s * 0.25)) {
           if (m.n1 < m.c1) { writeMat(m.b1, m.l1, m.n1, x, y - 0.6, z, d[i + 3], s, gth, false); m.n1++; }
         }
@@ -930,12 +1020,44 @@ export class Vegetation {
         const tmpl = this.templates[d[i + 5]][d[i + 6]]; if (!tmpl.climb) continue;
         const key = Math.round(tx * 100) * 1e6 + Math.round(tz * 100);
         let t = cache.get(key);
-        if (!t) { t = worldClimb(tmpl, tx, d[i + 1], tz, d[i + 3], d[i + 4], girthOf(tx, tz), d[i + 5]); cache.set(key, t); if (cache.size > 500) cache.delete(cache.keys().next().value); }
+        if (!t) {
+          t = worldClimb(tmpl, tx, d[i + 1], tz, d[i + 3], d[i + 4], girthOf(tx, tz), d[i + 5]);
+          Object.assign(t, { tmpl, key, y: d[i + 1], rot: d[i + 3], s: d[i + 4], g: girthOf(tx, tz), spName: SPECIES_LIST[d[i + 5]].name });
+          cache.set(key, t); if (cache.size > 500) cache.delete(cache.keys().next().value);
+        }
         out.push(t);
       }
     }
     return out;
   }
+  // Near detail (painted look): the trees within 20 m of Vanaj, nearest first, up to four, are drawn from their
+  // detailed meshes (smooth limbs, twigs, small leaves round every twig; js/world/flora.js meshSkeletonHi) and
+  // their instances hidden. A detailed mesh is built the first time its kind of tree comes close, one per tick.
+  // Low quality (the phone default) keeps the instances: no extra meshes or memory. Limbs still bend there.
+  updateNear(focus) {
+    if (!PAINTED || --this.nearT > 0) return;
+    this.nearT = 10;
+    const want = this.q.name === 'Low' ? [] : this.climbNear(focus.x, focus.z, 20).filter((t) => t.tmpl && t.tmpl.makeHi)
+      .sort((a, b) => Math.hypot(a.x - focus.x, a.z - focus.z) - Math.hypot(b.x - focus.x, b.z - focus.z)).slice(0, 4);
+    for (const s of this.near) if (!want.includes(s.T)) { this.scene.remove(s.b); if (s.l) this.scene.remove(s.l); this.show(s.T.key); }
+    this.near = this.near.filter((s) => want.includes(s.T));
+    let built = false;
+    for (const T of want) {
+      if (this.near.some((s) => s.T === T)) continue;
+      let hi = this.hiCache.get(T.tmpl);
+      if (!hi) { if (built) { this.nearT = 2; continue; } hi = T.tmpl.makeHi(); this.hiCache.set(T.tmpl, hi); built = true; }
+      const mk = (geo, mat, depth) => { const m = new THREE.InstancedMesh(geo, mat, 1); m.castShadow = true; m.receiveShadow = true; m.frustumCulled = false; if (depth) m.customDepthMaterial = depth; this.scene.add(m); return m; };
+      const lm = this.leafMats[T.spName];
+      const b = mk(hi.bark, this.barkMats[T.spName]), l = hi.leaf && lm ? mk(hi.leaf, lm, lm.userData.depth) : null;
+      writeMat(b, l, 0, T.x, T.y, T.z, T.rot, T.s, T.g);
+      this.hide(T.key);
+      this.near.push({ T, b, l });
+    }
+  }
+  // every kind's detailed mesh up front (about 0.4 s at load), so none is built mid-game
+  prebuildNear() { if (PAINTED && this.q.name !== 'Low') for (const arr of this.templates) for (const t of arr) if (t.makeHi && !this.hiCache.has(t)) this.hiCache.set(t, t.makeHi()); }
+  hide(key) { this.hidden.add(key); const s = this.slotMap.get(key); if (s) { zeroMat(s.m.b0, s.m.l0, s.i); for (const m of [s.m.b0, s.m.l0]) if (m) m.instanceMatrix.needsUpdate = true; } }
+  show(key) { this.hidden.delete(key); const s = this.slotMap.get(key); if (s) { writeMat(s.m.b0, s.m.l0, s.i, s.x, s.y, s.z, s.rot, s.s, s.g); for (const m of [s.m.b0, s.m.l0]) if (m) m.instanceMatrix.needsUpdate = true; } }
   nearestTree(x, z, maxD = 3, species) {
     let best = null, bd = maxD * maxD;
     const c = this.colliders;
@@ -971,14 +1093,21 @@ function worldClimb(tmpl, x, y, z, rot, s, g, sp) {
   const trunk = parts.find((b) => b.level === 0) || null, limbs = parts.filter((b) => b.level > 0);
   // lianas: on the giants (and big trees generally) hang from a point well out along a few stout limbs
   const vines = [], big = sp === SP.semal || rs > 1.35, rng = mulberry32(Math.floor(x * 13 + z * 7));
+  const nearestLimb = (p) => { let best = null, bd = Infinity; for (const L of limbs) for (const q of L.pts) { const d = q.distanceToSquared(p); if (d < bd) { bd = d; best = L; } } return best; };
   if (big) for (const L of limbs) {
     if (L.level !== 1 || vines.length >= 5 || rng() > 0.55) continue;
     const k = Math.min(L.pts.length - 1, Math.floor(L.pts.length * (0.55 + rng() * 0.3))), a = L.pts[k];
     const low = height(a.x, a.z) + 1.4 + rng() * 1.2;
-    if (a.y - low > 3) vines.push({ a: a.clone(), len: a.y - low, ang: new THREE.Vector2(), vel: new THREE.Vector2(), ph: rng() * 6.28 });
+    if (a.y - low > 3) vines.push({ a: a.clone(), len: a.y - low, ang: new THREE.Vector2(), vel: new THREE.Vector2(), ph: rng() * 6.28, limb: L });
+  }
+  if (tmpl.roots) for (const R of tmpl.roots) {
+    const a = _cv.set(R.top[0], R.top[1], R.top[2]).applyMatrix4(_cm).clone(), b = new THREE.Vector3(R.bot[0], R.bot[1], R.bot[2]).applyMatrix4(_cm);
+    b.y = Math.max(b.y, height(b.x, b.z));
+    vines.push({ a, b, len: a.distanceTo(b), fixed: true, r: R.r * rs, ang: new THREE.Vector2(), vel: new THREE.Vector2(), ph: 0, limb: nearestLimb(a) });
   }
   return { x, z, sp, trunk, limbs, vines, top: trunk ? trunk.pts[trunk.pts.length - 1].y : y };
 }
+function zeroMat(bm, lm, idx) { for (const m of [bm, lm]) if (m) m.instanceMatrix.array.fill(0, idx * 16, idx * 16 + 16); }
 function writeMat(bm, lm, idx, x, y, z, rot, s, g = 1, slopeAlign = false) {
   const h = Math.sin(x * 4.898 + z * 7.23) * 1458.5453, f = h - Math.floor(h);
   if (slopeAlign) {
