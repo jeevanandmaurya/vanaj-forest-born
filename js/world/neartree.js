@@ -470,7 +470,7 @@ export class NearTrees {
       if (!geo || !mat) return null;
       const g = new THREE.BufferGeometry(); for (const k in geo.attributes) g.setAttribute(k, geo.attributes[k]); g.setIndex(geo.index);
       g.setAttribute('aSlot', new THREE.InstancedBufferAttribute(new Float32Array([row]), 1));
-      const m = new THREE.InstancedMesh(g, mat, 1); m.castShadow = shadow; m.receiveShadow = true; m.frustumCulled = false; if (depth) m.customDepthMaterial = depth;
+      const m = new THREE.InstancedMesh(g, mat, 1); m.castShadow = shadow; m.receiveShadow = !(mat === M.spr || mat === M.card); m.frustumCulled = false; if (depth) m.customDepthMaterial = depth;
       this.scene.add(m); meshes.push(m); return m;
     };
     const b = mk(hi.bark, M.bark, M.barkD); mk(hi.sprites, M.spr, M.sprD); mk(hi.cards, M.card, null, false); mk(hi.extras, M.ext, M.barkD);

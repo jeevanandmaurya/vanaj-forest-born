@@ -7,7 +7,7 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%230d0e0b'/%3E%3Cpath d='M32 8 L40 30 L32 56 L24 30Z' fill='%23d3954a'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Karla:wght@400;500;600&family=Tiro+Devanagari+Hindi&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Karla:wght@400;500;600&family=Tiro+Devanagari+Hindi&family=Kalam:wght@400&display=swap" rel="stylesheet">
 <script type="importmap">{ "imports": { "three": "./lib/three.module.min.js", "three/addons/": "./lib/addons/", "@dimforge/rapier3d-compat": "./lib/rapier/rapier.mjs" } }</script>
 <style>
 :root { --bone:#ebe3d0; --bone2:rgba(235,227,208,.72); --ochre:#d3954a; --ember:#e8743a; --blood:#9c2418; --ink:#0d0e0b; --panel:rgba(16,15,12,.82); --line:rgba(235,227,208,.16); --serif:'Cormorant Garamond', Georgia, serif; --sans:'Karla', system-ui, sans-serif; }
@@ -103,7 +103,7 @@ button { font-family:var(--sans); cursor:pointer; }
 #eye { position:absolute; left:50%; top:calc(50% - 86px); margin-left:-11px; width:22px; height:11px; border:2px solid rgba(235,227,208,.8); border-radius:50% / 100%; opacity:0; transition:opacity .3s; } #eye::after { content:''; position:absolute; left:50%; top:50%; width:6px; height:6px; margin:-3px; border-radius:50%; background:rgba(235,227,208,.9); } #eye.alert { border-color:#ff5a3a; } #eye.alert::after { background:#ff5a3a; }
 #dmgind { position:absolute; left:50%; top:50%; }
 .dmgarc { position:absolute; left:-90px; top:-90px; width:180px; height:180px; border-radius:50%; border-top:4px solid rgba(220,30,20,.9); animation:fadeA 1.1s forwards; } @keyframes fadeA { to { opacity:0; } }
-#card { position:fixed; left:0; right:0; top:34vh; text-align:center; z-index:30; pointer-events:none; opacity:0; transition:opacity 1.6s; }
+#card { position:fixed; left:0; right:0; top:34vh; text-align:center; z-index:40; pointer-events:none; opacity:0; transition:opacity 1.6s; }
 #card.show { opacity:1; } #card h1 { font-family:var(--serif), 'Tiro Devanagari Hindi'; font-weight:500; font-size:64px; letter-spacing:.06em; text-shadow:0 4px 30px rgba(0,0,0,.8); } #card h2 { font-size:13px; letter-spacing:.32em; text-transform:uppercase; color:var(--ochre); margin-top:12px; text-shadow:0 2px 10px #000; }
 #fade { position:fixed; inset:0; background:#000; opacity:0; pointer-events:none; z-index:35; }
 /* wheel */
@@ -124,19 +124,31 @@ button { font-family:var(--sans); cursor:pointer; }
 .recipe button:disabled { opacity:.3; cursor:default; }
 .empty { color:var(--bone2); font-size:13px; font-style:italic; }
 /* journal */
-.journal { display:grid; grid-template-columns:1.2fr 1fr; gap:34px; min-width:880px; }
+.journal { display:grid; grid-template-columns:1.1fr 1fr 1.1fr; gap:28px; width:min(1240px, 90vw); }
+#skillcard { display:none; margin-top:9px; padding-top:8px; border-top:1px solid rgba(90,64,38,.35); }
+#skillcard.on { display:block; }
+#skillcard h5 { font-family:var(--sans); font-size:11px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:#a0562a; margin:0 0 5px; }
+.sk { display:flex; align-items:center; gap:5px; margin:4px 0; font-family:var(--sans); font-size:13.5px; line-height:1.25; color:var(--inkb); transition:opacity .4s; }
+.sk i { flex:none; width:15px; height:15px; border:1.5px solid rgba(90,64,38,.55); border-radius:3px; font-style:normal; font-size:12px; line-height:12px; text-align:center; color:#2e7d32; font-weight:700; }
+.sk kbd { flex:none; font-size:11px; margin:0; padding:1px 5px; white-space:nowrap; }
+.sk span { padding-left:3px; }
+.sk.done { opacity:.55; } .sk.done span { text-decoration:line-through; }
+#j-skills h4 { font-family:var(--sans); font-size:12px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:#a0562a; margin:14px 0 4px; } #j-skills h4:first-child { margin-top:6px; }
 .jentry { padding:12px 0; border-bottom:1px solid var(--line); } .jentry p, .lentry p { font-family:var(--serif); font-size:17px; line-height:1.45; color:var(--bone2); } .jentry.clue h3 { color:#e8c890; }
 .lentry { padding:10px 0; border-bottom:1px solid var(--line); } .lentry h3 i { font-size:14px; color:var(--bone2); font-weight:400; } .lentry.locked { opacity:.35; }
 #mapcv { width:min(calc(86vh - 84px), calc(100vw - 48px), 760px); height:auto; aspect-ratio:1; display:block; border:2px solid #6a5034; border-radius:4px; box-shadow:0 6px 30px rgba(0,0,0,.45); }
 #map .box { padding:14px 16px 16px; min-width:0; overflow:hidden; background:rgba(40,30,20,.88); } #map h2 { margin:0 0 8px; font-size:26px; }
 /* prologue */
-#prologue { position:fixed; inset:0; z-index:45; background:#000; display:none; align-items:center; justify-content:center; }
-#prologue.show { display:flex; }
-#prologue-line { font-family:var(--serif); font-size:31px; line-height:1.5; max-width:860px; text-align:center; padding:0 40px; opacity:0; transition:opacity 1.4s; font-style:italic; color:var(--bone); }
+#prologue { position:fixed; inset:0; z-index:45; background:#000; display:none; opacity:0; transition:opacity .7s; }
+#prologue.on { display:block; } #prologue.show { opacity:1; }
+#prologue-cv { position:absolute; inset:0; width:100%; height:100%; transition:opacity .9s; } #prologue-cv.out { opacity:0; }
+#prologue-line { position:absolute; left:50%; bottom:0; transform:translateX(-50%); width:min(1040px, 92vw); height:var(--capH, 19vh); display:flex; align-items:center; justify-content:center; text-align:center; font-family:'Kalam', var(--serif); font-size:clamp(17px, 2.5vh, 27px); line-height:1.35; padding:0 96px 0 24px; opacity:0; transition:opacity .7s; color:#2a2018; }
 #prologue-line.show { opacity:1; }
-#prologue-title { position:absolute; font-family:var(--serif); font-size:120px; letter-spacing:.34em; padding-left:.34em; opacity:0; transition:opacity 2s; }
+#prologue-title { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; font-family:'Kalam', var(--serif); font-size:clamp(70px, 16vh, 150px); letter-spacing:.2em; padding-left:.2em; color:#2a2018; opacity:0; transition:opacity 1.4s; pointer-events:none; }
+#prologue-title small { font-size:.2em; letter-spacing:.3em; }
 #prologue-title.show { opacity:1; }
-#prologue-skip { position:absolute; right:34px; bottom:30px; background:none; border:1px solid var(--line); color:var(--bone2); padding:6px 14px; font-size:12px; letter-spacing:.1em; }
+#prologue-skip { position:absolute; right:22px; bottom:20px; background:rgba(42,32,24,.07); border:1.5px solid rgba(42,32,24,.5); border-radius:6px; color:#2a2018; padding:6px 14px; font-family:'Kalam', var(--serif); font-size:15px; }
+#prologue-skip:hover { background:rgba(42,32,24,.16); }
 /* choice, death, ending */
 #choice .box, #death .box { text-align:center; } #choice button, #death button, #pause button.big { display:block; width:100%; margin:9px 0; background:rgba(255,255,255,.04); border:1px solid var(--line); color:var(--bone); font-family:var(--serif); font-size:22px; padding:11px; } #choice button:hover, #death button:hover, #pause button.big:hover { border-color:var(--ochre); color:var(--ochre); }
 #death .box { background:rgba(20,4,3,.85); } #death h2 { color:#e8b0a0; } #death-msg { font-family:var(--serif); font-style:italic; font-size:24px; color:var(--bone2); margin-bottom:26px; }
@@ -229,7 +241,7 @@ button { font-family:var(--sans); cursor:pointer; }
 
   <div id="hud">
     <div id="vignette"></div><div id="bloodov"></div>
-    <div id="objective-box"><div id="chapter"></div><div id="objective"></div></div>
+    <div id="objective-box"><div id="chapter"></div><div id="objective"></div><div id="skillcard"></div></div>
     <div id="compass"><div id="compass-strip"></div></div>
     <div id="clock"></div>
     <div id="toasts"></div>
@@ -251,7 +263,7 @@ button { font-family:var(--sans); cursor:pointer; }
   <div id="card"><h1></h1><h2></h2></div>
   <div id="fade"></div>
 
-  <div id="prologue"><div id="prologue-line"></div><div id="prologue-title">VANAJ</div><button id="prologue-skip">Skip</button></div>
+  <div id="prologue"><canvas id="prologue-cv"></canvas><div id="prologue-line"></div><div id="prologue-title">VANAJ<small>Forest-Born</small></div><button id="prologue-skip">Skip</button></div>
 
   <div id="ending">
     <p>They asked me which I was. Forest or village.</p>
@@ -276,7 +288,7 @@ button { font-family:var(--sans); cursor:pointer; }
 
   <div class="panel" id="journal"><div class="box"><button class="close">×</button>
     <h2>Journal</h2>
-    <div class="journal"><div><h3 style="font-family:var(--sans);font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:var(--ochre)">What I found</h3><div id="j-story"></div></div><div><h3 style="font-family:var(--sans);font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:var(--ochre)">Forest lore</h3><div id="j-lore"></div></div></div>
+    <div class="journal"><div><h3 style="font-family:var(--sans);font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:var(--ochre)">What I found</h3><div id="j-story"></div></div><div><h3 style="font-family:var(--sans);font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:var(--ochre)">Forest lore</h3><div id="j-lore"></div></div><div><h3 style="font-family:var(--sans);font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:var(--ochre)">What I can do</h3><div id="j-skills"></div></div></div>
   </div></div>
 
   <div class="panel" id="map"><div class="box"><button class="close">×</button><h2>Pench</h2><canvas id="mapcv" width="768" height="768"></canvas></div></div>
@@ -299,7 +311,7 @@ button { font-family:var(--sans); cursor:pointer; }
   <div class="panel" id="controls"><div class="box"><button class="close">×</button>
     <h2>Controls</h2>
     <div class="controls">
-      <kbd>W A S D</kbd><span>Move</span><kbd>Shift</kbd><span>Sprint</span>
+      <kbd>W A S D</kbd><span>Move</span><kbd>Shift</kbd><span>Run</span>
       <kbd>Space</kbd><span>Jump · with block: dodge</span><kbd>C</kbd><span>Crouch (stealth)</span>
       <kbd>Mouse L</kbd><span>Attack · hold to draw bow</span><kbd>Mouse R</kbd><span>Block · aim spear throw</span>
       <kbd>E</kbd><span>Interact, gather, drink, skin</span><kbd>F</kbd><span>Finish a wounded animal</span>
@@ -308,6 +320,13 @@ button { font-family:var(--sans); cursor:pointer; }
       <kbd>Tab</kbd><span>Pouch &amp; crafting</span><kbd>J</kbd><span>Journal &amp; lore</span>
       <kbd>M</kbd><span>Map</span><kbd>H / B</kbd><span>Bind wound · eat</span>
       <kbd>F3</kbd><span>Performance overlay</span><kbd>Esc</kbd><span>Pause</span>
+    </div>
+    <h3 style="margin-top:18px">In the trees</h3>
+    <div class="controls">
+      <kbd>Space</kbd><span>Grab a trunk or root you're facing. In the air, hold to catch a rope or branch</span><kbd>W / S</kbd><span>On a trunk: climb, all the way to the top. Shift goes faster</span>
+      <kbd>A / D</kbd><span>On a trunk: go round it</span><kbd>E</kbd><span>Step out onto a branch, or pull up onto one you hang from</span>
+      <kbd>W A S D</kbd><span>On a rope: throw your weight to swing it</span><kbd>Shift + W / S</kbd><span>On a rope: climb up or down it</span>
+      <kbd>Release Space</kbd><span>Let go of a liana and fly. On a root, press Space to jump off</span><kbd>C</kbd><span>Drop. On a branch, lower yourself to hang</span>
     </div>
     <p class="note" style="margin-top:16px">Listen to the forest. Langurs, chital, sambar and peafowl call when a predator is near — their alarms appear on the compass in red.</p>
   </div></div>

@@ -653,16 +653,23 @@ export const BILLBOARD_VERTEX = /* glsl */`
     mvPosition = instanceMatrix * mvPosition; bbS = length(instanceMatrix[0].xyz);
   #endif
   mvPosition = modelViewMatrix * mvPosition;
+  #ifdef CAM_FADE
+  // Leaf masses right against the lens, or between the camera and Vanaj, draw in to nothing as a whole, like foliage pushed
+  // aside. (Cutting pixels by distance from the camera punched a round hole in the leaves wherever you went.)
+  { float bbZ = aSize * bbS, bbN = bbZ * 0.5; vec3 bbP = mvPosition.xyz;
+    bbS *= smoothstep(bbN * 0.35, bbN, length(bbP));
+    if (uFocus.w > 0.5) { float bbF = dot(uFocus.xyz, uFocus.xyz), bbT = dot(bbP, uFocus.xyz) / max(bbF, 0.01);
+      if (bbT < 1.0) bbS *= smoothstep(bbZ * 0.12 + 0.1, bbZ * 0.45 + 0.4, length(bbP - uFocus.xyz * max(bbT, 0.0))); } }
+  #endif
   float bbA = aRand * 6.2832; vec2 bbC = uv * 2.0 - 1.0;
   bbC = vec2(cos(bbA) * bbC.x - sin(bbA) * bbC.y, sin(bbA) * bbC.x + cos(bbA) * bbC.y);
   mvPosition.xy += bbC * aSize * 0.5 * bbS;
+  // A slight tilt of its own: flat cards all facing the camera swap places whole as the view turns; tilted ones cross
+  // along a line that slides, so no leaf mass jumps in front of another.
+  mvPosition.z += (bbC.x * (fract(aRand * 37.1) - 0.5) + bbC.y * (fract(aRand * 53.7) - 0.5)) * aSize * bbS * 0.5;
   gl_Position = projectionMatrix * mvPosition;`;
 const LEAF_FRAG_DROP = /* glsl */`
   if (vRand < uLeafDrop) discard;
-  #ifdef CAM_FADE
-  // leaves dissolve close to the camera, so climbing inside a crown you see Vanaj, not a wall of leaves
-  if (fract(vRand * 91.7) > smoothstep(CAM_A, CAM_B, length(vViewPosition))) discard;
-  #endif
   { vec2 ddx = dFdx(vMapUv * 128.0), ddy = dFdy(vMapUv * 128.0);
     diffuseColor.a *= 1.0 + max(0.0, 0.5 * log2(max(dot(ddx, ddx), dot(ddy, ddy)))) * 0.3; }`;
 // species leaf colour against the season's foliage pair: teak and kulu yellower, mahua, arjun and banyan deeper
@@ -671,17 +678,15 @@ export function paintedLeafMaterial(key, opt = {}) {
   LEAF_SPRITE = LEAF_SPRITE || leafSpriteTexture();
   const m = toon({
     map: opt.map || LEAF_SPRITE, alphaTest: 0.5, vertexColors: true, wind: true, rim: 0.3, key: 'leaf-' + key, patch: (s) => {
-      s.uniforms.uLeafDrop = m.userData.drop; s.uniforms.uLeafTint = m.userData.tint; s.uniforms.uFlower = m.userData.flower;
+      s.uniforms.uFocus = G.uFocus; s.uniforms.uLeafDrop = m.userData.drop; s.uniforms.uLeafTint = m.userData.tint; s.uniforms.uFlower = m.userData.flower;
       Object.assign(s.uniforms, PU);
       if (opt.soft) s.uniforms.tSoft = opt.soft.tex;
-      s.vertexShader = s.vertexShader.replace('#include <common>', `#include <common>\n attribute float aSize; varying float vRand; ${opt.soft ? opt.soft.decl : ''}`)
+      s.vertexShader = s.vertexShader.replace('#include <common>', `#include <common>\n #define CAM_FADE
+ uniform vec4 uFocus; attribute float aSize; varying float vRand; ${opt.soft ? opt.soft.decl : ''}`)
         .replace('#include <project_vertex>', `${opt.soft ? opt.soft.vertex : ''}${BILLBOARD_VERTEX}
           vRand = aRand;
           vNormal = normalize(vNormal + vec3(bbC, 0.0) * 0.12);   // a hint of roundness per sprite; the mass's normal leads`);
       s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>
-          #define CAM_FADE
-          #define CAM_A ${(opt.fade ? opt.fade[0] : 2).toFixed(1)}
-          #define CAM_B ${(opt.fade ? opt.fade[1] : 5.5).toFixed(1)}
           uniform float uLeafDrop; uniform vec3 uLeafTint, uLeafShade, uLeafLit; uniform vec4 uFlower; varying float vRand;`)
         .replace('#include <map_fragment>', `#include <map_fragment>\n${LEAF_FRAG_DROP}`)
         .replace('#include <color_fragment>', `#include <color_fragment>
@@ -806,7 +811,11 @@ export class Vegetation {
         const mk = (geo, mat, cap, shadow, depth) => {
           if (!geo || !geo.attributes.position || geo.attributes.position.count === 0) return null;
           const m = new THREE.InstancedMesh(geo, mat, cap);
-          m.count = 0; m.frustumCulled = false; m.castShadow = shadow; m.receiveShadow = true;
+          m.count = 0; m.frustumCulled = false; m.castShadow = shadow;
+          // Leaves take their light from the sun's angle, not from the shadow map. A sprite's four corners share one point,
+          // so it read one shadow value for the whole sprite and flipped light or dark at once whenever wind or the sun
+          // moved that point across a shadow edge.
+          m.receiveShadow = !(PAINTED && mat.userData && mat.userData.drop);
           if (depth) m.customDepthMaterial = depth;
           m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
           this.scene.add(m); return m;
@@ -1036,7 +1045,38 @@ function worldClimb(tmpl, x, y, z, rot, s, g, sp) {
     b.y = Math.max(b.y, height(b.x, b.z));
     vines.push({ a, b, len: a.distanceTo(b), fixed: true, r: R.r * rs, ang: new THREE.Vector2(), vel: new THREE.Vector2(), ph: 0, limb: nearestLimb(a) });
   }
-  return { x, z, sp, trunk, limbs, vines, top: trunk ? trunk.pts[trunk.pts.length - 1].y : y };
+  const spine = climbSpine(trunk, limbs);
+  return { x, z, sp, trunk, limbs, vines, spine, bole: trunk ? trunk.pts[trunk.pts.length - 1].y : y, top: spine ? spine.pts[spine.pts.length - 1].y : y };
+}
+// The way to the top of a tree. A trunk's polyline stops where the crown begins (a mahua at 4 m under a crown of 10), so
+// the climb carries on along whichever limb rises highest from it, then that limb's highest branch, for as long as the
+// wood rises steeply enough to climb and is thick enough to hold. Heights only ever increase along it.
+function climbSpine(trunk, limbs) {
+  if (!trunk) return null;
+  // how far up a limb can be climbed, from its base
+  const reach = (L) => { let i = 0; while (i < L.pts.length - 1) { const a = L.pts[i], b = L.pts[i + 1], dy = b.y - a.y; if (L.r[i + 1] < 0.035 || dy / Math.max(1e-3, a.distanceTo(b)) < 0.18) break; i++; } return i; };
+  const path = [{ L: trunk, to: trunk.pts.length - 1 }], used = new Set([trunk]);
+  for (let depth = 0; depth < 4; depth++) {
+    const H = path[path.length - 1], tip = H.L.pts[H.to].y;
+    let best = null, by = tip + 0.5, at = 0, end = 0;
+    for (const L of limbs) {
+      if (used.has(L)) continue;
+      const e = reach(L); if (e < 1 || L.pts[e].y <= by) continue;
+      // where it leaves the wood we are on
+      let k = -1, kd = Infinity; const b = L.pts[0];
+      for (let i = H.from || 0; i <= H.to; i++) { const d = H.L.pts[i].distanceTo(b); if (d < kd) { kd = d; k = i; } }
+      if (k < 0 || kd > H.L.r[k] + 0.7) continue;
+      best = L; by = L.pts[e].y; at = k; end = e;
+    }
+    if (!best) break;
+    H.to = at; path.push({ L: best, from: 0, to: end }); used.add(best);
+  }
+  const pts = [], r = [], own = [], t = [];
+  for (const H of path) for (let i = H.from || 0; i <= H.to; i++) {
+    if (pts.length && H.L.pts[i].y < pts[pts.length - 1].y + 0.04) continue;
+    pts.push(H.L.pts[i]); r.push(H.L.r[i]); own.push(H.L); t.push(i / Math.max(1, H.L.pts.length - 1));
+  }
+  return pts.length > 1 ? { pts, r, own, t } : { pts: trunk.pts, r: trunk.r, own: trunk.pts.map(() => trunk), t: trunk.pts.map((_, i) => i / (trunk.pts.length - 1)) };
 }
 function zeroMat(bm, lm, idx) { for (const m of [bm, lm]) if (m) m.instanceMatrix.array.fill(0, idx * 16, idx * 16 + 16); }
 function writeMat(bm, lm, idx, x, y, z, rot, s, g = 1, slopeAlign = false) {

@@ -595,10 +595,49 @@ export function buildRiggedHuman(opts = {}) {
   const handR = new THREE.Group(), handL = new THREE.Group(), back = new THREE.Group(); root.add(handR, handL, back);
   // (back: where a weapon is slung while the hands are busy climbing or swimming, diagonally across the shoulders)
   back.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0.5, 1, 0).normalize());
-  const j = { handR, handL, back, head: bones['DEF-head'], hips: bones['DEF-hips'] };
-  return { root, j, S, rig: { inst, body, mixer, actions, bones, cur: null, curName: '', K, fingers }, t: 0, dead: 0, skin, swimS: 0, faceU: skin.userData.faceU || null, hairU };
+  const pack = new THREE.Group(); root.add(pack);
+  const j = { handR, handL, back, pack, head: bones['DEF-head'], hips: bones['DEF-hips'] };
+  const frames = K ? bindFrames(inst, bones) : null;
+  return { root, j, S, rig: { inst, body, mixer, actions, bones, cur: null, curName: '', K, fingers, frames }, t: 0, dead: 0, skin, swimS: 0, faceU: skin.userData.faceU || null, hairU };
 }
 
+// The bind pose, for the poses no clip has. Each bone's rest orientation; and for hands and feet the directions of the
+// fingers (or toes) and of the thumb side, so a hand can be told "fingers that way, thumb this way" and its palm then
+// faces the only way a hand can (the old pose aimed the arm only, and the wrist kept whatever the clip was doing).
+function bindFrames(inst, bones) {
+  let sk = null; inst.traverse((o) => { if (o.isSkinnedMesh && !sk) sk = o.skeleton; });
+  const F = { q: {}, p: {} }, m = new THREE.Matrix4(), s = new THREE.Vector3();
+  sk.bones.forEach((b, i) => { m.copy(sk.boneInverses[i]).invert(); const p = new THREE.Vector3(), q = new THREE.Quaternion(); m.decompose(p, q, s); F.q[b.name] = q; F.p[b.name] = p; });
+  const dir = (a, b) => new THREE.Vector3().subVectors(F.p[b], F.p[a]).normalize();
+  for (const S of ['L', 'R']) {
+    F['hand' + S] = { y: dir('DEF-hand' + S, 'DEF-f_middle01' + S), x: dir('DEF-f_pinky01' + S, 'DEF-f_index01' + S) };
+    F['arm' + S] = { y: dir('DEF-forearm' + S, 'DEF-hand' + S), x: F['hand' + S].x };
+    F['foot' + S] = { y: dir('DEF-foot' + S, 'DEF-toe' + S), x: new THREE.Vector3(1, 0, 0) };
+  }
+  F.hipPos = bones['DEF-hips'].position.clone();
+  return F;
+}
+const _fx = new THREE.Vector3(), _fy = new THREE.Vector3(), _fz = new THREE.Vector3(), _bx = new THREE.Vector3(), _by = new THREE.Vector3(), _bz = new THREE.Vector3(), _mT = new THREE.Matrix4(), _mB = new THREE.Matrix4(), _qi = new THREE.Quaternion(), _qd = new THREE.Quaternion(), _qw = new THREE.Quaternion(), _qp = new THREE.Quaternion();
+// turn a bone so its bind frame's y lies along F and its x as near A as it can, keeping the bind's handedness
+function setFrame(R, bone, frame, F, A, w = 1) {
+  const qb = R.frames.q[bone.name]; if (!qb) return;
+  R.inst.getWorldQuaternion(_qi);
+  _fy.copy(F).normalize(); _fx.copy(A).addScaledVector(_fy, -A.dot(_fy)); if (_fx.lengthSq() < 1e-4) return; _fx.normalize(); _fz.crossVectors(_fx, _fy);
+  _by.copy(frame.y).applyQuaternion(_qi); _bx.copy(frame.x).applyQuaternion(_qi); _bx.addScaledVector(_by, -_bx.dot(_by)).normalize(); _bz.crossVectors(_bx, _by);
+  _mT.makeBasis(_fx, _fy, _fz); _mB.makeBasis(_bx, _by, _bz).transpose(); _mT.multiply(_mB);
+  _qd.setFromRotationMatrix(_mT);
+  _qw.copy(_qi).multiply(qb).premultiply(_qd);
+  bone.parent.getWorldQuaternion(_qp).invert(); _qp.multiply(_qw);
+  if (w < 1) bone.quaternion.slerp(_qp, w); else bone.quaternion.copy(_qp);
+  bone.updateMatrixWorld(true);
+}
+// back toward the bone's rest orientation
+function toBind(R, bone, w) {
+  const qb = R.frames.q[bone.name]; if (!qb) return;
+  R.inst.getWorldQuaternion(_qi); _qw.copy(_qi).multiply(qb);
+  bone.parent.getWorldQuaternion(_qp).invert(); _qp.multiply(_qw);
+  bone.quaternion.slerp(_qp, w); bone.updateMatrixWorld(true);
+}
 const ONCE = new Set(['Death01', 'Punch_Jab', 'Jump_Start']);
 function play(R, name, fade, ts) {
   const a = R.actions[name] || R.actions.Idle_Loop; if (!a) return;
@@ -635,16 +674,19 @@ const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vect
 // slope, dropping the pelvis when one foot has further to reach.
 const ramp = (s, T) => { if (s <= T[0][0]) return T[0][1]; for (let i = 1; i < T.length; i++) if (s <= T[i][0]) { const a = T[i - 1], b = T[i]; return a[1] + (b[1] - a[1]) * (s - a[0]) / (b[0] - a[0]); } return T[T.length - 1][1]; };
 const sstep = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
-const CADENCE = [[0.3, 1.3], [1.0, 1.9], [1.8, 2.5], [2.6, 2.6], [3.4, 2.75], [5, 3.4], [7.2, 4.2], [9, 4.6]];
-const STRIDE = [[0.3, 1.0], [1.0, 1.05], [1.8, 1.25], [2.6, 1.12], [3.4, 1.07], [5, 1.1], [7.2, 1.14]];
+// Small quick steps, a walk of about 0.75 m a step and a run of about 1.2 m. A faster pace comes from a faster cadence, not
+// a longer stride, so the clips' reach is cut down (STRIDE below 1) to what the feet really cover on the ground.
+const CADENCE = [[0.3, 1.4], [1.0, 2.2], [2.4, 3.1], [3.4, 3.6], [4.5, 4.2], [6, 4.9], [7.2, 5.4], [9, 6]];
+const STRIDE = [[0.3, 1.0], [1.0, 0.95], [2.4, 0.74], [3.4, 0.62], [4.5, 0.56], [6, 0.48], [7.2, 0.44]];
+const LIFT = [[2.4, 1], [3.4, 0.8], [6, 0.55]];   // and the heels stay low: the run's clip kicks them up behind him
 // how much of each foot's cycle is on the ground: most of a walk, about a third of a jog, a quarter of a sprint
-const DUTY = [[0.3, 0.66], [1.8, 0.6], [2.6, 0.42], [3.4, 0.37], [5, 0.31], [7.2, 0.26]];
+const DUTY = [[0.3, 0.66], [1.8, 0.62], [2.4, 0.6], [3.2, 0.44], [4.5, 0.35], [6, 0.3], [7.2, 0.26]];
 const LOCO = new Set(['Idle_Loop', 'Walk_Loop', 'Jog_Fwd_Loop', 'Sprint_Loop']);
 function blendMotion(h, R, dt, clip, ts, spd) {
   const W = R.w || (R.w = {}), T = {};
   const loco = LOCO.has(clip);
   if (loco) {
-    const mv = sstep(0.06, 0.35, spd), jog = sstep(1.8, 2.6, spd), spr = sstep(5, 6.6, spd);
+    const mv = sstep(0.06, 0.35, spd), jog = sstep(2.7, 3.4, spd), spr = sstep(6.6, 7.6, spd);
     T.Idle_Loop = 1 - mv; T.Walk_Loop = mv * (1 - jog); T.Jog_Fwd_Loop = mv * jog * (1 - spr); T.Sprint_Loop = mv * jog * spr;
   } else T[clip] = 1;
   if (clip !== R.curName) {
@@ -690,13 +732,27 @@ function legPass(h, R, dt, a, stride, spd) {
   const w = h.ikW; if (w < 0.01) { h.pelvis = 0; return; }
   const { g, n, q, q2, inv } = _ik;
   inv.copy(root.matrixWorld).invert();
-  let low = 0;
+  let low = 0; const st = h.stand || 0;
   for (const L of _legs) {
     Bn['DEF-foot' + L[0]].getWorldPosition(L[1]); L[1].applyMatrix4(inv);
+    // standing: feet under the hips, a hand's width apart, the left a touch forward, flat on the ground
+    if (st > 0) { const sg = Math.sign(Bn['DEF-thigh' + L[0]].getWorldPosition(_ik.g).applyMatrix4(inv).x) || 1; L[1].x += (sg * 0.088 - L[1].x) * st; L[1].z += ((L[0] === 'L' ? 0.022 : -0.018) - L[1].z) * st; L[1].y += (FOOT_REST - L[1].y) * st; }
+    else if (spd > 2.4) L[1].y = FOOT_REST + (L[1].y - FOOT_REST) * ramp(spd, LIFT);
     L.h = a.ground ? a.ground(L[1].x, L[1].z) : 0; low = Math.min(low, L.h);
   }
   h.pelvis = (h.pelvis || 0) + (Math.max(-0.28, low) * w - (h.pelvis || 0)) * (1 - Math.pow(2, -dt / 0.06));
-  root.position.y += h.pelvis; root.updateMatrixWorld(true);
+  root.position.y += h.pelvis;
+  // and legs nearly straight under him, weight easing slowly from one foot to the other
+  if (st > 0) {
+    root.position.x += Math.cos(h.bodyY || 0) * Math.sin(h.t * 0.43) * 0.011 * st; root.position.z += -Math.sin(h.bodyY || 0) * Math.sin(h.t * 0.43) * 0.011 * st;
+    root.updateMatrixWorld(true);
+    const th = Bn['DEF-thighL'], sh = Bn['DEF-shinL'], ft = Bn['DEF-footL'];
+    const lenLeg = th.getWorldPosition(_ik.H).distanceTo(sh.getWorldPosition(_ik.K)) + _ik.K.distanceTo(ft.getWorldPosition(_ik.A));
+    _ik.g.copy(_legs[0][1]).setY(FOOT_REST + (_legs[0].h - h.pelvis)).applyMatrix4(root.matrixWorld);
+    const dy = Math.sqrt(Math.max(0, (lenLeg * 0.985) ** 2 - (_ik.H.x - _ik.g.x) ** 2 - (_ik.H.z - _ik.g.z) ** 2)) - (_ik.H.y - _ik.g.y);
+    root.position.y += Math.max(-0.12, Math.min(0.12, dy)) * st;
+  }
+  root.updateMatrixWorld(true);
   for (const L of _legs) {
     const S = L[0], th = Bn['DEF-thigh' + S], sh = Bn['DEF-shin' + S], ft = Bn['DEF-foot' + S];
     ft.getWorldQuaternion(L[2]);
@@ -718,13 +774,18 @@ function legPass(h, R, dt, a, stride, spd) {
     n.set(-gx / (2 * e), 1, -gz / (2 * e)).normalize().transformDirection(root.matrixWorld);
     q.setFromUnitVectors(_upY, n); if (plant < 1) q.slerp(q2.identity(), 1 - plant);
     q2.copy(L[2]).premultiply(q);
+    if (st > 0) {   // flat, toes turned a little out
+      R.inst.getWorldQuaternion(_qi); _qw.copy(_qi).multiply(R.frames.q[ft.name]);
+      _qd.setFromAxisAngle(_upY, (Math.sign(L[1].x) || 1) * 0.16); _qw.premultiply(_qd).premultiply(q);
+      q2.slerp(_qw, st);
+    }
     ft.parent.getWorldQuaternion(q).invert(); ft.quaternion.copy(q.multiply(q2)); ft.updateMatrixWorld(true);
   }
 }
 // the hands: open and loose, not the clip's permanent fists; the spear hand keeps its grip
 function relaxHands(R, a, spd) {
   if (!R.fingers) return;
-  const base = a.canopy && a.canopy.mode !== 'limb' ? 0 : a.action ? 0.15 : spd > 5 ? 0.35 : 0.5, armed = a.weapon && a.weapon !== 'none' && a.weapon !== 'fists';
+  const base = a.canopy && a.canopy.mode !== 'limb' ? (a.canopy.mode === 'air' ? 0.5 : a.canopy.open || 0) : a.action ? 0.15 : spd > 5 ? 0.35 : 0.5, armed = a.weapon && a.weapon !== 'none' && a.weapon !== 'fists';
   for (const f of R.fingers) { const w = f.right && armed ? 0 : base; if (w > 0) f.bone.quaternion.slerp(f.q0, w); }
 }
 
@@ -750,6 +811,33 @@ export function animateRiggedHuman(h, dt, a) {
   if (R.K) for (const e of R.K) e.bone.position.copy(e.raw);
   R.mixer.update(dt);
   if (R.K) { for (const e of R.K) { e.raw.copy(e.bone.position); e.bone.position.multiplyScalar(e.k); } relaxHands(R, a, spd); }
+  // Standing still. The idle clip is a fighter's stance, one foot forward and fists up, so it is not used as is: hips and
+  // back come to rest, the feet go under him (js legPass), the arms hang loose, and he breathes.
+  { const want = R.K && clip === 'Idle_Loop' && spd < 0.3 && !act && !a.aim && !a.canopy && !a.air && !a.dead && !a.swim && a.ground ? 1 : 0;
+    // Walking and running he stays upright: the clips hunch and pitch the back (the run most of all) and bounce the hips.
+    // The back and hips come most of the way to rest, with only a slight lean into a run.
+    const moving = R.K && LOCO.has(clip) && spd >= 0.3 && !act && !a.aim && !a.canopy && !a.air && !a.dead && !a.swim ? 1 : 0;
+    h.upright = (h.upright || 0) + (moving - (h.upright || 0)) * (1 - Math.pow(2, -dt / 0.07));
+    if (h.upright > 0.002) {
+      const u = h.upright, hips = Bn['DEF-hips'], hp = R.frames.hipPos, run = sstep(2.4, 6, spd);
+      hips.position.y += (hp.y * (1 - 0.035 * run) - hips.position.y) * u * 0.8;
+      hips.position.z += (hp.z - hips.position.z) * u * 0.8;
+      R.inst.updateMatrixWorld(true);
+      toBind(R, hips, u * 0.75);
+      for (const n of ['DEF-spine001', 'DEF-spine002', 'DEF-spine003', 'DEF-neck']) if (Bn[n]) toBind(R, Bn[n], u * 0.9);
+      const sp1 = Bn['DEF-spine001'];
+      if (sp1) { _v3.set(1, 0, 0).transformDirection(h.root.matrixWorld); sp1.getWorldQuaternion(_q2); _q.setFromAxisAngle(_v3, u * (0.015 + run * 0.075)); _q2.premultiply(_q); sp1.parent.getWorldQuaternion(_q3).invert(); sp1.quaternion.copy(_q3.multiply(_q2)); sp1.updateMatrixWorld(true); }
+    }
+    h.stand = (h.stand || 0) + (want - (h.stand || 0)) * (1 - Math.pow(2, -dt / 0.09));
+    if (h.stand < 0.002) h.stand = 0;
+    if (h.stand > 0) {
+      const st = h.stand, hips = Bn['DEF-hips'], hp = R.frames.hipPos;
+      h.root.getWorldQuaternion(_q2); h.bodyY = 2 * Math.atan2(_q2.y, _q2.w);
+      hips.position.x += (hp.x - hips.position.x) * st; hips.position.z += (hp.z - hips.position.z) * st;
+      R.inst.updateMatrixWorld(true);
+      for (const n of ['DEF-hips', 'DEF-spine001', 'DEF-spine002', 'DEF-spine003', 'DEF-neck', 'DEF-shoulderL', 'DEF-shoulderR']) if (Bn[n]) toBind(R, Bn[n], st);
+      const c = Bn['DEF-spine003']; if (c) { c.rotateX(Math.sin(h.t * 1.5) * 0.012 * st); c.updateMatrixWorld(true); }
+    } }
   // swimming: lay the body along the water and pull with the arms
   h.swimS += ((a.swim || 0) - h.swimS) * Math.min(1, dt * 4);
   R.body.rotation.x = h.swimS * 1.25; R.body.position.y = -h.swimS * 0.9;
@@ -762,6 +850,25 @@ export function animateRiggedHuman(h, dt, a) {
   // in the trees (no clips exist for this, so it is posed): hands on the hold, legs hanging and trailing the
   // swing; on a trunk, hand over hand with the knees braced; in a leap, arms reaching up and ahead for the next hold
   const C = a.canopy;
+  if (h.stand > 0) {
+    const st = h.stand, sw = Math.sin(h.t * 0.9) * 0.012;
+    _v3.copy(_f).multiplyScalar(0.14).add(_v2.set(0, -1, 0));
+    aim(uaR, faR, _v1.copy(_r).multiplyScalar(0.13).add(_v2.set(0, -1, 0)).addScaledVector(_f, 0.015 + sw).normalize(), st);
+    aim(faR, hR, _v1.copy(_v3).addScaledVector(_r, 0.02).normalize(), st);
+    aim(uaL, faL, _v1.copy(_r).multiplyScalar(-0.13).add(_v2.set(0, -1, 0)).addScaledVector(_f, 0.015 - sw).normalize(), st);
+    aim(faL, hL, _v1.copy(_v3).addScaledVector(_r, -0.02).normalize(), st);
+    // palms toward the thighs, thumbs forward
+    setFrame(R, hR, R.frames.handR, _v3, _f, st); setFrame(R, hL, R.frames.handL, _v3, _f, st);
+  }
+  // walking, the arms hang and swing against the legs (the clip carries them out in front of him)
+  { const walkW = (h.upright || 0) * (1 - sstep(2.8, 3.6, spd)) * sstep(0.3, 0.9, spd);
+    if (walkW > 0.01) {
+      const sw = Math.sin((h.phase + 0.25) * Math.PI * 2) * Math.min(0.34, 0.1 + spd * 0.1);
+      aim(uaR, faR, _v1.copy(_r).multiplyScalar(0.12).add(_v2.set(0, -1, 0)).addScaledVector(_f, sw).normalize(), walkW);
+      aim(faR, hR, _v1.copy(_r).multiplyScalar(0.03).add(_v2.set(0, -1, 0)).addScaledVector(_f, sw + 0.26).normalize(), walkW);
+      aim(uaL, faL, _v1.copy(_r).multiplyScalar(-0.12).add(_v2.set(0, -1, 0)).addScaledVector(_f, -sw).normalize(), walkW);
+      aim(faL, hL, _v1.copy(_r).multiplyScalar(-0.03).add(_v2.set(0, -1, 0)).addScaledVector(_f, -sw + 0.26).normalize(), walkW);
+    } }
   if (C && !a.dead && C.mode === 'limb') {   // out on a limb: arms held out for balance
     aim(uaR, faR, _v1.copy(_r).multiplyScalar(0.9).add(_v2.set(0, -0.25, 0)).normalize(), 0.65);
     aim(uaL, faL, _v1.copy(_r).multiplyScalar(-0.9).add(_v2.set(0, -0.25, 0)).normalize(), 0.65);
@@ -770,24 +877,31 @@ export function animateRiggedHuman(h, dt, a) {
     const thL = Bn['DEF-thighL'], shL = Bn['DEF-shinL'], ftL = Bn['DEF-footL'], thR = Bn['DEF-thighR'], shR = Bn['DEF-shinR'], ftR = Bn['DEF-footR'];
     const reach = (ua, fa, hb, target) => { ua.getWorldPosition(_v1); aim(ua, fa, _v2.subVectors(target, _v1).normalize(), 1); fa.getWorldPosition(_v1); aim(fa, hb, _v2.subVectors(target, _v1).normalize(), 1); };
     if (C.mode === 'hang' || C.mode === 'trunk') {
-      if (R.K) {   // a real two-bone reach: elbows out and a little back, straight only when the hold is at full stretch
-        ik2(uaR, faR, hR, C.gripR, _v3.copy(_r).multiplyScalar(0.9).addScaledVector(_f, -0.35));
-        ik2(uaL, faL, hL, C.gripL, _v3.copy(_r).multiplyScalar(-0.9).addScaledVector(_f, -0.35));
+      if (R.K) {   // a real two-bone reach: elbows out and down, straight only when the hold is at full stretch
+        ik2(uaR, faR, hR, C.gripR, _v3.copy(_r).multiplyScalar(0.9).addScaledVector(_f, -0.2).add(_v2.set(0, -0.5, 0)));
+        ik2(uaL, faL, hL, C.gripL, _v3.copy(_r).multiplyScalar(-0.9).addScaledVector(_f, -0.2).add(_v2.set(0, -0.5, 0)));
+        // and the hands themselves: the forearm turns with the hand, so the wrist is not wrung
+        for (const [fa, hb, F, thumb, fr, fra] of [[faR, hR, C.fingersR, C.thumbR, R.frames.handR, R.frames.armR], [faL, hL, C.fingersL, C.thumbL, R.frames.handL, R.frames.armL]]) {
+          fa.getWorldPosition(_v1); hb.getWorldPosition(_v2);
+          setFrame(R, fa, fra, _v4.subVectors(_v2, _v1), thumb);
+          setFrame(R, hb, fr, F, thumb);
+        }
       } else { reach(uaR, faR, hR, C.gripR); reach(uaL, faL, hL, C.gripL); }
     }
     if (C.mode === 'hang') {
       // legs trail the swing; skimming the ground he tucks them, thighs up and forward, shins hanging
       const down = _v3.copy(C.up).negate().addScaledVector(C.vel, -0.05).normalize(), kick = Math.sin(h.t * 3) * 0.12 * (1 - (C.tuck || 0));
       h.tuck = (h.tuck || 0) + ((C.tuck || 0) - (h.tuck || 0)) * Math.min(1, dt * 10);
-      const tk = h.tuck, th = (s) => _v4.copy(down).multiplyScalar(1 - tk * 0.85).addScaledVector(_f, tk * 0.95 + s * kick).addScaledVector(_r, -0.12 * s).normalize();
-      aim(thL, shL, th(1), 1); aim(shL, ftL, _v4.copy(down).addScaledVector(_f, -0.15 - tk * 0.2).normalize(), 1);
-      aim(thR, shR, th(-1), 1); aim(shR, ftR, _v4.copy(down).addScaledVector(_f, -0.15 - tk * 0.2).normalize(), 1);
+      h.climbLeg = (h.climbLeg || 0) + ((C.climbing || 0) - (h.climbLeg || 0)) * Math.min(1, dt * 8);
+      const leg = (s) => { const k = Math.max(h.tuck, h.climbLeg * (s > 0 ? C.legL : C.legR) * 0.85); return _v4.copy(down).multiplyScalar(1 - k * 0.85).addScaledVector(_f, k * 0.95 + s * kick).addScaledVector(_r, -0.12 * s).normalize(); };
+      aim(thL, shL, leg(1), 1); aim(shL, ftL, _v4.copy(down).addScaledVector(_f, -0.15 - h.tuck * 0.2).normalize(), 1);
+      aim(thR, shR, leg(-1), 1); aim(shR, ftR, _v4.copy(down).addScaledVector(_f, -0.15 - h.tuck * 0.2).normalize(), 1);
     } else if (C.mode === 'trunk') {
-      const inn = _v3.copy(C.out).negate(), ph = C.phase * Math.PI;
-      for (const [th, sh, ft, s, o] of [[thL, shL, ftL, -1, 0], [thR, shR, ftR, 1, Math.PI]]) {
-        const lift = 0.35 + 0.3 * Math.sin(ph + o);
-        aim(th, sh, _v4.copy(inn).multiplyScalar(0.8).add(_v1.set(0, lift - 0.4, 0)).addScaledVector(_r, s * 0.25).normalize(), 1);
-        aim(sh, ft, _v4.set(0, -1, 0).addScaledVector(inn, 0.25).normalize(), 1);
+      // the feet are on the wood too (the climb's gait places them), knees out to the sides, soles flat against it
+      const inn = _v3.copy(C.out).negate();
+      for (const [th, sh, ft, s, target, fr] of [[thL, shL, ftL, -1, C.footL, R.K && R.frames.footL], [thR, shR, ftR, 1, C.footR, R.K && R.frames.footR]]) {
+        ik2(th, sh, ft, target, _v4.copy(_r).multiplyScalar(s * 0.45).add(_v1.set(0, 0.35, 0)).addScaledVector(inn, -0.8));
+        if (fr) setFrame(R, ft, fr, _v4.set(0, 0.55, 0).addScaledVector(inn, 0.85), _v1.copy(_r).negate());
       }
     } else if (C.mode === 'air') {
       const ahead = _v3.copy(C.vel).setY(0).multiplyScalar(0.12).add(_v4.set(0, 1, 0)).normalize();
@@ -845,6 +959,10 @@ export function animateRiggedHuman(h, dt, a) {
     }
     if (h.swimS > 0.01) { const sw = h.t * 2.6; aim(uaR, faR, dirOf(_v1, Math.cos(sw), 0.3, 0.3), h.swimS * 0.8); aim(uaL, faL, dirOf(_v1, -Math.cos(sw), 0.3, -0.3), h.swimS * 0.8); }
   }
+  if (a.reach && R.K && !a.dead && a.reach.w > 0.001) {
+    hR.getWorldPosition(_v1).lerp(a.reach.to, a.reach.w);
+    ik2(uaR, faR, hR, _v1, _v3.copy(_r).multiplyScalar(0.8).add(_v2.set(0, 0.25, 0)).addScaledVector(_f, -0.3));
+  }
   // grip frames follow the hands: fingers along -Y, handle along +Z
   for (const [grip, fa, hb, side] of [[h.j.handR, faR, hR, 1], [h.j.handL, faL, hL, -1]]) {
     fa.getWorldPosition(_a); hb.getWorldPosition(_b);
@@ -861,6 +979,15 @@ export function animateRiggedHuman(h, dt, a) {
   }
   // the sling follows the upper back
   { const sp = Bn['DEF-spine003']; if (sp && h.j.back) { sp.getWorldPosition(_a); h.j.back.position.copy(h.root.worldToLocal(_a)); h.j.back.position.z -= 0.16; } }
+  // what he carries is tied to the upper back, and turns and bends with it
+  { const sp = Bn['DEF-spine003'], pk = h.j.pack;
+    if (sp && pk && R.frames) {
+      sp.getWorldPosition(_a); pk.position.copy(h.root.worldToLocal(_a));
+      h.root.getWorldQuaternion(_q3).invert();
+      R.inst.getWorldQuaternion(_q2); _q.copy(_q3).multiply(_q2).invert();                 // the body's own turn inside the root
+      sp.getWorldQuaternion(_q2); _q2.multiply(_qi.copy(R.frames.q[sp.name]).invert()).multiply(_q);   // the back, relative to its rest
+      pk.quaternion.copy(_q3).multiply(_q2);
+    } }
   // the head turns toward something worth watching, smoothly and within a natural range (world-space, so it does
   // not depend on the bone's own axes): right is negative yaw about the up axis, up is positive about body-right
   const head = Bn['DEF-head'];

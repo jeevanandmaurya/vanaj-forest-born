@@ -84,6 +84,8 @@ export class Ropes {
     const px = P.pos.x, py = P.pos.y, pz = P.pos.z, PR = 0.3;
     for (const R of this.active.values()) {
       const n = R.N, x = R.x, o = R.o, V = R.V;
+      // a root takes up a little slack under his weight, enough to swing out on when he throws his weight about
+      if (R.fixed) { const want = V.len / (n - 1) * (V.grabbed ? 1.016 : 1.0025); R.L0 += (want - R.L0) * Math.min(1, h * 2.5); }
       // the top rides on the soft limb
       R.off.set(0, 0, 0);
       const S = near && V.limb ? near.softOf(R.T) : null;
@@ -93,7 +95,7 @@ export class Ropes {
       const wf = (R.fixed ? 0.25 : 1.5) * gust * (0.6 + 0.4 * Math.sin(time * 1.3 + R.ph * 2));
       for (let i = 1; i < n; i++) {
         if (R.fixed && i === n - 1) continue;
-        const k = i * 3, vx = (x[k] - o[k]) * 0.985, vy = (x[k + 1] - o[k + 1]) * 0.985, vz = (x[k + 2] - o[k + 2]) * 0.985;
+        const dmp = V.held && i * R.L0 > (V.holdS ?? 0) ? 0.93 : 0.985, k = i * 3, vx = (x[k] - o[k]) * dmp, vy = (x[k + 1] - o[k + 1]) * dmp, vz = (x[k + 2] - o[k + 2]) * dmp;   // (the tail below his hands trails, it doesn't whip)
         o[k] = x[k]; o[k + 1] = x[k + 1]; o[k + 2] = x[k + 2];
         x[k] += vx + windX * wf * h * h * 10; x[k + 1] += vy - 9.8 * h * h; x[k + 2] += vz + windZ * wf * h * h * 10;
       }
@@ -104,7 +106,7 @@ export class Ropes {
         if (hold > 0) { const k = hold * 3; x[k] = V.hand.x; x[k + 1] = V.hand.y; x[k + 2] = V.hand.z; }
         for (let i = 0; i < n - 1; i++) {
           const a = i * 3, b = a + 3, dx = x[b] - x[a], dy = x[b + 1] - x[a + 1], dz = x[b + 2] - x[a + 2], d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-4;
-          const e = (d - R.L0) / d, pa = i === 0 ? 0 : 0.5, pb = (R.fixed && i === n - 2) ? 0 : (i === 0 ? 1 : 0.5);
+          const e = (d - (hold > 0 && i < hold ? V.holdS / hold : R.L0)) / d, pa = i === 0 ? 0 : 0.5, pb = (R.fixed && i === n - 2) ? 0 : (i === 0 ? 1 : 0.5);
           x[a] += dx * e * pa; x[a + 1] += dy * e * pa; x[a + 2] += dz * e * pa;
           x[b] -= dx * e * pb; x[b + 1] -= dy * e * pb; x[b + 2] -= dz * e * pb;
         }

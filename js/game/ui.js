@@ -247,7 +247,7 @@ export class UI {
     const inv = this.g.inv;
     const list = $('inv-items'); list.innerHTML = '';
     const keys = Object.keys(inv.items).sort((a, b) => (ITEMS[a]?.story ? 1 : 0) - (ITEMS[b]?.story ? 1 : 0));
-    if (!keys.length) list.innerHTML = '<p class="empty">Nothing. Gather sticks and stones from the forest floor.</p>';
+    if (!keys.length) list.innerHTML = '<p class="empty">Nothing yet. Pick up sticks and stones off the ground.</p>';
     for (const k of keys) {
       const d = ITEMS[k] || { name: k };
       const e = el('div', 'item' + (d.story ? ' story' : ''), `<img src="${iconFor(k)}"><b>${d.name}</b><i>${inv.count(k)}</i><span>${d.desc || ''}</span>`);
@@ -272,6 +272,7 @@ export class UI {
   addJournal(title, text, kind = 'story') { this.journal.push({ title, text, kind }); this.toast(`Journal: ${title}`, 4); }
   seeLore(k) { if (LORE[k] && !this.loreSeen.has(k)) { this.loreSeen.add(k); this.toast(`Forest lore: ${LORE[k].name}`, 3.5); } }
   renderJournal() {
+    $('j-skills').innerHTML = this.g.lessons.list();
     const s = $('j-story'); s.innerHTML = '';
     if (!this.journal.length) s.innerHTML = '<p class="empty">Nothing written yet.</p>';
     for (const j of [...this.journal].reverse()) s.appendChild(el('div', 'jentry ' + j.kind, `<h3>${j.title}</h3><p>${j.text}</p>`));
@@ -319,7 +320,7 @@ export class UI {
     L.forEach(([col, name], i) => { const yy = S - 18 - (L.length - 1 - i) * 18; x.fillStyle = col; x.fillRect(14, yy - 10, 14, 12); x.strokeStyle = 'rgba(58,42,28,0.5)'; x.lineWidth = 1; x.strokeRect(14, yy - 10, 14, 12); x.fillStyle = ink; x.fillText(name, 34, yy); });
   }
   showDeath(cause) {
-    const msgs = { bleed: 'You bled into the leaves.', drown: 'The river kept you.', starve: 'Hunger is patient.', thirst: 'The heat drank you.', fall: 'The ground came up hard.', wounds: 'The forest is not cruel. It is attentive.' };
+    const msgs = { bleed: "You bled out.", drown: "You drowned.", starve: "You starved.", thirst: "You died of thirst.", fall: "That was too far to fall.", wounds: "The forest got you." };
     $('death-msg').textContent = msgs[cause] || msgs.wounds;
     $('death').classList.add('show'); this.g.uiBlocking = true; document.exitPointerLock && document.exitPointerLock();
   }

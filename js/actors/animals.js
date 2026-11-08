@@ -359,7 +359,7 @@ function getTemplate(sp) {
 // ------------------------------------------------------------------------------------------------ Animal
 let UID = 1;
 const V = () => new THREE.Vector3();
-const tmp1 = V(), tmp2 = V();
+const tmp1 = V(), tmp2 = V(), tmp3 = V();
 
 export class Animal {
   constructor(species, pos, opts = {}) {
@@ -389,7 +389,7 @@ export class Animal {
     this.aggro = opts.aggro || 0; // 0..1 willingness to attack player
     this.bond = opts.bond || 0;
     this.companion = !!opts.companion;
-    this.dead = false; this.deadT = 0; this.harvested = false; this.anim = { pounce: 0, swipe: 0, bite: 0, rear: 0, graze: 0, sit: 0, lie: 0, fly: 0, roll: 0, alertTail: 0 };
+    this.dead = false; this.deadT = 0; this.harvested = false; this.anim = { climb: 0, incline: 0, pounce: 0, swipe: 0, bite: 0, rear: 0, graze: 0, sit: 0, lie: 0, fly: 0, roll: 0, alertTail: 0 };
     this.air = 0; this.vy = 0;
     this.scale = opts.scale || (0.9 + Math.random() * 0.2) * (this.male ? 1.05 : 0.95);
     this.root.scale.setScalar(this.scale);
@@ -486,8 +486,12 @@ export class Animal {
   }
   // --------------------------------------------------------------------------- locomotion
   steer(goalX, goalZ, speed, dt, W, face = true) {
+    const gd = Math.hypot(goalX - this.pos.x, goalZ - this.pos.z);
+    // something in the way (a trunk, a rock, the water's edge): head for a point off to one side until clear, instead of
+    // pressing on at the goal and grinding or spinning on the spot
+    if (this.detourT > 0) { this.detourT -= dt; goalX = this.detour.x; goalZ = this.detour.z; }
     const dx = goalX - this.pos.x, dz = goalZ - this.pos.z;
-    const d = Math.hypot(dx, dz);
+    const d = this.detourT > 0 ? Math.max(gd, 1) : gd;
     if (d > 0.05 && face) {
       const want = Math.atan2(dx, dz);
       let diff = want - this.yaw; while (diff > Math.PI) diff -= 2 * Math.PI; while (diff < -Math.PI) diff += 2 * Math.PI;
@@ -496,9 +500,30 @@ export class Animal {
       if (Math.abs(diff) > 1.6) speed *= 0.3;
     }
     this.targetSpeed = d < 0.3 ? 0 : speed;
-    return d;
+    return gd;
+  }
+  // go round: a point ahead and to the side that is on dry land, keeping to the same side while it is the same obstacle
+  sidestep(W, mustBeDry) {
+    const fx = Math.sin(this.yaw), fz = Math.cos(this.yaw), R = Math.max(3, this.radius * 7);
+    if (!this.avoidT || this.avoidT <= 0) this.avoidSide = Math.random() < 0.5 ? -1 : 1;
+    for (let k = 0; k < 2; k++) {
+      const s = this.avoidSide, x = this.pos.x + (fx * 0.35 + fz * s) * R, z = this.pos.z + (fz * 0.35 - fx * s) * R;
+      if (k === 1 || !mustBeDry || !this.wet(x, z)) { this.detour = this.detour || { x: 0, z: 0 }; this.detour.x = x; this.detour.z = z; this.detourT = 0.9 + Math.random() * 0.5; this.avoidT = 2.5; return; }
+      this.avoidSide = -s;
+    }
+  }
+  wet(x, z) { return waterAt(x, z) > groundHeight(x, z) + 0.75 * this.scale; }
+  // a goal on dry land near the one asked for
+  dryGoal(x, z, tries = 6) {
+    for (let i = 0; i < tries; i++) {
+      if (!this.wet(x, z)) return this.goal.set(x, 0, z);
+      x = this.pos.x + (x - this.pos.x) * 0.6 + (Math.random() - 0.5) * 24; z = this.pos.z + (z - this.pos.z) * 0.6 + (Math.random() - 0.5) * 24;
+    }
+    return this.goal.set(this.pos.x, 0, this.pos.z);
   }
   integrate(dt, W) {
+    // in a tree its own climbing moves it (this.speed only drives the legs)
+    if (this.tm) return;
     const acc = this.targetSpeed > this.speed ? 6 + this.d.run * 0.5 : 10;
     this.speed += clamp(this.targetSpeed - this.speed, -acc * dt, acc * dt);
     if (this.limp) this.speed = Math.min(this.speed, this.d.run * (1 - this.limp * 0.55));
@@ -508,7 +533,7 @@ export class Animal {
     // water avoidance
     const gy = groundHeight(nx, nz), wl = waterAt(nx, nz);
     const aquatic = this.sp === 'mugger';
-    if (!aquatic && wl > gy + 0.9 * this.scale && !this.canSwim) { this.yaw += 1.2 * dt * 3; this.speed *= 0.5; }
+    if (!aquatic && wl > gy + 0.9 * this.scale && !this.canSwim) { this.speed *= 0.5; if (!(this.detourT > 0)) this.sidestep(W, true); }
     else if (aquatic && wl < gy + 0.4 && this.state !== 'charge' && this.state !== 'bask') { this.yaw += 2 * dt; this.speed *= 0.5; }
     else { this.pos.x = nx; this.pos.z = nz; }
     if (Math.abs(this.pos.x) > HALF - 40) this.pos.x = Math.sign(this.pos.x) * (HALF - 40);
@@ -520,8 +545,19 @@ export class Animal {
       if (W.phys && this.dist2(W.player.pos) < 45 * 45 && !this.air) blocked = W.phys.moveActor(this, x0, z0);
       else blocked = (W.veg ? W.veg.collide(this.pos, this.radius * 0.6) : false) | (W.props && W.props.collide ? W.props.collide(this.pos, this.radius * 0.7) : false);
       // slide round the obstacle instead of grinding into it
-      if (blocked && this.speed > 0.3) { if (!this.avoidT || this.avoidT <= 0) { this.avoidSide = Math.random() < 0.5 ? -1 : 1; } this.avoidT = 0.8; }
-      if (this.avoidT > 0) { this.avoidT -= dt; this.yaw += this.avoidSide * 2.2 * dt * clamp(this.speed / 3, 0.4, 1.4); }
+      if (blocked && this.speed > 0.3 && !(this.detourT > 0)) this.sidestep(W, true);
+    }
+    if (this.avoidT > 0) this.avoidT -= dt;
+    // Going somewhere and getting nowhere for two seconds: give up on this way. A wanderer picks somewhere else; anything
+    // else goes round.
+    this.stuckCheck = (this.stuckCheck || 0) + dt;
+    if (this.stuckCheck > 2) {
+      const moved = Math.hypot(this.pos.x - (this.chkX ?? this.pos.x), this.pos.z - (this.chkZ ?? this.pos.z));
+      if (this.targetSpeed > 0.5 && moved < this.targetSpeed * 0.2 && !this.scripted) {
+        if (this.state === 'wander') { this.goingToDrink = false; this.restNext = false; this.pickWander(W); }
+        else { this.avoidT = 0; this.sidestep(W, true); }
+      }
+      this.stuckCheck = 0; this.chkX = this.pos.x; this.chkZ = this.pos.z;
     }
     const g2 = groundHeight(this.pos.x, this.pos.z);
     if (this.air > 0) {
@@ -610,10 +646,12 @@ export class Animal {
         let ax = this.pos.x - th.x, az = this.pos.z - th.z; const l = Math.hypot(ax, az) || 1; ax /= l; az /= l;
         // weave
         const w = Math.sin(this.t * 0.9 + this.id) * 0.5;
-        const gx = this.pos.x + (ax * Math.cos(w) - az * Math.sin(w)) * 20, gz = this.pos.z + (az * Math.cos(w) + ax * Math.sin(w)) * 20;
+        let gx = this.pos.x + (ax * Math.cos(w) - az * Math.sin(w)) * 20, gz = this.pos.z + (az * Math.cos(w) + ax * Math.sin(w)) * 20;
+        // not into the river: swing the way out toward whichever side is dry
+        if (this.wet(gx, gz)) for (const off of [0.9, -0.9, 1.6, -1.6]) { const c = Math.cos(w + off), s = Math.sin(w + off), x = this.pos.x + (ax * c - az * s) * 20, z = this.pos.z + (az * c + ax * s) * 20; if (!this.wet(x, z)) { gx = x; gz = z; break; } }
         this.steer(gx, gz, this.d.run * (this.group ? 0.92 : 1), dt, W);
         if (this.sp === 'peafowl' && this.stateT < 0.1 && Math.random() < 0.5) { this.air = 1; this.vy = 7; this.anim.fly = 1; }
-        if (this.timer <= 0 && l > 50) { this.setState('idle', 2); this.anim.alertTail = 0; this.home.copy(this.pos); }
+        if ((this.timer <= 0 && l > 50) || this.stateT > 28) { this.setState('idle', 2); this.anim.alertTail = 0; this.home.copy(this.pos); }
         break;
       }
       case 'stalk': this.doStalk(dt, W); break;
@@ -699,7 +737,7 @@ export class Animal {
     const c = g ? g.center : this.home;
     const r = g ? g.radius : this.homeR;
     const a = Math.random() * 6.28, rr = Math.sqrt(Math.random()) * r;
-    this.goal.set(c.x + Math.cos(a) * rr, 0, c.z + Math.sin(a) * rr);
+    this.dryGoal(c.x + Math.cos(a) * rr, c.z + Math.sin(a) * rr);
     if (this.sp === 'bear' && W.findForage) { const f = W.findForage(this.pos); if (f && Math.random() < 0.6) { this.goal.copy(f); this.forageNext = true; } }
     this.setState('wander', 20);
   }
@@ -861,62 +899,167 @@ export class Animal {
     this.hp = Math.min(this.maxHp, this.hp + dt * 2);
   }
   // --------------------------------------------------------------------------- langur
+  // A grey langur lives on real wood, from the trees' own climbing skeletons (the same limbs Vanaj climbs). It walks on
+  // the ground on all fours, runs to a trunk and climbs it, walks out along a limb and sits, leaps limb to limb and tree
+  // to tree, and comes back down the trunk to feed. Langurs spend much of the day on the ground, stay near their troop,
+  // watch from high up, and give the alarm cough when they see a cat. this.tm: climb | down | limb | sit (null on the ground)
   thinkLangur(dt, W) {
-    const pd = this.perceivePlayer(W, dt);
-    const g = this.group;
+    const pd = this.perceivePlayer(W, dt), g = this.group, A = this.anim;
     const pr = W.nearestPredator(this, 90);
-    if (pr) { this.alarm(W, pr.sp); this.lookAt = pr.pos; if (!this.perch && this.state !== 'climb') this.findPerch(W, true); }
-    else this.lookAt = null;
-    if (this.bond < 0.6 && this.awareness > 1.1 && pd < 25) { this.alarm(W, 'human'); if (!this.perch) this.findPerch(W, true); }
+    const seen = this.bond < 0.6 && this.awareness > 1.1 && pd < 16;
+    if (pr) { this.alarm(W, pr.sp); this.lookAt = pr.pos; this.threat = pr.pos; this.fearT = 16; }
+    else if (seen) { this.alarm(W, 'human'); this.lookAt = W.player.pos; this.threat = W.player.pos; this.fearT = Math.max(this.fearT || 0, 8); }
+    else { this.fearT = Math.max(0, (this.fearT || 0) - dt); if (this.fearT <= 0) this.lookAt = pd < 14 && this.awareness > 0.5 ? W.player.pos : null; }
+    const scared = this.fearT > 0;
+    A.climb = lerp(A.climb, this.tm === 'climb' || this.tm === 'down' ? 1 : 0, Math.min(1, dt * 8));
+    if (this.tm !== 'limb') A.incline = lerp(A.incline, 0, Math.min(1, dt * 6));
+    // in the air, on its way to a limb
     if (this.hop) {
       const h = this.hop; h.t += dt / h.dur;
       const t = Math.min(1, h.t);
       this.pos.lerpVectors(h.from, h.to, t); this.pos.y += Math.sin(t * Math.PI) * h.arc;
       this.yaw = Math.atan2(h.to.x - h.from.x, h.to.z - h.from.z);
-      this.anim.sit = 0; this.anim.pounce = 1;
-      if (t >= 1) { this.hop = null; this.anim.pounce = 0; this.perch = h.perch; if (!h.perch) this.pos.y = groundHeight(this.pos.x, this.pos.z); }
-      this.targetSpeed = 0; this.speed = 0;
+      A.sit = lerp(A.sit, 0, Math.min(1, dt * 12)); A.pounce = 1; this.speed = 0; this.targetSpeed = 0;
+      if (t >= 1) { this.hop = null; A.pounce = 0; if (h.L) { this.onLimb(h.T, h.L, h.s); this.tm = 'sit'; this.timer = 1 + Math.random() * 5; } else { this.tm = null; this.perch = null; this.pos.y = groundHeight(this.pos.x, this.pos.z); this.setState('idle', 1); } }
       return;
     }
-    if (this.perch) {
-      this.targetSpeed = 0; this.anim.sit = lerp(this.anim.sit, 1, dt * 3);
-      this.pos.set(this.perch.x, this.perch.y, this.perch.z);
-      if (this.lookAt) this.faceTowards(this.lookAt, dt * 2);
-      this.timer -= 0;
-      if (this.timer <= 0) {
-        this.timer = 4 + Math.random() * 12;
-        const toCenter = g ? Math.hypot(g.center.x - this.pos.x, g.center.z - this.pos.z) : 0;
-        if (!pr && Math.random() < 0.18 && !(this.bond < 0.6 && pd < 30)) { // come down to forage
-          const a = Math.random() * 6.28; const to = new THREE.Vector3(this.pos.x + Math.cos(a) * 3, 0, this.pos.z + Math.sin(a) * 3); to.y = groundHeight(to.x, to.z);
-          this.hop = { from: this.pos.clone(), to, t: 0, dur: 0.9, arc: 0.6, perch: null }; this.perch = null;
-        } else if (Math.random() < 0.6 || toCenter > 25) this.findPerch(W, false);
+    // set down in a tree by a story script
+    if (this.perch && !this.tm) { this.tm = 'sit'; this.tree = null; this.limb = null; this.timer = 2 + Math.random() * 4; }
+    if (this.tm) return this.treeLife(dt, W, pd, pr, scared);
+    // on the ground
+    this.perch = null;
+    if (scared && !this.runTo) this.pickTree(W, true);
+    if (this.runTo) {
+      const T = this.runTo, c = T.spine.pts[0], d = this.steer(c.x, c.z, scared ? this.d.run : this.d.trot, dt, W);
+      A.sit = lerp(A.sit, 0, Math.min(1, dt * 8));
+      if (d < T.spine.r[0] + 0.7) this.startClimb(T, scared);
+      else if (this.timer <= 0) { this.runTo = null; this.setState('idle', 1); }
+      return;
+    }
+    A.sit = lerp(A.sit, this.state === 'idle' ? 1 : 0, dt * 3); A.graze = lerp(A.graze, this.state === 'graze' ? 1 : 0, dt * 3);
+    if (this.state === 'wander') { const d = this.steer(this.goal.x, this.goal.z, this.d.walk, dt, W); if (d < 0.8 || this.timer <= 0) this.setState(Math.random() < 0.6 ? 'graze' : 'idle', 4 + Math.random() * 9); return; }
+    this.targetSpeed = 0; if (this.lookAt) this.faceTowards(this.lookAt, dt * 2);
+    if (this.timer <= 0) {
+      const c = g ? g.center : this.home, far = Math.hypot(c.x - this.pos.x, c.z - this.pos.z) > 22, hour = W.hour ?? 12, roost = hour > 18 || hour < 5.5;
+      if (roost || far || Math.random() < 0.3) this.pickTree(W, false);
+      else { this.dryGoal(c.x + (Math.random() - 0.5) * 22, c.z + (Math.random() - 0.5) * 22); this.setState('wander', 9); }
+    }
+  }
+  // the climbable tree to make for: close by, stout, toward the troop, away from whatever frightened it
+  pickTree(W, urgent) {
+    const c = this.group ? this.group.center : this.home, th = this.threat;
+    let best = null, bs = Infinity;
+    for (const T of W.veg ? W.veg.climbNear(this.pos.x, this.pos.z, urgent ? 45 : 30) : []) {
+      if (!T.spine || T.spine.r[0] < 0.12 || !T.limbs.some((L) => L.r[0] > 0.07)) continue;
+      const x = T.spine.pts[0].x, z = T.spine.pts[0].z, d = Math.hypot(x - this.pos.x, z - this.pos.z);
+      let s = d * (urgent ? 1 : 0.5) + Math.hypot(x - c.x, z - c.z) * (urgent ? 0.1 : 0.4) + Math.random() * 6;
+      if (urgent && th) s -= Math.hypot(x - th.x, z - th.z) * 0.4;
+      if (s < bs) { bs = s; best = T; }
+    }
+    if (best) { this.runTo = best; this.setState('run', urgent ? 12 : 20); }
+    else this.setState('idle', 3 + Math.random() * 4);
+  }
+  // up the trunk, to a limb it means to sit on (high when frightened)
+  startClimb(T, urgent) {
+    this.runTo = null; this.tree = T; this.tm = 'climb'; this.perch = this.perch || { x: 0, y: 0, z: 0 };
+    const opts = T.limbs.filter((L) => { if (L.r[0] <= 0.07 || L.pts[0].y >= T.top) return false; const r = this.woodAt(T, L.pts[0].y, tmp1); return Math.hypot(L.pts[0].x - tmp1.x, L.pts[0].z - tmp1.z) < r + 0.8; });
+    const L = opts.sort((a, b) => (urgent ? b.pts[0].y - a.pts[0].y : a.pts[0].y - b.pts[0].y))[Math.floor(Math.random() * Math.min(urgent ? 2 : 4, opts.length))];
+    this.limb = L; this.climbTo = L ? L.pts[0].y : T.top - 0.5; this.urgent = urgent;
+    const c = T.spine.pts[0]; this.th = Math.atan2(this.pos.z - c.z, this.pos.x - c.x);
+    this.cy = Math.max(this.pos.y, c.y);
+    if (Math.random() < 0.25) this.say = 1;
+  }
+  // axis point and radius of a tree's way up at height y
+  woodAt(T, y, out) {
+    const P = T.spine.pts, R = T.spine.r;
+    for (let i = 0; i < P.length - 1; i++) if (y <= P[i + 1].y || i === P.length - 2) { const t = clamp((y - P[i].y) / Math.max(1e-3, P[i + 1].y - P[i].y), 0, 1); out.lerpVectors(P[i], P[i + 1], t); return R[i] + (R[i + 1] - R[i]) * t; }
+    out.copy(P[0]); return R[0];
+  }
+  // stand on a limb, s metres along it
+  onLimb(T, L, s) {
+    this.tree = T; this.limb = L; this.perch = this.perch || { x: 0, y: 0, z: 0 };
+    if (L.len === undefined) { L.len = 0; for (let i = 0; i < L.pts.length - 1; i++) L.len += L.pts[i].distanceTo(L.pts[i + 1]); }
+    this.ls = clamp(s, 0.3, L.len);
+    let u = this.ls, r = L.r[0];
+    for (let i = 0; i < L.pts.length - 1; i++) {
+      const a = L.pts[i], b = L.pts[i + 1], l = a.distanceTo(b);
+      if (u <= l || i === L.pts.length - 2) { const t = clamp(u / Math.max(l, 1e-3), 0, 1); this.pos.lerpVectors(a, b, t); r = L.r[i] + (L.r[i + 1] - L.r[i]) * t; this.limbSlope = (b.y - a.y) / Math.max(l, 1e-3); break; }
+      u -= l;
+    }
+    this.pos.y += r + 0.01; this.perch.x = this.pos.x; this.perch.y = this.pos.y; this.perch.z = this.pos.z;
+  }
+  // the furthest out along this limb that will bear a langur
+  limbEnd(L) { let s = 0; for (let i = 0; i < L.pts.length - 1 && L.r[i + 1] > 0.035; i++) s += L.pts[i].distanceTo(L.pts[i + 1]); return Math.max(0.5, s); }
+  treeLife(dt, W, pd, pr, scared) {
+    const A = this.anim, T = this.tree, L = this.limb, g = this.group;
+    this.targetSpeed = 0;
+    if (this.tm === 'climb' || this.tm === 'down') {
+      const up = this.tm === 'climb', v = (up ? 1 : -1) * (this.urgent || scared ? 5.2 : 2.6);
+      this.cy += v * dt; this.speed = Math.abs(v) * 1.2;
+      const ax = tmp1, r = this.woodAt(T, this.cy, ax), ox = Math.cos(this.th), oz = Math.sin(this.th);
+      this.pos.set(ax.x + ox * (r + 0.1), this.cy, ax.z + oz * (r + 0.1));
+      this.yaw = up ? Math.atan2(-ox, -oz) : Math.atan2(-ox, -oz);
+      this.perch.x = this.pos.x; this.perch.y = this.pos.y; this.perch.z = this.pos.z;
+      A.sit = lerp(A.sit, 0, Math.min(1, dt * 10));
+      if (up && this.cy >= this.climbTo) {
+        if (L) { this.onLimb(T, L, 0.4); this.tm = 'limb'; this.lTo = 0.6 + Math.random() * (this.limbEnd(L) - 0.6); }
+        else { this.tm = 'sit'; this.timer = 3 + Math.random() * 6; }
+      }
+      const gy = groundHeight(this.pos.x, this.pos.z);
+      if (!up && this.cy <= gy + 0.05) { this.tm = null; this.tree = null; this.limb = null; this.perch = null; this.pos.y = gy; this.speed = 0; this.setState(Math.random() < 0.6 ? 'graze' : 'idle', 5 + Math.random() * 14); }
+      return;
+    }
+    if (this.tm === 'limb') {
+      const dir = Math.sign(this.lTo - this.ls) || 1, v = scared ? 3.6 : 1.1, ds = v * dt;
+      this.speed = v;
+      const s0 = this.ls; this.onLimb(T, L, this.ls + dir * ds);
+      if (Math.abs(this.ls - s0) > 1e-4) { const q = tmp2.copy(this.pos); this.onLimb(T, L, this.ls + dir * 0.1); tmp3.copy(this.pos); this.onLimb(T, L, s0 + dir * ds); this.yaw = Math.atan2(tmp3.x - q.x, tmp3.z - q.z); }
+      A.sit = lerp(A.sit, 0, Math.min(1, dt * 8));
+      A.incline = lerp(A.incline, clamp(Math.atan(this.limbSlope * dir), -0.7, 0.7), Math.min(1, dt * 6));
+      if (Math.abs(this.ls - this.lTo) < 0.08) {
+        if (this.lTo <= 0.45 && this.after === 'down' && T) { this.tm = 'down'; this.cy = this.pos.y; const c = T.spine.pts[0]; this.th = Math.atan2(this.pos.z - c.z, this.pos.x - c.x); this.after = null; this.urgent = false; return; }
+        this.tm = 'sit'; this.speed = 0; this.timer = 3 + Math.random() * 9; this.after = null;
       }
       return;
     }
-    // on ground
-    this.anim.sit = lerp(this.anim.sit, this.state === 'idle' ? 1 : 0, dt * 2);
-    if (this.state === 'wander') { const d = this.steer(this.goal.x, this.goal.z, this.d.walk, dt, W); if (d < 1 || this.timer <= 0) this.setState('idle', 3 + Math.random() * 5); }
-    else { this.targetSpeed = 0; if (this.timer <= 0) { if (Math.random() < 0.5) this.findPerch(W, false); else { const c = g ? g.center : this.home; this.goal.set(c.x + (Math.random() - 0.5) * 20, 0, c.z + (Math.random() - 0.5) * 20); this.setState('wander', 10); } } }
+    // sitting on a limb: feeding, watching, resting
+    this.speed = 0; A.sit = lerp(A.sit, 1, Math.min(1, dt * 4));
+    if (this.limb) { this.onLimb(T, L, this.ls); } else { this.pos.set(this.perch.x, this.perch.y, this.perch.z); }
+    if (this.lookAt) this.faceTowards(this.lookAt, dt * 2);
+    const near = pd < 9 && this.bond < 0.6 && W.player.pos.y > this.pos.y - 5;
+    if (this.timer > 0 && !(near && scared)) return;
+    this.timer = 3 + Math.random() * 11;
+    const c = g ? g.center : this.home, toCenter = Math.hypot(c.x - this.pos.x, c.z - this.pos.z), hour = W.hour ?? 12, roost = hour > 18 || hour < 5.5;
+    if (near && scared) { if (this.leap(W, true)) return; }
+    const r = Math.random();
+    if (scared) { if (r < 0.3) this.leap(W, true); else if (r < 0.5 && L) { this.lTo = Math.random() * this.limbEnd(L); this.tm = 'limb'; } return; }   // mostly stays put and watches
+    if (toCenter > 18 && this.leap(W, false, c)) return;
+    if (!roost && r < 0.16 && T && T.spine) { if (L) { this.lTo = 0.3; this.after = 'down'; this.tm = 'limb'; } else { this.leap(W, false); } return; }
+    if (r < 0.42 && L) { this.lTo = 0.4 + Math.random() * (this.limbEnd(L) - 0.4); this.tm = 'limb'; return; }
+    if (r < 0.62) this.leap(W, false, toCenter > 8 ? c : null);
   }
-  findPerch(W, urgent) {
-    const P = W.veg ? W.veg.perches : [];
-    const c = this.group ? this.group.center : this.home;
-    let best = null, bs = 1e9;
-    for (let i = 0; i < P.length; i += 4) {
-      const x = P[i], y = P[i + 1], z = P[i + 2];
-      const dd = (x - this.pos.x) ** 2 + (z - this.pos.z) ** 2;
-      if (dd > 18 * 18 || dd < 4) continue;
-      const dc = (x - c.x) ** 2 + (z - c.z) ** 2;
-      const s = dc * 0.5 + dd * (urgent ? 0.2 : 1) + Math.random() * 120;
-      if (s < bs) { bs = s; best = { x: x + (Math.random() - 0.5) * 1.5, y, z: z + (Math.random() - 0.5) * 1.5 }; }
+  // a leap to another limb within reach, in this tree or the next; falls back to nothing if none is in range
+  leap(W, urgent, toward) {
+    let best = null, bs = Infinity; const p = this.pos, th = this.threat;
+    for (const T of W.veg ? W.veg.climbNear(p.x, p.z, 20) : []) for (const L of T.limbs) {
+      if (L === this.limb || L.r[0] < 0.06) continue;
+      for (let i = 1; i < L.pts.length; i++) {
+        if (L.r[i] < 0.045) break;
+        const q = L.pts[i], dh = Math.hypot(q.x - p.x, q.z - p.z), dy = q.y - p.y;
+        if (dh < 1.6 || dh > 9.5 || dy > 3 || dy < -8) continue;
+        let s = dh * 0.3 + Math.random() * 5;
+        if (toward) s += Math.hypot(q.x - toward.x, q.z - toward.z) * 0.8;
+        if (urgent && th) s -= Math.hypot(q.x - th.x, q.z - th.z) * 0.8;
+        if (s < bs) { bs = s; let sl = 0; for (let k = 0; k < i; k++) sl += L.pts[k].distanceTo(L.pts[k + 1]); best = { T, L, s: sl, q }; }
+      }
     }
-    if (best) {
-      const to = new THREE.Vector3(best.x, best.y, best.z);
-      const dist = to.distanceTo(this.pos);
-      this.hop = { from: this.pos.clone(), to, t: 0, dur: Math.max(0.6, dist / 9), arc: Math.min(3, 1 + dist * 0.12), perch: best };
-      this.perch = null;
-      if (Math.random() < 0.3) W.audio.animal('langur', 'whoop', this.pos);
-    }
+    if (!best) return false;
+    const to = best.q.clone(); to.y += best.L.r[Math.min(best.L.r.length - 1, 2)] * 0.5;
+    const dist = to.distanceTo(p);
+    this.hop = { from: p.clone(), to, t: 0, dur: Math.max(0.45, dist / 7.5), arc: Math.min(2.2, 0.5 + dist * 0.2), T: best.T, L: best.L, s: best.s };
+    this.tm = 'leap'; this.limb = null; this.speed = 0;
+    if (Math.random() < 0.3) W.audio.animal('langur', 'whoop', p);
+    return true;
   }
   // --------------------------------------------------------------------------- mugger
   thinkCroc(dt, W) {
@@ -1034,6 +1177,7 @@ export class Animal {
       if (A.lie > 0.01) { u = lerp(u, front ? -1.2 : 0.9, A.lie); l = lerp(l, front ? 2.3 : -2.0, A.lie); }
       if (A.sit > 0.01) { if (!front) { u = lerp(u, d.primate ? -1.4 : -1.0, A.sit); l = lerp(l, d.primate ? 2.4 : 2.0, A.sit); } else if (d.primate) { u = lerp(u, 0.4, A.sit); l = lerp(l, -0.3, A.sit); } }
       if (A.pounce > 0.01) { u = lerp(u, front ? -1.25 : 0.9, A.pounce); l = lerp(l, front ? -0.2 : 0.1, A.pounce); }
+      if (A.climb > 0.01) { const sw = Math.sin(p) * 0.45 * moving; u = lerp(u, (front ? -1.45 : -0.9) + sw, A.climb); l = lerp(l, front ? 0.5 : 1.1, A.climb); }
       if (A.swipe > 0.01 && n === 'RF') { const s = Math.sin(A.swipe * Math.PI); u = lerp(u, -1.9, s); l = lerp(l, -0.8, s); }
       if (A.rear > 0.01 && front) { u = lerp(u, -1.3, A.rear); l = lerp(l, -0.6, A.rear); }
       if (this.dead) { const k = Math.min(1, this.deadT * 1.5); u = lerp(u, (front ? -0.6 : 0.5) + Math.sin(this.id + n.length) * 0.3, k); l = lerp(l, 0.3, k); a = lerp(a, 0, k); }
@@ -1047,6 +1191,8 @@ export class Animal {
     by -= Math.abs(Math.cos(this.phase * Math.PI * 4)) * 0.03 * moving * legLen;
     bpitch = Math.sin(this.phase * Math.PI * 2) * 0.07 * runK;
     bpitch -= A.pounce * 0.35; bpitch -= A.rear * 1.05;
+    if (A.climb) bpitch -= A.climb * 1.35;
+    if (A.incline) bpitch -= A.incline;
     if (d.primate) bpitch -= A.sit * 1.25;
     else bpitch -= A.sit * 0.45;
     bpitch += slopeP;
@@ -1137,7 +1283,7 @@ class Group {
     if (!alive.length) return;
     let cx = 0, cz = 0; for (const m of alive) { cx += m.pos.x; cz += m.pos.z; }
     cx /= alive.length; cz /= alive.length;
-    if (this.kind !== 'troop') { this.center.x = lerp(this.center.x, cx, dt * 0.05); this.center.z = lerp(this.center.z, cz, dt * 0.05); }
+    this.center.x = lerp(this.center.x, cx, dt * 0.05); this.center.z = lerp(this.center.z, cz, dt * 0.05);
     // drift herd center slowly
     this.center.x += Math.sin(performance.now() * 0.00003 + this.radius) * dt * 0.2;
   }

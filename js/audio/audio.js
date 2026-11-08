@@ -37,6 +37,12 @@ export class AudioEngine {
     const t = this.ctx.currentTime, v = on ? 1 : 0;
     for (const n of [this.amb, this.sfx, this.worldVerb]) { n.gain.cancelScheduledValues(t); if (fade <= 0) n.gain.value = v; else n.gain.setTargetAtTime(v, t, fade * 0.35); }
   }
+  // A change of scene: everything the player hears dips together, and comes back together with the picture
+  scene(on, fade = 1) {
+    if (!this.ready) return;
+    this.setWorld(on, fade);
+    const t = this.ctx.currentTime, g = this.music.gain; g.cancelScheduledValues(t); g.setTargetAtTime(on ? this.vol.music : 0, t, fade * 0.35);
+  }
   // Noise that loops without a seam. The beds (wind, river, rain, fire) loop these buffers; brown noise wanders,
   // so its last sample sat far from its first and the loop clicked every 4 s. The generator runs on past the end,
   // and that continuation is crossfaded into the head, so playback runs from the tail straight into the start.

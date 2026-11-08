@@ -40,6 +40,8 @@ import { Inventory, Pickups, ITEMS, RECIPES } from './game/items.js';
 import { Story } from './game/story.js';
 import { UI } from './game/ui.js';
 import { TouchControls, isTouchDevice } from './game/touch.js';
+import { SketchBook, PANELS } from './game/sketch.js';
+import { Lessons } from './game/lessons.js';
 
 const _grv = new THREE.Vector3(), _grd = new THREE.Vector3(), _grc = new THREE.Color();
 const QUALITY = {
@@ -51,6 +53,7 @@ const QUALITY = {
 const $ = (id) => document.getElementById(id);
 // one painted frame (a timer stands in when the tab is hidden and gets no animation frames)
 const nextFrame = () => new Promise((r) => { requestAnimationFrame(() => r()); setTimeout(r, 100); });
+const tick = () => new Promise((r) => setTimeout(r, 0));
 const store = { get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { } } };
 
 class Input {
@@ -58,7 +61,7 @@ class Input {
     this.keys = {}; this.down = new Set(); this.buttons = [false, false, false]; this.mdown = new Set(); this.mdx = 0; this.mdy = 0; this.wheel = 0; this.mdxLast = 0; this.mdyLast = 0;
     window.addEventListener('keydown', (e) => { if (['Tab', 'Space'].includes(e.code) && game.playing) e.preventDefault(); if (!this.keys[e.code]) this.down.add(e.code); this.keys[e.code] = true; game.onKey(e); });
     window.addEventListener('keyup', (e) => { this.keys[e.code] = false; game.onKeyUp(e); });
-    window.addEventListener('mousedown', (e) => { if (!game.playing) return; this.buttons[e.button] = true; this.mdown.add(e.button); if (!document.pointerLockElement && !game.uiBlocking) game.requestLock(); });
+    window.addEventListener('mousedown', (e) => { if (!game.playing) return; if (game.arrival) { game.arrival.speed = 4; return; } this.buttons[e.button] = true; this.mdown.add(e.button); if (!document.pointerLockElement && !game.uiBlocking) game.requestLock(); });
     window.addEventListener('mouseup', (e) => { this.buttons[e.button] = false; });
     window.addEventListener('mousemove', (e) => { this.cx = e.clientX / innerWidth; this.cy = e.clientY / innerHeight; if (document.pointerLockElement || game.dragLook) { this.mdx += e.movementX || 0; this.mdy += e.movementY || 0; } });
     document.addEventListener('pointerlockerror', () => { game.dragLook = true; });
@@ -177,6 +180,7 @@ class Game {
     this.player = new Player(this);
     this.player.setView(this.settings.view);
     this.story = new Story(this);
+    this.lessons = new Lessons(this);
     this.W = this.makeWorldInterface();
     await prog(0.72, 'Drawing the map');
     this.mapImage = renderMapCanvas(384);
@@ -279,6 +283,7 @@ class Game {
   }
   resize() {
     const w = window.innerWidth, h = window.innerHeight;
+    if (this.book) this.book.resize();
     this.renderer.setSize(w, h); this.composer.setSize(w, h);
     this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
   }
@@ -300,8 +305,8 @@ class Game {
             const me = threat === 'player';
             const msg = me ? `${lbl} alarm, ${dir}. They have seen me.` : {
               sambar: `Sambar belling to the ${dir}. A sambar only bells for a tiger, a leopard or dhole.`,
-              langur: `Langur barking from the trees, ${dir}. It can see a cat on the ground.`,
-              chital: `Chital calling, ${dir}. Something is moving there. Wait for a second voice.`,
+              langur: `Langur barking from the trees, ${dir}. It can see a big cat on the ground.`,
+              chital: `Chital calling, ${dir}. Something's moving over there. Listen for a second call.`,
               peafowl: `Peacock screaming in alarm, ${dir}.`,
             }[an.d.voice] || `${lbl} alarm, ${dir}.`;
             g.ui.toast(msg, 5.5);
@@ -332,6 +337,65 @@ class Game {
     if (this.phys) this.phys.sync(P.pos, true);
     if (this.companion) { this.companion.pos.set(p.x + 2, groundHeight(p.x + 2, p.z + 2), p.z + 2); }
     for (const a of [...this.eco.animals]) if (!a.persistent && a.dist2(P.pos) > 400 * 400) this.eco.remove(a);
+  }
+  // the same, a piece at a time behind the black, so nothing else (the audio clock above all) waits on one long stall
+  async teleportScene(p, yaw = 0) {
+    const P = this.player; P.pos.copy(p); P.pos.y = groundHeight(p.x, p.z); P.vel.set(0, 0, 0); P.yaw = yaw; P.bodyYaw = yaw; P.spawn.copy(P.pos); P.pitch = -0.14;
+    P.camPos.set(p.x + Math.sin(yaw) * 3, P.pos.y + 2, p.z + Math.cos(yaw) * 3);
+    await tick(); this.terrain.update(p.x, p.z, 1e9, true);
+    await tick(); this.veg.update(P.pos, true);
+    await tick(); this.grass.update(P.pos, true); this.cover.update(P.pos, true);
+    await tick(); this.pickups.update(P.pos, true); if (this.phys) this.phys.sync(P.pos, true);
+    await tick();
+    if (this.companion) { this.companion.pos.set(p.x + 2, groundHeight(p.x + 2, p.z + 2), p.z + 2); }
+    for (const a of [...this.eco.animals]) if (!a.persistent && a.dist2(P.pos) > 400 * 400) this.eco.remove(a);
+  }
+  // The way down to him: from high over the forest on the side with the clearest line through the trunks.
+  planArrival(dur) {
+    const P = this.player, p = P.pos, trees = this.veg.climbNear(p.x, p.z, 46);
+    let best = P.yaw, bs = Infinity, top = p.y + 18;
+    for (const T of trees) if (T.top > top && Math.hypot(T.x - p.x, T.z - p.z) < 40) top = T.top;
+    for (let i = 0; i < 16; i++) {
+      const y = P.yaw + i / 16 * Math.PI * 2, bx = Math.sin(y), bz = Math.cos(y); let sc = i * 0.01;
+      for (const T of trees) { if (!T.trunk) continue; const dx = T.x - p.x, dz = T.z - p.z, al = dx * bx + dz * bz, pr = Math.abs(dx * bz - dz * bx); if (al > -1 && al < 38 && pr < T.trunk.r[0] + 2.4) sc += 40 - al; }
+      if (sc < bs) { bs = sc; best = y; }
+    }
+    P.yaw = best; P.bodyYaw = best; P.pitch = -0.14;
+    const bx = Math.sin(best), bz = Math.cos(best), V = THREE.Vector3, H = top - p.y, d = P.camDist || 3.4;
+    const pts = [[78, H + 62], [44, H + 14], [17, H * 0.5 + 3], [6.5, 3.6], [d, d * 0.14 + 1.7]].map(([b, h]) => new V(p.x + bx * b, p.y + h, p.z + bz * b));
+    P.camPos.copy(pts[4]);
+    return { t: 0, dur, speed: 1, curve: new THREE.CatmullRomCurve3(pts, false, 'centripetal'), far: new V(p.x - bx * 320, p.y + H * 0.55, p.z - bz * 320) };
+  }
+  // Going somewhere new. To black first (with the sound), so the build is never seen; the world is made a piece at a time;
+  // a few frames are drawn behind the black from both ends of the camera's way down, until they come through at an even
+  // rate; only then do picture and sound come up, together, on a world that is already running.
+  async enterScene(setup, o = {}) {
+    this.cinematic = true; this.uiBlocking = true; this.starting = true;
+    $('hud').classList.remove('show');
+    this.ui.setPrompt(''); this.ui.setObjective('', '');
+    this.audio.scene(false, 0.6);
+    if (+$('fade').style.opacity < 0.99) await this.ui.fade(true, o.out ?? 700);
+    this.holdFrames = true;
+    await nextFrame();
+    await setup();
+    const A = this.arrival = this.planArrival(o.dur || 6.5);
+    let calm = 0, last = performance.now();
+    for (let i = 0; i < 26 && calm < 4; i++) {
+      A.warmK = i % 2 ? 0.02 : 0.9;
+      this.update(1 / 60, 1 / 60); this.render(1 / 60); this.input.endFrame();
+      await nextFrame();
+      const now = performance.now(); calm = i > 5 && now - last < 40 ? calm + 1 : 0; last = now;
+    }
+    delete A.warmK; A.t = 0;
+    const arrived = new Promise((r) => { A.done = r; });
+    this.holdFrames = false; this.last = performance.now();
+    this.audio.scene(true, 2.4);
+    if (o.title) this.ui.card(o.title[0], o.title[1], Math.min(5.5, A.dur - 1));
+    if (o.stinger && this.music) this.music.stinger(o.stinger);
+    this.ui.fade(false, 1400);
+    await arrived;
+    $('hud').classList.add('show');
+    this.cinematic = false; this.uiBlocking = false; this.starting = false;
   }
   debug(o = {}) {
     if (o.season) this.setSeason(o.season, o.weather);
@@ -400,6 +464,7 @@ class Game {
   applySettings() {
     const S = this.settings; store.set('vanaj-settings', S);
     this.player.fov = S.fov;
+    this.audio.vol.music = S.music;
     if (this.audio.ready) { const t = this.audio.ctx.currentTime; this.audio.master.gain.setTargetAtTime(S.master, t, 0.015); this.audio.music.gain.setTargetAtTime(S.music, t, 0.015); }   // ramped: a jump clicks
     else { this.audio.vol.master = S.master; this.audio.vol.music = S.music; }
   }
@@ -413,65 +478,83 @@ class Game {
   }
   async beginNew() {
     this.leaveMenu();
-    $('title').classList.remove('show');
+    this.starting = true;
     this.inv.load({ items: {}, locks: ['bow'] });
+    this.lessons.reset();
     await this.prologue();
     this.startGame(0);
   }
+  // The opening, drawn in a sketchbook (js/game/sketch.js): one panel to each line. While it is up the 3D world neither
+  // updates nor renders, so the drawings run smoothly; it ends on black, with the world's first frame still to come.
   prologue() {
     return new Promise((resolve) => {
-      const P = $('prologue'), L = $('prologue-line'); P.classList.add('show');
+      const P = $('prologue'), L = $('prologue-line'), Tt = $('prologue-title'), cv = $('prologue-cv');
       const lines = [
-        'Seoni, in the southern Satpura hills. The monsoon of the year I was three.',
-        'My father drove the cart home from the market, across the ford of the Pench. My mother held me. I was drinking milk from a small steel pot.',
-        'Upstream, two days of rain came down all at once.',
-        'She tied me to a floating teak log with her sari, through the handle of the pot.',
-        'She hummed four notes. Then the river took her.',
-        'I do not remember the water. I remember being carried.',
-        'A grey wolf who had lost her pups to the same flood found me on a sandbank. She lifted me by the cloth at my waist, the way she would lift a pup.',
-        'I called her by a sound. In words it would be Kaali.',
-      ];
-      let i = 0, done = false;
-      // the prologue's score and thunder are scheduled seconds ahead; keep hold of them so Skip can cut them
-      // instead of letting them play on over the first chapter's own music
-      const cue = this.music ? this.music.cue() : null, rolls = [];
-      const silence = () => { if (cue) cue.stop(0.25); for (const r of rolls) r(0.25); rolls.length = 0; };
-      this.weather.force('storm'); this.audio.update(0.1, { rain: 1, wind: 1.4, water: 1, night: 1, hour: 22, season: 'monsoon' });
-      const rainTimer = setInterval(() => { if (Math.random() < 0.35) rolls.push(this.audio.thunder(300 + Math.random() * 1500, Math.random() * 6)); this.audio.update(0.5, { rain: 1, wind: 1.4, water: 1, night: 1, hour: 22, season: 'monsoon' }); }, 1500);
-      if (this.music) this.music.banaPhrase([{ semi: 0, dur: 2 }, { semi: 1, dur: 1.5, meend: true }, { semi: 0, dur: 1 }, { semi: -1, dur: 2.5, meend: true }, { semi: -5, dur: 4 }], this.audio.ctx.currentTime + 1, { gain: 0.08, dest: cue.dest });
-      const show = () => {
-        if (done) return;
-        if (i >= lines.length) return finish();
-        L.classList.remove('show');
-        setTimeout(() => {
-          if (done) return;
-          L.textContent = lines[i];
-          L.classList.add('show');
-          if (i === 4 && this.music) this.music.flutePhrase([4, 2, 0, -3].map((s, k) => ({ semi: s, dur: k === 3 ? 2.5 : 0.8 })), this.audio.ctx.currentTime + 1.5, { gain: 0.12, dest: cue.dest });
-          i++;
-          setTimeout(show, Math.max(4200, lines[i - 1].length * 70));
-        }, 900);
+        'I was three the year the Pench flooded. This part I only know because people told me later.',
+        'My father was driving the cart home from the market. My mother had me on her lap, drinking milk out of a little steel lota.',
+        'They were halfway across the ford when the water came. It had been raining up in the hills for two days.',
+        'She tied me to a teak log with her sari, and looped it through the handle of the lota.',
+        'She hummed to me, the same four notes she always hummed. Then the river took her.',
+        'I don\'t remember any of that. I only remember being carried.',
+        'A wolf found me on a sandbank. She\'d lost her own pups in the same flood. She picked me up by the cloth at my waist, like I was one of them.',
+        'I called her Kaali. Well, I called her a noise. Kaali is the closest word I have for it.',
+      ], durs = [7.5, 9, 8, 8.5, 11.5, 6.5, 12.5, 9];
+      const book = this.book || (this.book = new SketchBook(cv));
+      cv.classList.remove('out'); Tt.classList.remove('show'); L.classList.remove('show'); book.blank();
+      P.style.setProperty('--capH', book.frameRect().cap + 'px');
+      P.classList.add('on'); void P.offsetWidth; P.classList.add('show');
+      setTimeout(() => { $('title').classList.remove('show'); this.holdFrames = true; }, 720);
+      // the opening's score and thunder are scheduled seconds ahead; keep hold of them so they can be cut
+      const cue = this.music ? this.music.cue() : null, rolls = [], ac = this.audio.ctx;
+      const silence = (f) => { if (cue) cue.stop(f); for (const r of rolls) r(f); rolls.length = 0; };
+      const stormSound = { rain: 1, wind: 1.4, water: 1, night: 1, hour: 22, season: 'monsoon' };
+      this.audio.update(0.1, stormSound);
+      const rainTimer = setInterval(() => { this.audio.update(0.5, stormSound); }, 500);
+      if (this.music) this.music.banaPhrase([{ semi: 0, dur: 2 }, { semi: 1, dur: 1.5, meend: true }, { semi: 0, dur: 1 }, { semi: -1, dur: 2.5, meend: true }, { semi: -5, dur: 4 }], ac.currentTime + 1, { gain: 0.08, dest: cue.dest });
+      let i = -1, t0 = 0, done = false, lastDraw = 0;
+      const show = (n) => {
+        i = n; t0 = performance.now(); L.classList.remove('show');
+        setTimeout(() => { if (done || i !== n) return; L.textContent = lines[n]; L.classList.add('show'); }, 450);
+        if (n === 2 && this.audio.ready) rolls.push(this.audio.thunder(200, 2.5), this.audio.thunder(700, 4.5));
+        if (n === 0 && this.audio.ready) rolls.push(this.audio.thunder(1500, 3));
+        if (n === 4 && this.music) this.music.flutePhrase([4, 2, 0, -3].map((s, k) => ({ semi: s, dur: k === 3 ? 2.5 : 0.8 })), ac.currentTime + 0.5, { gain: 0.12, dest: cue.dest });
       };
-      const finish = () => { if (done) return; done = true; clearInterval(rainTimer); L.classList.remove('show'); $('prologue-title').classList.add('show'); this.weather.forced = null; setTimeout(() => { P.classList.remove('show'); $('prologue-title').classList.remove('show'); resolve(); }, 3800); };
-      this.skipPrologue = () => { if (!done) { done = true; clearInterval(rainTimer); silence(); this.weather.forced = null; P.classList.remove('show'); resolve(); } };
-      setTimeout(show, 1200);
+      const draw = (now) => {
+        if (done) return;
+        requestAnimationFrame(draw);
+        if (i < 0 || now - lastDraw < 76) return;   // drawn on twelves, like the animation it imitates
+        lastDraw = now;
+        const t = (now - t0) / 1000;
+        if (t >= durs[i]) { if (i + 1 >= PANELS.length) finish(); else show(i + 1); return; }
+        book.render(i, t, durs[i]);
+      };
+      const end = () => {
+        window.removeEventListener('keydown', onKey); P.onclick = null; clearInterval(rainTimer); this.weather.forced = null;
+        cv.classList.add('out'); Tt.classList.remove('show'); L.classList.remove('show'); silence(0.8);
+        setTimeout(() => { $('fade').style.transition = 'none'; $('fade').style.opacity = 1; P.classList.remove('on', 'show'); resolve(); }, 950);
+      };
+      const finish = () => { if (done) return; done = true; L.classList.remove('show'); book.blank(); Tt.classList.add('show'); setTimeout(end, 3400); };
+      const skip = this.skipPrologue = () => { if (!done) { done = true; end(); } };
+      // a click or Space turns the page; Skip leaves the book
+      const onKey = (e) => { if (e.code === 'Escape') skip(); else if ((e.code === 'Space' || e.code === 'Enter') && !done && i >= 0) { if (i + 1 >= PANELS.length) finish(); else show(i + 1); } };
+      window.addEventListener('keydown', onKey);
+      P.onclick = (e) => { if (e.target.id !== 'prologue-skip' && !done && i >= 0) { if (i + 1 >= PANELS.length) finish(); else show(i + 1); } };
+      this.weather.force('storm');
+      setTimeout(() => { if (!done) show(0); }, 800);
+      requestAnimationFrame(draw);
     });
   }
-  // The click is answered at once with a fade to black; the teleport and streaming happen behind it, then the
-  // picture fades in. (It used to freeze on the title for ~3 s: 0.9 s of building, 1.9 s compiling shaders.)
+  // The click is answered at once with a fade to black; the teleport and streaming happen behind it (js enterScene)
   async startGame(ch, opts = {}) {
     this.leaveMenu();
     this.requestLock();
     this.starting = true;
-    await this.ui.fade(true, 250);
-    $('title').classList.remove('show');
-    this.player.revive();
-    this.playing = true; this.uiBlocking = false;
-    $('hud').classList.add('show');
-    if (opts.chapterSelect) this.giveChapterKit(ch);
-    this.story.start(ch);
-    await nextFrame(); await nextFrame();
-    this.ui.fade(false, 900); this.starting = false;
+    await this.story.start(ch, { chapterSelect: opts.chapterSelect, onBlack: () => {
+      $('title').classList.remove('show');
+      this.player.revive();
+      this.playing = true;
+      if (opts.chapterSelect) this.giveChapterKit(ch);
+    } });
   }
   giveChapterKit(ch) {
     // sensible starting kit when jumping straight into a later chapter
@@ -490,20 +573,17 @@ class Game {
   async freeRoam() {
     this.leaveMenu();
     this.requestLock();
-    this.starting = true;
-    await this.ui.fade(true, 250);
-    this.player.revive();
-    $('title').classList.remove('show');
-    this.playing = true; this.uiBlocking = false; $('hud').classList.add('show');
-    this.giveChapterKit(12); this.flags.chingari = true;
-    this.story.chIndex = -1; this.story.done = true;
-    const seasons = ['winter', 'summer', 'monsoon', 'post'];
-    this.setSeason(this.freeSeason || 'post', null); this.setTime(7.5);
-    this.teleport(new THREE.Vector3(SITES.den.x, 0, SITES.den.z + 10));
-    this.story.ensureChingari();
+    await this.enterScene(async () => {
+      this.player.revive();
+      $('title').classList.remove('show');
+      this.playing = true;
+      this.giveChapterKit(12); this.flags.chingari = true;
+      this.story.chIndex = -1; this.story.done = true;
+      this.setSeason(this.freeSeason || 'post', null); this.setTime(7.5);
+      await this.teleportScene(new THREE.Vector3(SITES.den.x, 0, SITES.den.z + 10));
+      this.story.ensureChingari();
+    }, { dur: 5.5 });
     this.ui.setObjective('Free roam', 'Press <b>N</b> to change season. Explore Pench.');
-    await nextFrame(); await nextFrame();
-    this.ui.fade(false, 900); this.starting = false;
   }
   // back to the title without reloading: the world stays built, so the next start is instant
   async toTitle() {
@@ -529,7 +609,7 @@ class Game {
     this.ui.hideDeath();
     const camp = this.camps[this.camps.length - 1];
     this.player.respawn(camp ? camp.pos.clone().add(new THREE.Vector3(1.5, 0, 1.5)) : null);
-    this.ui.narrate('I woke by the ashes. Everything hurt.');
+    this.ui.narrate("I woke up by the ashes. Everything hurt.");
     // restart the chapter so scripted encounters are coherent
     const keep = this.story.chIndex;
     if (keep >= 0) this.story.start(keep, { keepState: !!camp });
@@ -537,6 +617,7 @@ class Game {
   }
   onKey(e) {
     if (e.code === 'F3') { e.preventDefault(); this.perf.cycle(); return; }
+    if (this.cinematic) { if (this.arrival) this.arrival.speed = 4; return; }   // any key hurries the shot along
     if (e.code === 'F4' && this.phys) { e.preventDefault(); this.phys.toggleDebug(this.scene); return; }   // show the colliders
     if (!this.playing) return;
     const ui = this.ui;
@@ -572,7 +653,7 @@ class Game {
     if (story.chapter && story.chapter.id === 'ep' && story.objIndex === 2 && story.aaji && d2(story.aaji.pos) < 4 * 4) return { prompt: 'Set the lota on the ground', act: () => story.interact('aaji') };
     if (this.companionBody && story.chapter && story.chapter.id === 'c2' && story.objIndex === 3 && d2(this.companionBody.pos) < 3.2 * 3.2) {
       const n = this.inv.count('leaves');
-      return { prompt: n >= 3 ? 'Cover Kaali with leaves' : `Cover Kaali (need 3 leaves, have ${n})`, act: () => { if (this.inv.take('leaves', 3)) { this.player.action = { type: 'gather', anim: 'gather', t: 0, dur: 2.5 }; this.audio.footstep('leaf', 1); setTimeout(() => { this.coverBody(this.companionBody); story.flags.coveredKaali = true; story.checkNow(); }, 2200); } else this.ui.toast('Gather more leaves'); } };
+      return { prompt: n >= 3 ? 'Cover Kaali with leaves' : `Cover Kaali (need 3 leaves, have ${n})`, act: () => { if (this.inv.take('leaves', 3)) { this.player.action = { type: 'gather', anim: 'gather', t: 0, dur: 2.5 }; this.audio.footstep('leaf', 1); setTimeout(() => { this.coverBody(this.companionBody); story.flags.coveredKaali = true; story.checkNow(); }, 2200); } else this.ui.toast("You need more leaves"); } };
     }
     // props
     for (const it of this.props.inter) {
@@ -598,7 +679,9 @@ class Game {
     // recover projectiles
     for (const s of P.stuck) { const v = new THREE.Vector3(); s.mesh.getWorldPosition(v); if (v.distanceTo(pos) < 2.4 && (!s.animal || s.animal.dead) && s.item) return { prompt: 'Recover ' + (s.item === 'spear' ? 'spear' : 'arrow'), act: () => P.recoverNear() }; }
     // pickups
-    const pk = this.pickups.nearest(eye, fwd, P.view === 'fpp' ? 2.8 : 3.6);
+    const pk = this.pickups.nearest(pos, fwd), lo = this.loose ? this.loose.nearest(pos, fwd) : null;
+    const dOf = (x, z) => Math.hypot(x - pos.x, z - pos.z);
+    if (lo && (!pk || dOf(lo.pos.x, lo.pos.z) < dOf(pk.x, pk.z))) return { prompt: 'Pick up ' + (lo.stick ? 'stick' : 'stone'), act: () => this.pickupLoose(lo) };
     if (pk) return { prompt: 'Pick up ' + ITEMS[pk.type].name.toLowerCase(), act: () => this.pickup(pk) };
     // termite mound
     const m = this.props.nearestMound(pos, 2.4);
@@ -627,10 +710,13 @@ class Game {
   setCooldown(k) { this.cooldowns.set(k, this.time.day * 24 + this.time.hour); }
   interact() { const it = this.currentInteraction; if (it && !this.player.action) it.act(); }
   pickup(pk) {
-    this.player.action = { type: 'gather', anim: 'gather', t: 0, dur: 0.7 };
-    this.pickups.take(pk); this.inv.add(pk.type, 1); this.audio.pickup();
-    this.ui.toast('+1 ' + ITEMS[pk.type].name); this.emit('pickup', { item: pk.type });
+    this.player.startPick({ type: pk.type, pos: new THREE.Vector3(pk.x, pk.y, pk.z), grab: () => this.pickups.take(pk), stow: () => this.gained(pk.type) });
   }
+  pickupLoose(it) {
+    const type = it.stick ? 'stick' : 'stone';
+    this.player.startPick({ type, size: it.stick ? 0 : it.size, pos: it.pos.clone(), grab: () => this.loose.take(it), stow: () => this.gained(type) });
+  }
+  gained(type) { this.inv.add(type, 1); this.audio.pickup(); this.ui.toast('+1 ' + ITEMS[type].name); this.emit('pickup', { item: type }); }
   breakMound(m, k) {
     this.player.action = { type: 'gather', anim: 'gather', t: 0, dur: 1.8 };
     this.audio.impact('stone', this.player.pos, 0.6); this.fx.dust(new THREE.Vector3(m.x, m.y + 0.5, m.z), 2, [0.6, 0.35, 0.22]);
@@ -654,7 +740,7 @@ class Game {
     if (P.weapon === 'torch') {
       P.action = { type: 'gather', anim: 'swing', t: 0, dur: 3 };
       this.fx.bees(h.pos, 30); this.audio.bees(h.pos, 1);
-      setTimeout(() => { this.inv.add('honey', 2); this.inv.add('fiber', 1); this.ui.toast('+2 Honey'); this.ui.narrate('The smoke made them slow. I took the comb and ran.'); this.emit('pickup', { item: 'honey' }); }, 2800);
+      setTimeout(() => { this.inv.add('honey', 2); this.inv.add('fiber', 1); this.ui.toast('+2 Honey'); this.ui.narrate("The smoke slowed them down. I grabbed the comb and ran."); this.emit('pickup', { item: 'honey' }); }, 2800);
     } else {
       this.ui.narrate('The bees came down like smoke.');
       for (let i = 0; i < 8; i++) setTimeout(() => { this.fx.bees(P.pos.clone().add(new THREE.Vector3(0, 1.4, 0)), 14); this.audio.bees(P.pos, 1); P.hurt(4, null, { kind: 'sting' }); }, i * 450);
@@ -670,7 +756,7 @@ class Game {
     const P = this.player;
     P.action = { type: 'drink', anim: 'drink', t: 0, dur: 2.0 };
     this.audio.drink();
-    setTimeout(() => { P.thirst = Math.min(100, P.thirst + 40); this.emit('drink'); if (this.season === 'summer' && Math.random() < 0.08) { P.sick = 2; this.ui.toast('The water was foul'); } }, 1600);
+    setTimeout(() => { P.thirst = Math.min(100, P.thirst + 40); this.emit('drink'); if (this.season === 'summer' && Math.random() < 0.08) { P.sick = 2; this.ui.toast("That water was bad"); } }, 1600);
   }
   harvest(a) {
     if (!this.inv.has('knife')) { this.ui.toast('You need a stone knife'); return; }
@@ -700,7 +786,7 @@ class Game {
     const P = this.player;
     if (P.dead) return;
     const threats = this.eco.animals.filter((a) => !a.dead && a.target === 'player' && a.dist2(P.pos) < 60 * 60);
-    if (threats.length) { this.ui.toast('You cannot sleep with a predator close'); return; }
+    if (threats.length) { this.ui.toast("You can't sleep with a predator this close"); return; }
     this.uiBlocking = true;
     await this.ui.fade(true, 1500);
     const h = this.time.hour;
@@ -713,7 +799,7 @@ class Game {
     await this.wait(0.8);
     await this.ui.fade(false, 1800);
     this.uiBlocking = false;
-    this.ui.toast('Morning. Progress saved.');
+    this.ui.toast("Morning. Game saved.");
   }
   craft(r) {
     if (!this.inv.craft(r)) return;
@@ -736,29 +822,30 @@ class Game {
     const fire = this.fx.addFire(pos.clone().add(new THREE.Vector3(0, 0.1, 0)), 1.0);
     this.camps.push({ pos, fire, mesh: g, fireLeft: 8 });
     if (this.camps.length > 6) { const old = this.camps.shift(); this.scene.remove(old.mesh); this.fx.removeFire(old.fire); }
-    this.ui.toast(this.inv.has('matches') ? 'One scrape of the fire box.' : 'Fire-saw: bamboo against bamboo until it smokes.');
+    this.ui.toast(this.inv.has('matches') ? "One scrape on the box." : "You saw bamboo against bamboo until it smokes.");
     this.emit('campfire');
   }
   eat(k) {
     const f = ITEMS[k] && ITEMS[k].food; if (!f || !this.inv.take(k, 1)) return;
     const P = this.player;
     P.hunger = Math.min(100, P.hunger + (f.hunger || 0)); P.thirst = Math.min(100, P.thirst + (f.thirst || 0)); P.hp = Math.min(100, P.hp + (f.hp || 0));
-    if (f.sick && Math.random() < f.sick) { P.sick = 3; this.ui.toast('Your belly cramps'); }
+    if (f.sick && Math.random() < f.sick) { P.sick = 3; this.ui.toast("Your stomach hurts"); }
     if (f.drunk) P.drunk = Math.min(1.5, P.drunk + f.drunk);
     if (!P.action) P.action = { type: 'eat', anim: 'eat', t: 0, dur: 1.6 };
     this.audio.eat(); this.emit('eat', { item: k });
   }
   eatBest() { for (const k of ['meat_cooked', 'honey', 'tendu', 'ber', 'mahua', 'termites', 'mushroom', 'meat_raw']) if (this.inv.has(k)) { this.eat(k); this.ui.toast('Ate ' + ITEMS[k].name); return; } this.ui.toast('Nothing to eat'); }
-  useBandage() { if (!this.inv.take('bandage', 1)) { this.ui.toast('No bandage (craft from leaves + fibre)'); return; } this.player.bleed = 0; this.player.hp = Math.min(100, this.player.hp + 5); this.player.action = { type: 'gather', anim: 'gather', t: 0, dur: 1.5 }; this.ui.toast('Wound bound'); }
+  useBandage() { if (!this.inv.take('bandage', 1)) { this.ui.toast('No bandage (craft from leaves + fibre)'); return; } this.player.bleed = 0; this.player.hp = Math.min(100, this.player.hp + 5); this.player.action = { type: 'gather', anim: 'gather', t: 0, dur: 1.5 }; this.ui.toast('Wound bound'); this.emit('bandaged'); }
   // -------------------------------------------------------------------------------- save/load
   save() {
     if (this.story.chIndex < 0 && !this.story.done) return;
     const P = this.player;
-    store.set('vanaj-save-v1', { ch: this.story.chIndex, done: this.story.done, inv: this.inv.toJSON(), hour: this.time.hour, day: this.time.day, season: this.season, flags: this.flags, hp: P.hp, hunger: P.hunger, thirst: P.thirst, journal: this.ui.journal, lore: [...this.ui.loreSeen], explored: Array.from(this.ui.explored), discovered: [...this.ui.discovered] });
+    store.set('vanaj-save-v1', { ch: this.story.chIndex, done: this.story.done, inv: this.inv.toJSON(), hour: this.time.hour, day: this.time.day, season: this.season, flags: this.flags, hp: P.hp, hunger: P.hunger, thirst: P.thirst, journal: this.ui.journal, skills: [...this.lessons.done], lore: [...this.ui.loreSeen], explored: Array.from(this.ui.explored), discovered: [...this.ui.discovered] });
   }
   loadSave() {
     const s = store.get('vanaj-save-v1'); if (!s) return this.beginNew();
     this.inv.load(s.inv || {}); this.flags = s.flags || {}; this.time.day = s.day || 0;
+    this.lessons.reset(); for (const k of s.skills || []) this.lessons.done.add(k);
     this.ui.journal = s.journal || []; this.ui.loreSeen = new Set(s.lore || []); this.ui.discovered = new Set(s.discovered || []);
     if (s.explored) this.ui.explored.set(s.explored);
     if (s.done) { this.freeSeason = s.season; this.freeRoam(); return; }
@@ -772,6 +859,7 @@ class Game {
     let rdt = Math.min(0.05, (t - this.last) / 1000); this.last = t;
     if (this.hitstopT > 0) { this.hitstopT -= rdt; rdt *= 0.08; }
     if (this.slowT > 0) { this.slowT -= rdt; rdt *= this.slowK; }
+    if (this.holdFrames) { this.input.endFrame(); this.perf.frameEnd({ scene: this.scene, composer: this.composer, quality: '', animals: 0 }); return; }   // nothing to show: the sketchbook or black is up
     const dt = this.paused ? 0 : rdt;
     try { this.update(dt, rdt); } catch (e) { console.error(e); }
     this.render(rdt);
@@ -789,7 +877,10 @@ class Game {
       this.time.hour += dt * this.time.rate / 3600;
       if (this.time.hour >= 24) { this.time.hour -= 24; this.time.day++; this.pickups.day = this.time.day; }
     }
-    G.uTime.value += dt;
+    // The world's clock: wind, water and leaves. It only runs while the game does, so a paused world is still. (It used to be
+    // pushed along by the grade pass too, which shares this uniform: that doubled its rate, which the look was tuned to, and
+    // kept everything moving under the pause menu.)
+    G.uTime.value += dt * 2;
     // title screen camera: slow drift over the forest
     if (!this.playing) {
       this.titleCam += rdt;
@@ -798,27 +889,28 @@ class Game {
     } else if (dt > 0) {
       // wheel/look
       if (this.input.wheel && !this.uiBlocking) { const ws = this.inv.weapons(); const i = ws.indexOf(this.inv.equipped); P.equip(ws[(i + this.input.wheel + ws.length) % ws.length]); }
-      if (this.wheelOpen) { this.input.mdx = 0; this.input.mdy = 0; }
+      if (this.wheelOpen || this.cinematic) { this.input.mdx = 0; this.input.mdy = 0; }
       P.update(dt, this.input);
       // interaction prompt
       this.currentInteraction = this.uiBlocking ? null : this.findInteraction();
-      this.ui.setPrompt(this.currentInteraction ? `<kbd>E</kbd> ${this.currentInteraction.prompt}` : (this.finishPromptFor() || ''));
+      this.ui.setPrompt(P.canopy.prompt && !this.uiBlocking ? `<kbd>E</kbd> ${P.canopy.prompt}` : this.currentInteraction ? `<kbd>E</kbd> ${this.currentInteraction.prompt}` : (this.finishPromptFor() || ''));
       this.story.update(dt);
+      this.lessons.update(dt);
     }
     const pf = this.perf; pf.mark('player');
     const focus = this.playing ? P.pos : this.camera.position;
     G.uPlayerPos.value.copy(P.pos);
     // world streaming
     this.terrain.update(focus.x, focus.z, 4);
-    this.veg.update(this.camera.position); this.grass.update(this.camera.position); this.cover.update(this.camera.position); this.pickups.update(focus);
+    { const see = this.arrival ? P.pos : this.camera.position; this.veg.update(see); this.grass.update(see); this.cover.update(see); } this.pickups.update(focus);
     if (this.phys && this.playing) { this.phys.sync(P.pos); this.loose.update(P.pos); }
-    if (this.playing) { this.near.update(P.pos, dt, P.canopy.mode ? P.canopy.tree : null); this.ropes.update(dt, P.pos); }
-    this.vines.update(dt || rdt * 0.2, this.camera.position);
+    if (this.playing && dt > 0) { this.near.update(P.pos, dt, P.canopy.mode ? P.canopy.tree : null); this.ropes.update(dt, P.pos); }
+    if (!this.paused) this.vines.update(dt || rdt * 0.2, this.camera.position);
     pf.mark('streaming');
     // sky & weather
     const env = this.weather.env;
-    this.sky.update(dt || rdt * 0.2, this.time.hour, this.seasonCfg.decl, env, this.camera, focus, this.season);
-    this.weather.update(rdt, dt * this.time.rate / 3600, this.time.hour, this.camera.position, this.sky);
+    this.sky.update(this.paused ? 0 : dt || rdt * 0.2, this.time.hour, this.seasonCfg.decl, env, this.camera, focus, this.season);
+    if (!this.paused) this.weather.update(rdt, dt * this.time.rate / 3600, this.time.hour, this.camera.position, this.sky);
     this.water.update(this.sky, env.rain);
     pf.mark('sky');
     // animals
@@ -868,11 +960,12 @@ class Game {
   }
   render(rdt) {
     const P = this.player, gr = this.grade.uniforms;
+    // where he is on screen, for the leaves between him and the camera (js/world/flora.js)
+    { const f = G.uFocus.value; _grv.set(P.pos.x, P.pos.y + 1, P.pos.z).applyMatrix4(this.camera.matrixWorldInverse); f.set(_grv.x, _grv.y, _grv.z, this.playing && P.view !== 'fpp' && !this.arrival ? 1 : 0); }
     // exposure & grade by time of day
     const day = this.sky.day, night = this.sky.night;
     const el = this.sky.sunDir.y;
     const golden = (1 - smoothstep(0.0, 0.3, el)) * smoothstep(-0.1, 0.05, el);
-    gr.uTime.value += rdt;
     if (PAINTED) {
       // the palette already sets the hour's colour; the grade lifts saturation a touch and cools the night
       this.renderer.toneMappingExposure = 1 + this.weather.flash * 1.5;
@@ -888,7 +981,7 @@ class Game {
     gr.uFlash.value = this.weather.flash;
     gr.uUnder.value = this.playing && waterAt(this.camera.position.x, this.camera.position.z) > this.camera.position.y ? 1 : 0;
     gr.uHeat.value = this.season === 'summer' ? smoothstep(10, 13, this.time.hour) * (1 - smoothstep(16, 18, this.time.hour)) : 0;
-    gr.uBlur.value = this.uiBlocking && this.playing ? 1 : (P.drunk > 0.4 ? (P.drunk - 0.4) : 0);
+    gr.uBlur.value = this.uiBlocking && this.playing && !this.cinematic ? 1 : (P.drunk > 0.4 ? (P.drunk - 0.4) : 0);
     this.updateGodRays();
     if (!this.noRender) { this.perf.gpuBegin(); this.composer.render(rdt); this.perf.gpuEnd(); }
     this.perf.mark('render');

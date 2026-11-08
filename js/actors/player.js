@@ -6,6 +6,7 @@ import { buildHumanoid, animateHumanoid, buildWeapons, buildViewArms, skinMateri
 import { PAINTED } from '../core/palette.js';
 import { toonify } from '../core/toon.js';
 import { Canopy } from './canopy.js';
+import { Pack, heldMesh } from './pack.js';
 import { groundHeight, groundNormal, waterAt, biomeAt, HALF } from '../world/terrain.js';
 import { clamp, lerp, damp, spring } from '../core/noise.js';
 import { G } from '../core/shaderlib.js';
@@ -20,7 +21,7 @@ export const WEAPONS = {
 };
 
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _n = new THREE.Vector3();
-const _qt = new THREE.Quaternion(), _up0 = new THREE.Vector3(0, 1, 0), _v4 = new THREE.Vector3();
+const _qa = new THREE.Quaternion(), _qt = new THREE.Quaternion(), _up0 = new THREE.Vector3(0, 1, 0), _v4 = new THREE.Vector3();
 
 export class Player {
   constructor(game) {
@@ -41,6 +42,7 @@ export class Player {
     this.bodyMats = new Set(); this.body.root.traverse((o) => { if (o.isMesh) this.bodyMats.add(o.material); });
     this.W3 = buildWeapons(g.T);
     this.canopy = new Canopy(this);   // climbing, hanging and swinging in the trees
+    this.pack = this.body.j.pack ? new Pack(this.body.j.pack) : null;   // what he carries, tied on his back
     this.dip = { x: 0, v: 0 }; this.lean = { x: 0, v: 0 }; this.look = { t: 0, target: null, pt: new THREE.Vector3() };
     if (PAINTED) for (const k in this.W3) if (this.W3[k]) toonify(this.W3[k], { outline: 0.008, soften: 2 });
     // first-person viewmodel
@@ -103,6 +105,7 @@ export class Player {
     this.view = v;
     const fpp = v === 'fpp';
     for (const m of this.bodyMats) { m.colorWrite = !fpp; m.depthWrite = !fpp; }
+    if (this.pack) this.pack.group.visible = !fpp;
     for (const k in this.W3) if (this.W3[k]) this.W3[k].traverse((o) => { if (o.isMesh) { o.material.colorWrite = true; o.visible = !fpp; } });
   }
   // ----------------------------------------------------------------------------------------- update
@@ -130,6 +133,14 @@ export class Player {
     let ix = (k.KeyD ? 1 : 0) - (k.KeyA ? 1 : 0), iz = (k.KeyW ? 1 : 0) - (k.KeyS ? 1 : 0);
     const fwd = _v1.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)), right = _v2.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
     const wish = _v3.set(0, 0, 0).addScaledVector(fwd, iz).addScaledVector(right, ix);
+    // going over to something to pick it up; any move of his own calls it off
+    if (this.pick && this.pick.stage === 0) {
+      const K = this.pick, dx = K.pos.x - this.pos.x, dz = K.pos.z - this.pos.z, d = Math.hypot(dx, dz);
+      K.t += dt;
+      if (wish.lengthSq() > 0) this.pick = null;
+      else if (d < 0.52 || K.t > 1.4) this.beginPick();
+      else wish.set(dx / d, 0, dz / d);
+    }
     const moving = wish.lengthSq() > 0;
     if (moving) wish.normalize();
     if (this.drunk > 0.2) { const w = Math.sin(performance.now() * 0.002) * this.drunk; wish.applyAxisAngle(_n.set(0, 1, 0), w * 0.6); }
@@ -145,7 +156,7 @@ export class Player {
     const swim = depth > 1.25;
     if (swim && !this.swimming) { g.audio.splash(this.pos, 1); g.fx.splash(_n.set(this.pos.x, wl, this.pos.z)); }
     this.swimming = swim;
-    let target = this.crouch ? 1.7 : this.sprinting ? 7.2 : 3.4;
+    let target = this.crouch ? 1.5 : this.sprinting ? 6 : 2.4;
     if (this.aim > 0.5) target = 1.8;
     if (this.swimming) target = this.sprinting ? 2.9 : 1.8;
     else target *= 1 - this.wading * 0.55;
@@ -310,6 +321,8 @@ export class Player {
     if (this.climb) { anim.speed = 2; anim.air = false; }
     this.landT = Math.max(0, (this.landT || 0) - dt);
     if (this.landT > 0 && this.onGround) { anim.crouch = 1; anim.speed = Math.min(anim.speed, 1); }
+    this.updatePick(dt, anim);
+    if (this.pack) this.pack.refresh(g.inv);
     const cm = this.canopy.mode;
     // hands busy (climbing, hanging, swimming): the weapon goes on his back, and back in hand after
     const stow = (!!cm && cm !== 'limb') || this.swimming;
@@ -378,6 +391,36 @@ export class Player {
     g.audio.heartRate = this.hp < 35 ? lerp(140, 70, this.hp / 35) : 0;
     g.audio.breathLevel = (100 - this.stamina) / 100 * (this.sprinting ? 1 : 0.6);
   }
+  // ----------------------------------------------------------------------------------------- picking things up
+  // Pick something up for real: walk over to it, bend, close the hand on it (it leaves the ground only then), lift it and
+  // reach back over the shoulder, and it is tied on with the rest of the load (js/actors/pack.js). `item`: { type, pos, size,
+  // grab() takes it off the ground, stow() puts it in the pouch }.
+  startPick(item) { if (this.pick || this.action) return; this.pick = { ...item, stage: 0, t: 0, mesh: null }; }
+  beginPick() { const K = this.pick; K.stage = 1; K.t = 0; K.dur = 1.05; this.action = { type: 'gather', anim: 'gather', t: 0, dur: K.dur }; }
+  updatePick(dt, anim) {
+    const K = this.pick; if (!K || K.stage === 0) return;
+    const g = this.g;
+    K.t += dt; const u = K.t / K.dur;
+    const fy = this.bodyYaw, bx = Math.sin(fy), bz = Math.cos(fy), rx = Math.cos(fy), rz = -Math.sin(fy);   // behind him, and to his right
+    const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+    const ground = _v1.copy(K.pos); ground.y += 0.03;
+    const over = this.body.rig.bones['DEF-spine003'].getWorldPosition(_v2); over.x += bx * 0.13 + rx * 0.14; over.y += 0.16; over.z += bz * 0.13 + rz * 0.14;   // back over his shoulder
+    const to = this._reachTo || (this._reachTo = new THREE.Vector3());
+    if (u < 0.42) { to.copy(ground); anim.reach = { to, w: smooth(0.06, 0.38, u) }; }
+    else { to.copy(ground).lerp(over, smooth(0.42, 0.82, u)); anim.reach = { to, w: 1 - smooth(0.84, 1, u) }; }
+    if (u >= 0.4 && !K.grabbed) {
+      K.grabbed = true; K.grab();
+      K.mesh = heldMesh(K.type, K.size); g.scene.add(K.mesh);
+      g.audio.footstep(this.surface(), 0.3, null, 0.2);
+    }
+    if (K.mesh) { this.body.j.handR.getWorldPosition(K.mesh.position); K.mesh.rotation.set(0.6, fy, 1.2); }
+    if (u >= 0.84 && !K.stowed) {
+      K.stowed = true; g.scene.remove(K.mesh); K.mesh = null; K.stow();
+    }
+    if (u >= 1) this.pick = null;
+    // knocked out of it (a hit, a fall): nothing is left floating, and what was in his hand still gets stowed
+    else if (!this.action || !this.onGround) { if (K.mesh) { g.scene.remove(K.mesh); K.mesh = null; } if (K.grabbed && !K.stowed) { K.stowed = true; K.stow(); } this.pick = null; }
+  }
   // ----------------------------------------------------------------------------------------- camera
   updateCamera(dt) {
     const g = this.g, cam = g.camera;
@@ -420,7 +463,26 @@ export class Player {
       cam.position.copy(this.camPos);
       cam.rotation.set(this.pitch + sy, this.yaw + sx, 0, 'YXZ');
     }
+    if (g.arrival) this.arrivalCamera(dt);
     cam.updateMatrixWorld();
+  }
+  // Arriving somewhere: the camera comes down out of the sky, through the crowns of the trees, to its place behind him.
+  // It is fast high up and slows as it nears him, and the last stretch blends into the live third-person camera, so
+  // there is no join when control comes back. Streaming stays on him for the whole shot, so nothing loads on the way.
+  arrivalCamera(dt) {
+    const g = this.g, A = g.arrival, cam = g.camera;
+    if (A.warmK === undefined) A.t = Math.min(A.dur, A.t + dt * A.speed);
+    const k = A.warmK ?? A.t / A.dur, u = 1 - Math.pow(1 - k, 2.3);
+    const live = _v1.copy(cam.position), liveQ = _qa.copy(cam.quaternion);
+    A.curve.getPoint(u, cam.position);
+    { const gy = groundHeight(cam.position.x, cam.position.z) + 1.2; if (cam.position.y < gy) cam.position.y = gy; }
+    const sm = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+    // looking out over the forest at first, then down to him
+    _v2.copy(A.far).lerp(_v3.set(this.pos.x, this.pos.y + 1.2, this.pos.z), sm(0.1, 0.62, k));
+    cam.up.set(0, 1, 0); cam.lookAt(_v2);
+    cam.quaternion.slerp(liveQ, sm(0.82, 1, k));
+    cam.position.lerp(live, sm(0.82, 1, k));
+    if (k >= 1 && A.warmK === undefined) { g.arrival = null; if (A.done) A.done(); }
   }
   camForward(out) { return out.set(0, 0, -1).applyQuaternion(this.g.camera.quaternion); }
   isLookingAt(p, cosMin) { const c = this.g.camera.position; const f = this.camForward(_v3); const dx = p.x - c.x, dy = p.y + 0.8 - c.y, dz = p.z - c.z; const d = Math.hypot(dx, dy, dz); return (f.x * dx + f.y * dy + f.z * dz) / d > cosMin; }

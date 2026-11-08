@@ -47,6 +47,24 @@ export class LooseThings {
     }
     return c;
   }
+  // the nearest loose stone or stick small enough to pick up, as a pickup (see Pickups.nearest)
+  nearest(pos, dir, maxD = 2.2) {
+    let best = null, bs = -1e9;
+    for (const it of this.near || []) {
+      if (it.gone || (!it.stick && it.size > 0.24)) continue;
+      const dx = it.pos.x - pos.x, dz = it.pos.z - pos.z, d = Math.hypot(dx, dz);
+      if (d > maxD || Math.abs(it.pos.y - pos.y) > 1.3) continue;
+      const c = d < 0.5 ? 1 : (dx * dir.x + dz * dir.z) / d, s = c * 1.2 - d;
+      if ((c > -0.25 || d < 1.6) && s > bs) { bs = s; best = it; }
+    }
+    return best;
+  }
+  // taken off the ground for good
+  take(it) {
+    it.gone = true;
+    if (it.body) { this.phys.world.removeRigidBody(it.body); it.body = null; }
+    if (this.near) { const i = this.near.indexOf(it); if (i >= 0) this.near.splice(i, 1); }
+  }
   makeBody(it) {
     const w = this.phys.world;
     const b = w.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(it.pos.x, it.pos.y, it.pos.z).setRotation({ x: it.q.x, y: it.q.y, z: it.q.z, w: it.q.w })
@@ -70,6 +88,7 @@ export class LooseThings {
       const R = Math.ceil(SHOW / CELL), cx0 = Math.floor(focus.x / CELL), cz0 = Math.floor(focus.z / CELL);
       this.near = [];
       for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) for (const it of this.cell(cx0 + dx, cz0 + dz)) {
+        if (it.gone) continue;
         const d = Math.hypot(it.pos.x - focus.x, it.pos.z - focus.z);
         if (d < SHOW) this.near.push(it);
         if (!it.body && d < LIVE && ph.hasGround(it.pos.x, it.pos.z)) this.makeBody(it);

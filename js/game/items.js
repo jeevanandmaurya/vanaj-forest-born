@@ -20,31 +20,31 @@ export const ITEMS = {
   sinew: { name: 'Sinew', desc: 'Tendon. Makes the best bowstring.' },
   feather: { name: 'Feather', desc: 'Peacock feather for fletching arrows.' },
   honey: { name: 'Honey', desc: 'Rock-bee honey, dark and smoky.', food: { hunger: 16, hp: 6, thirst: 2 } },
-  mahua: { name: 'Mahua flowers', desc: 'Sweet, fleshy. Too many and the world tilts.', food: { hunger: 7, thirst: 5, drunk: 0.22 } },
+  mahua: { name: 'Mahua flowers', desc: "Sweet. Eat too many and you get drunk.", food: { hunger: 7, thirst: 5, drunk: 0.22 } },
   ber: { name: 'Ber fruit', desc: 'Small sour jujube fruit.', food: { hunger: 6, thirst: 2 } },
   tendu: { name: 'Tendu fruit', desc: 'Sweet orange pulp, summer fruit.', food: { hunger: 8, thirst: 3 } },
-  mushroom: { name: 'Mushroom', desc: 'Grows after rain. Not all are kind.', food: { hunger: 8, sick: 0.15 } },
+  mushroom: { name: 'Mushroom', desc: "Grows after rain. Some will make you sick.", food: { hunger: 8, sick: 0.15 } },
   termites: { name: 'Termites', desc: 'A handful of fat termites. Bears love them.', food: { hunger: 6 } },
-  claw: { name: 'Claw', desc: 'A big cat\'s claw. Proof, and a warning.' },
+  claw: { name: 'Claw', desc: "A big cat's claw." },
   tusk: { name: 'Tusk', desc: 'Boar tusk, curved and sharp.' },
   arrow: { name: 'Arrow', desc: 'Bamboo shaft, flint point, peacock fletching.' },
-  knife: { name: 'Stone knife', desc: 'Knapped edge. Cuts, skins, stabs.', weapon: 'knife' },
-  club: { name: 'Club', desc: 'Knotted heavy branch. Breaks bones.', weapon: 'club' },
+  knife: { name: 'Stone knife', desc: "Sharp edge. Cuts, skins, stabs.", weapon: 'knife' },
+  club: { name: 'Club', desc: "A heavy knotted branch. Hits hard.", weapon: 'club' },
   spear: { name: 'Spear', desc: 'Bamboo with lashed flint. Thrust, or throw.', weapon: 'spear' },
   bow: { name: 'Bow', desc: 'Bamboo bow strung with sinew.', weapon: 'bow' },
-  torch: { name: 'Torch', desc: 'Fire on a stick. Cats fear it. Bees hate it.', weapon: 'torch' },
-  flute: { name: 'Bamboo flute', desc: 'Six holes. It plays the four notes.' },
+  torch: { name: 'Torch', desc: "Fire on a stick. Big cats keep back from it, and smoke calms bees.", weapon: 'torch' },
+  flute: { name: 'Bamboo flute', desc: "Six holes. It can play the four notes." },
   bandage: { name: 'Leaf bandage', desc: 'Stops bleeding.' },
   hidewrap: { name: 'Hide wrap', desc: 'Wrapped hide over chest and arms. Softens blows.' },
   campfire: { name: 'Campfire', desc: 'Place to cook, rest and sleep.' },
-  wire: { name: 'Shining vine', desc: 'Thin, cold, bright. It does not rot.', story: true },
+  wire: { name: "Shiny vine", desc: "Thin, cold and shiny. It doesn't rot.", story: true },
   bowl: { name: 'Leaf bowl', desc: 'Leaves folded and pinned with a twig. Holds water.', story: true },
   matches: { name: 'Fire box', desc: 'Scrape a stick on the side and it burns.', story: true },
   lota: { name: 'Steel lota', desc: 'Dented. Marks scratched into the rim.', story: true },
 };
 
 export const RECIPES = [
-  { id: 'knife', needs: { stone: 2 }, desc: 'Strike stone on stone until one edge bites.' },
+  { id: 'knife', needs: { stone: 2 }, desc: "Hit stone on stone until one edge comes off sharp." },
   { id: 'club', needs: { stick: 2, fiber: 1 }, tool: 'knife' },
   { id: 'spear', needs: { bamboo: 1, flint: 1, fiber: 2 }, tool: 'knife' },
   { id: 'torch', needs: { stick: 1, fiber: 1, leaves: 2 } },
@@ -155,14 +155,17 @@ export class Pickups {
     for (const k of TYPES) { this.meshes[k].count = counts[k]; this.meshes[k].instanceMatrix.needsUpdate = true; }
     if (this.cells.size > 2000) this.cells.clear();
   }
-  nearest(pos, dir, maxD = 2.6) {
+  // the best thing to pick up, measured from where he stands (not from the camera, which is 3 m behind him in third
+  // person: from there, what lay at his feet was out of reach). Anything not behind him counts, the closest and most
+  // nearly in front first.
+  nearest(pos, dir, maxD = 2.2) {
     let best = null, bs = -1e9;
     for (const a of this.active) {
-      const dx = a.x - pos.x, dy = a.y - pos.y, dz = a.z - pos.z, d = Math.hypot(dx, dy, dz);
-      if (d > maxD) continue;
-      const c = (dx * dir.x + dy * dir.y + dz * dir.z) / (d || 1);
-      const s = c * 2 - d * 0.5;
-      if (c > 0.55 && s > bs) { bs = s; best = a; }
+      const dx = a.x - pos.x, dy = a.y - pos.y, dz = a.z - pos.z, d = Math.hypot(dx, dz);
+      if (d > maxD || Math.abs(dy) > 1.3) continue;
+      const c = d < 0.5 ? 1 : (dx * dir.x + dz * dir.z) / d;
+      const s = c * 1.2 - d;
+      if ((c > -0.25 || d < 1.6) && s > bs) { bs = s; best = a; }
     }
     return best;
   }

@@ -20,7 +20,7 @@ export class Physics {
   constructor(game) {
     this.g = game;
     const w = this.world = new RAPIER.World({ x: 0, y: -15, z: 0 });
-    this.ground = new Map(); this.groundQ = []; this.trees = new Map(); this.rocks = new Map(); this.actors = new Map();
+    this.limbOf = new Map(); this.ground = new Map(); this.groundQ = []; this.trees = new Map(); this.rocks = new Map(); this.actors = new Map();
     this.syncT = 0;
     // Vanaj: steps up 45 cm, holds to the ground over 40 cm drops, climbs slopes to 50°, slides off steeper than 58°
     // (he does not step up onto loose stones and sticks: he shoves them, with the weight of a boy)
@@ -73,12 +73,12 @@ export class Physics {
       const k = key2(T.x, T.z); seen.add(k);
       if (this.trees.has(k)) continue;
       const cols = [];
-      const add = (L, every, minR) => { for (let i = 0; i < L.pts.length - 1; i += every) { const j = Math.min(L.pts.length - 1, i + every), r = Math.min(L.r[i], 1.6) * 0.92; if (r < minR) break; const c = this.capsule(L.pts[i], L.pts[j], r); if (c) cols.push(c); } };
+      const add = (L, every, minR) => { for (let i = 0; i < L.pts.length - 1; i += every) { const j = Math.min(L.pts.length - 1, i + every), r = Math.min(L.r[i], 1.6) * 0.92; if (r < minR) break; const c = this.capsule(L.pts[i], L.pts[j], r); if (c) { cols.push(c); this.limbOf.set(c.handle, L); } } };
       if (T.trunk) add(T.trunk, 2, 0.05);
-      for (const L of T.limbs) if (L.level === 1 && L.r[0] > 0.12) add(L, 2, 0.08);
+      for (const L of T.limbs) if (L.r[0] > 0.1) add(L, 2, 0.08);
       this.trees.set(k, cols);
     }
-    for (const [k, cols] of this.trees) if (!seen.has(k)) { for (const c of cols) this.world.removeCollider(c, false); this.trees.delete(k); }
+    for (const [k, cols] of this.trees) if (!seen.has(k)) { for (const c of cols) { this.limbOf.delete(c.handle); this.world.removeCollider(c, false); } this.trees.delete(k); }
   }
   // stones and fallen logs (the vegetation's debris list: x, z, radius)
   syncRocks() {
@@ -159,17 +159,21 @@ export class Physics {
     b.applyImpulseAtPoint({ x: dir.x * impulse, y: dir.y * impulse + impulse * 0.3, z: dir.z * impulse }, at, true);
     return true;
   }
-  // a ball of radius r swept from `from` along `delta` through the static world (characters ignored): the
-  // fraction of the way it got (0..1) and the surface normal it met, or null if the way is clear
-  sweepBall(from, delta, r) {
+  // His body, as a capsule from just above the feet to the chest, swept along `delta` through the static world
+  // (characters ignored). `up` runs from the feet toward the hands, so it tilts with a swing; the limb in his hands is
+  // left out. The fraction of the way it got (0..1) and the surface normal it met, or null if the way is clear.
+  sweepBody(feet, up, delta, ignore) {
     const len = Math.hypot(delta.x, delta.y, delta.z); if (len < 1e-5) return null;
-    const ball = (this.balls || (this.balls = new Map())).get(r) || new RAPIER.Ball(r); this.balls.set(r, ball);
+    const R = 0.22, HALF = 0.43, cap = this.bodyCap || (this.bodyCap = new RAPIER.Capsule(HALF, R));
+    _q.setFromUnitVectors(_up, up);
+    _m.copy(feet).addScaledVector(up, 0.06 + R + HALF);
+    const rot = { x: _q.x, y: _q.y, z: _q.z, w: _q.w }, lim = this.limbOf;
     // (starting inside something and moving out of it is not a hit)
-    const h = this.world.castShape(from, { x: 0, y: 0, z: 0, w: 1 }, delta, ball, 0, 1, false, RAPIER.QueryFilterFlags.EXCLUDE_KINEMATIC | RAPIER.QueryFilterFlags.EXCLUDE_SENSORS);
+    const h = this.world.castShape(_m, rot, delta, cap, 0, 1, false, RAPIER.QueryFilterFlags.EXCLUDE_KINEMATIC | RAPIER.QueryFilterFlags.EXCLUDE_SENSORS | RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC, undefined, undefined, undefined, ignore ? (c) => lim.get(c.handle) !== ignore : undefined);
     if (!h) return null;
-    // normal2 is on the ball (whose frame is the world's, unrotated): the obstacle pushes back the other way
-    const n = h.normal2;
-    return { t: h.time_of_impact, nx: -n.x, ny: -n.y, nz: -n.z };
+    // normal2 is in the capsule's own frame: turned into the world, the obstacle pushes back the other way
+    _d.set(h.normal2.x, h.normal2.y, h.normal2.z).applyQuaternion(_q);
+    return { t: h.time_of_impact, nx: -_d.x, ny: -_d.y, nz: -_d.z };
   }
   // is the ground collider under (x, z) built yet? (loose things wait for it before they get a body)
   hasGround(x, z) { return this.ground.has(`${Math.floor(x / CHUNK)},${Math.floor(z / CHUNK)}`); }

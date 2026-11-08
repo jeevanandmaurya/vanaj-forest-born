@@ -10,6 +10,7 @@ import { PAINTED } from '../core/palette.js';
 import { toonify } from '../core/toon.js';
 
 const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
+const FLAT = () => 0;
 const sitePos = (k, dx = 0, dz = 0) => { const s = SITES[k]; return V3(s.x + dx, groundHeight(s.x + dx, s.z + dz), s.z + dz); };
 
 // --------------------------------------------------------------------------------------------- villagers
@@ -49,7 +50,7 @@ export class NPC {
     }
     this.h.root.rotation.y = this.yaw;
     const act = this.action ? { type: this.action, t: (this.t % 2) / 2 } : null;
-    animateHumanoid(this.h, dt, { speed: this.speed, weapon: 'none', action: act, crouch: this.up > 0 ? 1 : 0 });
+    animateHumanoid(this.h, dt, { speed: this.speed, weapon: 'none', action: act, crouch: this.up > 0 ? 1 : 0, ground: this.up > 0 ? undefined : FLAT, lookAt: this.look && !this.path.length ? this.look : undefined });
   }
   remove() { this.g.scene.remove(this.h.root); }
 }
@@ -89,12 +90,20 @@ function canopyRoute(g) {
     for (const L of t.limbs) {
       if (L.level !== 1) continue;
       for (let k = 1; k < L.pts.length && L.r[k] >= 0.09; k++) {
-        const p = L.pts[k], reach = ((p.x - t.x) * dx + (p.z - t.z) * dz) / dd, s = reach - Math.abs(p.y - (t.top - 8)) * 0.3;
+        const p = L.pts[k], reach = ((p.x - t.x) * dx + (p.z - t.z) * dz) / dd, s = reach - Math.abs(p.y - (t.bole - 8)) * 0.3;
         if (s > bs) { bs = s; pt = p.clone(); pt.y += L.r[k] + 0.05; }
       }
     }
-    return pt || V3(t.x, t.top - 6, t.z);
+    return pt || V3(t.x, t.bole - 6, t.z);
   });
+}
+
+// the nearest liana, for the compass (looked up once a second)
+function nearestLiana(g) {
+  const now = g.clock; if (g._lianaT > now) return g._liana;
+  g._lianaT = now + 1; const p = g.player.pos; let best = null, bd = Infinity;
+  for (const T of g.veg.climbNear(p.x, p.z, 90)) for (const V of T.vines) { if (V.fixed) continue; const d = (V.a.x - p.x) ** 2 + (V.a.z - p.z) ** 2; if (d < bd) { bd = d; best = V.a; } }
+  return (g._liana = best);
 }
 
 chapter({
@@ -105,28 +114,32 @@ chapter({
     g.eco.spawnGroup('chital', sitePos('den', -90, 70), 7);
     const lt = lessonTree(g); S.lessonTroop = g.eco.spawnGroup('langur', lt ? V3(lt.x + 4, 0, lt.z + 3) : sitePos('den', 30, -40), 6).members;
   },
-  intro: ['Twelve winters later.', 'The fog came down the valley every morning and lay in the teak until the sun burned it off.', 'Kaali was old by then. I was not small any more.'],
+  intro: ["Twelve years went by like that.", "In winter the fog sits in the teak every morning until the sun gets rid of it.", "Kaali was getting old by then. I'd done most of my growing."],
   objectives: [
-    { text: () => `Gather sticks (${S_.g.inv.count('stick')}/4) and stones (${S_.g.inv.count('stone')}/2) from the forest floor`, hint: 'Look down. <b>E</b> picks up what you see.', check: (g) => g.inv.count('stick') >= 4 && g.inv.count('stone') >= 2 },
-    { text: 'Knap a stone knife — open your pouch with <b>Tab</b> and craft it', check: (g) => g.inv.has('knife'), done: (g) => { g.player.equip('knife'); g.ui.narrate('Stone on stone, until one edge bites.'); } },
-    { text: 'Drink at the waterhole', marker: 'denWater', check: (g, S) => S.flags.drank },
+    // the basics first, right where he stands, each one ticked off by doing it
+    { text: 'Stretch your legs. Kaali wants to get going', teach: ['move', 'look', 'run', 'jump', 'crouch'], teachTitle: 'Getting around', check: (g) => g.lessons.has('move', 'look', 'run', 'jump', 'crouch') },
+    { text: () => `Pick up sticks (${S_.g.inv.count('stick')}/4) and stones (${S_.g.inv.count('stone')}/2) off the ground`, teach: ['gather'], check: (g) => g.inv.count('stick') >= 4 && g.inv.count('stone') >= 2 },
+    { text: 'Make a stone knife. Open your pouch with <b>Tab</b>', teach: ['pouch', 'craft'], check: (g) => g.inv.has('knife'), done: (g) => { g.player.equip('knife'); g.ui.narrate("You hit one stone with another until an edge comes off sharp. Took me a while to learn that."); } },
+    { text: 'Try the knife out. Something bigger than you will show up one day', teach: ['equip', 'attack', 'block', 'dodge'], teachTitle: 'Fighting', onStart: (g) => g.lessons.markers(), check: (g) => g.lessons.has('attack', 'block', 'dodge') },
+    { text: 'Go and drink at the waterhole', marker: 'denWater', teach: ['drink', 'compass'], check: (g, S) => S.flags.drank },
     // the young langurs teach the canopy: the forest's other half, and the first joy of the game
-    { text: 'The young langurs are playing in the big semal. Climb up after them', markerFn: (g) => lessonTree(g), hint: '<b>Space</b> facing a big trunk to climb · <b>W</b> up, <b>A</b>/<b>D</b> round it · keep climbing at a limb to step out onto it',
-      check: (g) => !!g.player.canopy.mode && g.player.pos.y - groundHeight(g.player.pos.x, g.player.pos.z) > 7,
-      done: (g) => g.ui.narrate(['From up there the forest was another country. The teak lay below me like a green sea with the fog still in it.', 'Kaali sat at the foot of the tree and barked at me, the way she did when I was small and climbed too high.']) },
-    { text: 'Swing on a liana, let go, and catch the next hold', hint: 'Hold <b>Space</b> to catch a liana or branch · <b>W</b> swings higher · let go of <b>Space</b> to fly · hold it again to catch',
-      check: (g, S) => S.flags.swung,
-      done: (g) => { g.ui.narrate(['I flew.', 'For one breath I was not a boy and not a wolf. I was something the forest had never seen.', 'The langurs shrieked at me. I think they were laughing.']); if (g.music) g.music.stinger('clue'); } },
+    { text: "The young langurs are playing in the big semal. Go up after them", markerFn: (g) => lessonTree(g), teach: ['climbStart', 'climbUp', 'climbRound'], teachTitle: 'Climbing',
+      check: (g) => g.lessons.has('climbStart', 'climbUp', 'climbRound') && !!g.player.canopy.mode && g.player.pos.y - groundHeight(g.player.pos.x, g.player.pos.z) > 7,
+      done: (g) => g.ui.narrate(["You can see so much from up there. All the teak, with the fog still caught in it.", "Kaali sat at the bottom and barked at me. She's done that since I was small."]) },
+    { text: 'Step out onto a branch and walk along it', teach: ['stepLimb', 'walkLimb'], teachTitle: 'Branches', check: (g) => g.lessons.has('stepLimb', 'walkLimb') },
+    { text: "Find a liana. Swing on it, climb it, let go, and catch the next thing you can reach", markerFn: (g) => nearestLiana(g), teach: ['catch', 'pump', 'ropeClimb', 'letGo'], teachTitle: 'Ropes',
+      check: (g, S) => S.flags.swung && g.lessons.has('catch', 'pump', 'ropeClimb', 'letGo'),
+      done: (g) => { g.ui.narrate(["I let go, and for a second there was nothing under me at all.", "Then I caught the next one. I was shaking. I wanted to do it again.", "The langurs screamed at me. I'm pretty sure they were laughing."]); if (g.music) g.music.stinger('clue'); } },
     // the race: one of the young langurs leads through the crowns, waiting at each tree; the ground costs nothing
     // but pride, and after a few minutes it ends kindly
     { text: 'Race the young langur through the trees', markerFn: (g, S) => S.raceAt, check: (g, S) => S.flags.raced,
-      hint: 'Climb, walk out along a limb, leap and catch. The langur waits for you at each tree.',
+      hint: "Climb, walk out along a branch, jump and catch. It waits for you at each tree.",
       async run(g, S, gen) {
         const route = canopyRoute(g), P = g.player;
         const lead = (S.lessonTroop || []).find((a) => !a.dead);
         if (!lead || route.length < 2) { S.flags.raced = true; S.checkNow(); return; }
         let wp = 0, hop = null, falls = 0, wasUp = false, scold = 0;
-        lead.perch = route[0]; lead.pos.copy(route[0]); lead.hop = null; S.raceAt = route[0];
+        lead.tm = null; lead.tree = null; lead.limb = null; lead.runTo = null; lead.perch = route[0]; lead.pos.copy(route[0]); lead.hop = null; S.raceAt = route[0];
         lead.scripted = (dt, W, a) => {
           a.targetSpeed = 0; a.speed = 0;
           if (hop) {
@@ -150,38 +163,38 @@ chapter({
         while (S.gen === gen) {
           await g.wait(0.25);
           const up = !!P.canopy.mode;
-          if (wasUp && !up && P.onGround) { falls++; if (falls === 1) g.ui.toast('The langur scolds you from the branches. Back up!', 4); }
+          if (wasUp && !up && P.onGround) { falls++; if (falls === 1) g.ui.toast("The langur's yelling at you from the branches. Get back up!", 4); }
           wasUp = up;
           if (wp === route.length - 1 && !hop && up && P.pos.distanceTo(route[wp]) < 8) break;
-          if (g.clock - t0 > 240) { g.ui.narrate(['They were faster. They were always faster.', 'But I was learning.']); break; }
+          if (g.clock - t0 > 240) { g.ui.narrate(["They beat me. They always beat me.", "I was getting closer, though."]); break; }
         }
         if (S.gen !== gen) return;
         lead.scripted = null; lead.perch = route[wp]; S.raceAt = null;
-        if (g.clock - t0 <= 240) g.ui.narrate(falls === 0 ? ['Six trees, and I never touched the ground once.', 'The young langur sat beside me and picked at my hair, as if I were one of them.'] : ['I fell, and climbed, and fell, and climbed.', 'At the last tree the young langur sat beside me and picked at my hair, as if I were one of them.']);
+        if (g.clock - t0 <= 240) g.ui.narrate(falls === 0 ? ["Six trees, and I never touched the ground.", "The young one sat down next to me and started picking through my hair, like I was one of them."] : ["I fell off a lot. I kept climbing back up.", "When I got to the last tree the young one sat down next to me and started picking through my hair, like I was one of them."]);
         S.flags.raced = true; S.checkNow();
       } },
-    { text: 'Hunt with Kaali. Bring down a peafowl, chital or boar', hint: '<b>C</b> crouch · strike an unaware animal for a silent kill · <b>Q</b> → Dhole whistle sends Kaali', check: (g, S) => S.flags.hunted },
-    { text: 'Skin the kill with your knife (<b>E</b> at the carcass)', check: (g, S) => S.flags.harvested || g.inv.has('meat_raw') },
-    { text: () => `Make a fire — craft a Campfire (sticks ${S_.g.inv.count('stick')}/5, stones ${S_.g.inv.count('stone')}/3)`, check: (g) => g.camps.length > 0, hint: 'Gather more sticks and stones if you need them.' },
-    { text: 'Cook the meat at the fire (<b>E</b>)', check: (g) => g.inv.has('meat_cooked') },
+    { text: 'Hunt with Kaali. Bring down a peafowl, chital or boar', teach: ['sneak', 'wheel', 'whistle'], teachTitle: 'Hunting', check: (g, S) => S.flags.hunted },
+    { text: 'Skin your kill with the knife (<b>E</b>)', teach: ['skin'], check: (g, S) => S.flags.harvested || g.inv.has('meat_raw') },
+    { text: () => `Make a campfire in your pouch, <b>Tab</b> (sticks ${S_.g.inv.count('stick')}/5, stones ${S_.g.inv.count('stone')}/3)`, teach: ['fire'], check: (g) => g.camps.length > 0, hint: "Pick up more sticks and stones if you're short." },
+    { text: 'Cook the meat at the fire (<b>E</b>)', teach: ['cook'], check: (g) => g.inv.has('meat_cooked') },
     { text: 'Share the meat with Kaali (<b>E</b> near her)', check: (g, S) => S.flags.satKaali,
       interact: { at: (g) => (g.companion && !g.companion.dead ? g.companion.pos : null), r: 4.5, prompt: 'Sit with Kaali and share the meat',   // she keeps ~3 m off
         act: (g, S) => {
           g.player.action = { type: 'eat', anim: 'eat', t: 0, dur: 3 }; g.player.crouch = true;
           const k = g.companion; if (k) { k.setState('rest', 40); k.lookAt = g.player.pos; }
           g.audio.hum();
-          g.ui.narrate(['She took the first piece. The old wolf always ate first.', 'Then she put her grey muzzle on my knee.', 'Her teeth were worn almost to nothing. She had carried me in them, once.']);
+          g.ui.narrate(["She took the first piece. She always eats first.", "Then she put her chin on my knee.", "Her teeth were nearly worn down. Those same teeth carried me, once."]);
           setTimeout(() => { S.flags.satKaali = true; S.checkNow(); }, 9000);
         } } },
-    { text: 'Eat the cooked meat (<b>Tab</b> → Eat), then sleep by the fire', check: (g, S) => S.flags.slept, hint: 'Sleeping by a fire passes the night and saves your progress.' },
+    { text: 'Eat the cooked meat, then sleep by the fire', teach: ['eatKey', 'sleep'], check: (g, S) => S.flags.slept, hint: "Sleeping by a fire gets you through the night and saves your game." },
   ],
-  outro: ['I scratched a mark on the den wall, as I did every night.', 'I did not know why. Neither did Kaali.'],
+  outro: ["I scratched another line on the den wall, like I did every night.", "I couldn't tell you why. Kaali never asked."],
 });
 
 chapter({
   id: 'c2', title: 'The Wire', act: 'Act I · Winter', season: 'winter', weather: 'clear', hour: 7.1, spawn: ['den', 4, 5],
   setup(g, S) { S.ensureKaali(); S.troop = g.eco.spawnGroup('langur', sitePos('den', 25, -30), 6).members; g.eco.blocked.add('tiger'); },
-  intro: ['Morning. Something was wrong with the silence.'],
+  intro: ["The next morning the forest was too quiet."],
   objectives: [
     { text: 'Listen.', async run(g, S, gen) {
       await g.wait(4); if (S.gen !== gen) return;
@@ -190,11 +203,11 @@ chapter({
       g.audio.animal('chital', 'alarm', sitePos('den', 80, 60)); g.ui.alarmMarker(SITES.den.x + 120, SITES.den.z - 20, 'Chital');
       await g.wait(2.5); if (S.gen !== gen) return;
       g.audio.animal('sambar', 'alarm', sitePos('den', 140, -10)); g.ui.alarmMarker(SITES.den.x + 140, SITES.den.z - 10, 'Sambar');
-      g.ui.narrate(['The langurs coughed. The chital barked.', 'Then the sambar — and the sambar only calls for a real cat.']);
+      g.ui.narrate(["First the langurs coughed. Then the chital started barking.", "Then a sambar. A sambar doesn't bother unless it's a big cat."]);
       await g.wait(6); if (S.gen !== gen) return;
       S.next();
     } },
-    { text: 'Torn-Ear is coming. Stand with Kaali — or run.', async run(g, S, gen) {
+    { text: "It's Torn-Ear. Stay with Kaali, or run.", async run(g, S, gen) {
       const t = S.spawnTornEar(sitePos('den', 120, -20), { aggro: 0 });
       const kaali = g.companion;
       let phase = 'approach';
@@ -209,7 +222,7 @@ chapter({
       const t0 = g.clock;
       while (S.gen === gen) {
         await g.wait(0.25);
-        if (kaali && kaali.dead && !S.kaaliDeadAt) { S.kaaliDeadAt = g.clock; t.target = 'player'; t.setState('charge'); g.slowmo(0.3, 1.8); g.audio.animal('wolf', 'pain', kaali.pos); g.ui.narrate('Kaali —'); }
+        if (kaali && kaali.dead && !S.kaaliDeadAt) { S.kaaliDeadAt = g.clock; t.target = 'player'; t.setState('charge'); g.slowmo(0.3, 1.8); g.audio.animal('wolf', 'pain', kaali.pos); g.ui.narrate("Kaali!"); }
         if (kaali && !kaali.dead && t.target === kaali && g.clock - t0 > 30) { kaali.hp = 1; }
         const ran = g.player.pos.distanceTo(t.pos) > 110;
         if (t.dead || S.tigerDmg > 70 || (S.kaaliDeadAt && g.clock - S.kaaliDeadAt > 40) || (S.kaaliDeadAt && ran)) break;
@@ -220,25 +233,25 @@ chapter({
       S.tigerFlee(t, sitePos('den', 600, -300));
       S.flags.wirePos = t.pos.clone();
       g.audio.animal('tiger', 'roar', t.pos, { big: true });
-      S.addStoryItem('wire', S.flags.wirePos, 'Pick up the shining vine');
+      S.addStoryItem('wire', S.flags.wirePos, "Pick up the shiny vine");
       g.music.setCombat(0);
       if (kaali && !kaali.dead) { kaali.hp = 0; kaali.die(g.W, {}); }
       S.next();
     } },
-    { text: 'Find the shining vine where Torn-Ear stood', markerFn: (g, S) => S.flags.wirePos, check: (g) => g.inv.has('wire'), done: (g) => { g.ui.addJournal('A vine that shone', 'Torn-Ear had a loop of something bright cut deep into his foreleg, so deep the flesh had grown over it. It came away in the fight. It is thin and cold and does not rot. I had never seen anything shine except water, and the lota.', 'clue'); g.music.stinger('clue'); } },
-    { text: () => `Gather leaves (${S_.g.inv.count('leaves')}/3) and cover Kaali`, markerFn: (g) => g.companionBody ? g.companionBody.pos : null, check: (g, S) => S.flags.coveredKaali, hint: 'Leaves lie on the forest floor and grow on lantana shrubs (<b>E</b>).' },
+    { text: "Find the shiny vine where Torn-Ear was standing", markerFn: (g, S) => S.flags.wirePos, check: (g) => g.inv.has('wire'), done: (g) => { g.ui.addJournal("A vine that shines", "Torn-Ear had loops of something bright cut into his front leg, so deep the skin had grown over them. One came off in the fight. It's thin and cold and it doesn't rot. The only other things I've seen shine are water and my lota.", 'clue'); g.music.stinger('clue'); } },
+    { text: () => `Gather leaves (${S_.g.inv.count('leaves')}/3) and cover Kaali`, markerFn: (g) => g.companionBody ? g.companionBody.pos : null, check: (g, S) => S.flags.coveredKaali, hint: "You'll find leaves on the ground and on lantana bushes (<b>E</b>)." },
     { text: 'Sit with her a while', markerFn: (g) => (g.companionBody ? g.companionBody.pos : null), check: (g, S) => S.flags.mourned,
       interact: { at: (g) => (g.companionBody ? g.companionBody.pos : null), r: 3.4, prompt: 'Sit by Kaali',
         act: async (g, S) => {
           const gen = S.gen; g.player.crouch = true; g.player.action = { type: 'hum', anim: 'hum', t: 0, dur: 6 };
-          g.ui.narrate(['I sat with her until the shadows went long.']); await g.wait(4); if (S.gen !== gen) return;
-          g.audio.hum(); g.ui.narrate(['I hummed the four notes. I did not know where they came from. She always lay still for them.']); await g.wait(6); if (S.gen !== gen) return;
-          g.ui.narrate(['Wolves do not cry.', 'I did.']);
-          g.ui.addJournal('Kaali', 'She found me on a sandbank when I was three and carried me home by the cloth at my waist. She was the only mother I remember. I covered her with teak leaves where she fell, by the den.', 'story');
+          g.ui.narrate(["I stayed with her until it started getting dark."]); await g.wait(4); if (S.gen !== gen) return;
+          g.audio.hum(); g.ui.narrate(["I hummed the four notes. I don't know where I got them. She always settled down when I did that."]); await g.wait(6); if (S.gen !== gen) return;
+          g.ui.narrate(["Wolves don't cry.", 'I did.']);
+          g.ui.addJournal('Kaali', "She found me on a sandbank when I was three and carried me home by the cloth at my waist. She's the only mother I remember. I covered her with teak leaves, right there by the den.", 'story');
           await g.wait(5); if (S.gen !== gen) return; S.flags.mourned = true; S.checkNow();
         } } },
   ],
-  outro: ['The forest went quiet the way it does after a kill.', 'That night the den was too big for one.'],
+  outro: ["Everything stayed quiet, the way it does after a kill.", "The den felt huge that night."],
   cleanup(g) { g.eco.blocked.delete('tiger'); },
 });
 
@@ -250,26 +263,26 @@ chapter({
     g.eco.spawnGroup('boar', sitePos('termite', -60, 80), 4);
     g.ui.seeLore('termite');
   },
-  intro: ['The den smelled of tiger. Under it, still, it smelled of her.', 'I carried the embers in a clay-lined bamboo tube and walked east, into country I did not know.'],
+  intro: ["The den stank of tiger now. Under that it still smelled like her. I couldn't stay.", "I packed some embers in a bamboo tube and walked east, somewhere I'd never been."],
   objectives: [
     { text: 'Travel east to the termite flats', marker: 'termite', reach: ['termite', 70] },
-    { text: 'A sloth bear. Approach crouched and unarmed, and hum (hold <b>Q</b> → Calm hum)', markerFn: (g, S) => S.bear && S.bear.pos, check: (g, S) => S.bear && (S.bear.bond >= 0.6 || S.bear.dead), hint: 'Bears see and hear poorly; surprise one and it attacks. Put your weapon away (<b>1</b>).',
-      done: (g, S) => { if (S.bear.dead) g.ui.narrate(['I learned what claws do.', 'Later I learned what she could have taught me.']); else { g.ui.narrate(['She huffed and turned her back on me.', 'That is how a bear says yes.']); S.bear.bond = 1; } g.ui.seeLore('bear'); } },
+    { text: "A sloth bear. Get close crouched, weapon away, and hum to her (hold <b>Q</b> → Calm hum)", teach: ['crouch', 'equip', 'wheel', 'hum'], onStart: (g) => g.lessons.markers(), markerFn: (g, S) => S.bear && S.bear.pos, check: (g, S) => S.bear && (S.bear.bond >= 0.6 || S.bear.dead), hint: "Bears can't see or hear well, so if you surprise one it attacks. <b>1</b> puts your weapon away.",
+      done: (g, S) => { if (S.bear.dead) g.ui.narrate(["So that's what claws do.", "I think about that bear sometimes. She could have shown me a lot."]); else { g.ui.narrate(['She huffed and turned her back on me.', "From a bear, that's a yes."]); S.bear.bond = 1; } g.ui.seeLore('bear'); } },
     { text: 'Break open a termite mound (<b>E</b>) and eat the termites', check: (g, S) => S.flags.ateTermites },
-    { text: 'Craft a torch, then smoke the rock-bee comb for honey', marker: 'hive', check: (g) => g.inv.has('honey'), hint: 'Hold the torch (<b>6</b>) under the hive and press <b>E</b>. Without smoke, the bees attack.', done: (g) => g.ui.seeLore('rockbee') },
+    { text: 'Craft a torch, then smoke the rock-bee comb for honey', marker: 'hive', teach: ['craft', 'torch', 'torchOff'], check: (g) => g.inv.has('honey'), hint: "Hold the torch (<b>6</b>) under the hive and press <b>E</b>. No smoke and the bees come for you.", done: (g) => g.ui.seeLore('rockbee') },
   ],
-  outro: ['That night Torn-Ear roared from the old den.', 'The langurs did not sleep. Neither did I.'],
+  outro: ["That night I heard Torn-Ear roar from my old den.", "The langurs didn't sleep. Me neither."],
   nextSeason: 'summer',
 });
 
 chapter({
   id: 'c4', title: 'The Burning Months', act: 'Act II · Summer', season: 'summer', weather: 'hazy', hour: 9.3, spawn: ['termite', -20, -60],
   setup(g, S) { g.eco.spawnGroup('chital', sitePos('mahua', 40, 30), 8); g.eco.spawnGroup('langur', sitePos('mahua', -20, 10), 6); g.eco.spawnOne('bear', sitePos('mahua', 35, -25), { homeR: 40 }); g.ui.seeLore('teak'); g.ui.seeLore('palash'); },
-  intro: ['By May the teak was bare and the forest was the colour of a fire that had gone out.', 'Water shrank to mud. Everything walked toward the river.'],
+  intro: ["By the hot months the teak had dropped every leaf and the whole forest looked burnt.", "The pools dried to mud. Everything that could walk headed for the river."],
   objectives: [
-    { text: 'Follow the sweet smell of mahua flowers (north)', marker: 'mahua', reach: ['mahua', 22], done: (g) => g.ui.seeLore('mahua') },
-    { text: 'Something has been here. Look closely under the tree', marker: 'mahua', check: (g, S) => S.flags.clue_leafBowl,
-      done: (g) => { g.inv.add('bowl', 1); g.ui.narrate(['A bowl made of leaves, folded and pinned with a twig.', 'Something folds leaves on purpose. Bears do not fold.']); g.ui.addJournal('Swept ground, a leaf bowl', 'Under the big mahua the ground was swept clean and every flower was gone. Beside the trunk: leaves folded into a bowl, pinned with a twig.', 'clue'); g.music.stinger('clue'); } },
+    { text: "Follow the smell of mahua flowers, north", marker: 'mahua', reach: ['mahua', 22], done: (g) => g.ui.seeLore('mahua') },
+    { text: "Something's been here. Look under the tree", marker: 'mahua', check: (g, S) => S.flags.clue_leafBowl,
+      done: (g) => { g.inv.add('bowl', 1); g.ui.narrate(["It was a bowl, made out of leaves folded over and pinned with a twig.", "Something did that on purpose. Bears don't fold things."]); g.ui.addJournal('Swept ground, a leaf bowl', "Someone swept the ground under the big mahua and took every flower. Next to the trunk there was a bowl made of folded leaves, pinned with a twig.", 'clue'); g.music.stinger('clue'); } },
     { text: 'A chital fawn is caught in the lantana thorns. Free it (<b>E</b>)', markerFn: (g, S) => S.fawn && !S.fawn.dead ? S.fawn.pos : null, check: (g, S) => S.flags.fawn,
       onStart: (g, S) => {
         const p = sitePos('mahua', 26, 34); S.fawn = g.eco.spawnOne('chital', p, { persistent: true, scale: 0.5, male: false });
@@ -284,39 +297,39 @@ chapter({
           setTimeout(() => {
             const f = S.fawn, m = S.fawnMum;
             f.scripted = (dt, W, a) => { a.steer(m.pos.x, m.pos.z, a.d.run * 0.6, dt, W); if (a.dist2(m.pos) < 4) { a.scripted = null; m.scripted = null; a.threat = g.player.pos.clone(); a.setState('flee', 15); m.threat = g.player.pos.clone(); m.setState('flee', 15); } };
-            g.ui.narrate(['The thorns had it by the leg. They had me by the hands, by the time it came free.', 'Its mother had waited at the edge of the trees the whole time. She did not run until it reached her.', 'Kaali used to wait like that.']);
+            g.ui.narrate(["The thorns had its leg. By the time I got it out they had my hands too.", "Its mother waited at the edge of the trees the whole time. She didn't run until it got back to her.", "Kaali used to wait for me like that."]);
             setTimeout(() => { S.flags.fawn = true; S.checkNow(); }, 9000);
           }, 2400);
         } } },
   ],
-  outro: ['I sat with the bowl for a long time.'],
+  outro: ["I sat there holding that bowl for a long time."],
 });
 
 chapter({
   id: 'c5', title: 'Cut Wood', act: 'Act II · Summer', season: 'summer', weather: 'clear', hour: 14.5, spawn: ['mahua', -40, -30],
   setup(g, S) { g.eco.spawnGroup('gaur', sitePos('maidan', 60, 40), 5, { radius: 50 }); g.eco.spawnGroup('chital', sitePos('maidan', -40, -30), 12); g.eco.spawnGroup('sambar', sitePos('maidan', -120, 60), 3); g.ui.seeLore('gaur'); },
-  intro: ['I followed the swept ground west, across the open meadow the forest guards call Alikatta, where the chital graze and the gaur bull watches everything.'],
+  intro: ["The swept ground led west, across the big meadow the forest guards call Alikatta. Chital graze there, and a gaur bull keeps an eye on everything."],
   objectives: [
-    { text: 'Cross Alikatta meadow to the far treeline', marker: 'stumps', reach: ['stumps', 35], hint: 'Gaur snort before they charge. Give the bull room.' },
-    { text: 'Examine the stump', marker: 'stumps', check: (g, S) => S.flags.clue_stump, done: (g) => { g.ui.narrate(['Not torn by wind. Not burnt by lightning.', 'Struck again and again at one angle, by something like my knife, but far harder.']); g.ui.addJournal('Flat-cut stumps', 'Trees cut flat, the faces smooth, chips of wood lying around like scales. A harder claw than mine.', 'clue'); g.music.stinger('clue'); } },
-    { text: 'Examine the burnt stones nearby', marker: 'hearth', check: (g, S) => S.flags.clue_hearth, done: (g) => { g.ui.narrate(['Three stones in a ring, ash, burnt bones, a cracked red pot.', 'I make fire. I thought I was the only one.', 'Someone.']); g.ui.addJournal('A cold hearth', 'Three stones set in a ring. Ash. Charred bones. Pieces of a red clay pot. Someone else makes fire.', 'clue'); } },
-    { text: 'Climb a tall tree and look out over the forest', hint: '<b>Space</b> facing a trunk, <b>W</b> to climb. Higher than the teak.',
+    { text: 'Cross Alikatta meadow to the far treeline', marker: 'stumps', reach: ['stumps', 35], hint: "A gaur snorts before it charges. Stay away from the bull." },
+    { text: 'Examine the stump', marker: 'stumps', check: (g, S) => S.flags.clue_stump, done: (g) => { g.ui.narrate(["Wind doesn't do that, and neither does lightning.", "Something had hit it over and over in the same spot. Like my knife, only much harder."]); g.ui.addJournal('Flat-cut stumps', "Trees cut off flat, with chips of wood all over the ground. Whatever did it is a lot harder than my knife.", 'clue'); g.music.stinger('clue'); } },
+    { text: 'Examine the burnt stones nearby', marker: 'hearth', check: (g, S) => S.flags.clue_hearth, done: (g) => { g.ui.narrate(["Three stones in a ring. Ash, burnt bones, a broken red pot.", "I make fires like that. I thought I was the only one who did.", 'Someone.']); g.ui.addJournal('A cold hearth', "Three stones in a ring, ash, burnt bones and bits of a red clay pot. Someone else makes fire.", 'clue'); } },
+    { text: 'Climb a tall tree and look out over the forest', teach: ['climbUp', 'treeTop'], hint: "Keep holding <b>W</b>. You can go right to the top.",
       check: (g, S) => S.flags.saw,
-      tick: (g, S) => { const P = g.player; if (!S.flags.saw && P.canopy.mode && P.pos.y - groundHeight(P.pos.x, P.pos.z) > 11) { S.flags.saw = true; g.ui.narrate(['From the top I saw it: a thread of smoke, far to the north, where the forest ended.', 'Someone was there.', 'I was afraid of it. And I wanted to go.']); setTimeout(() => S.checkNow(), 10000); } } },
+      tick: (g, S) => { const P = g.player; if (!S.flags.saw && P.canopy.mode && P.pos.y - groundHeight(P.pos.x, P.pos.z) > 11) { S.flags.saw = true; g.ui.narrate(["From up there I could see smoke, a long way north, where the forest stops.", "So someone was out there.", "It scared me. I wanted to go anyway."]); setTimeout(() => S.checkNow(), 10000); } } },
   ],
-  outro: ['I slept by the cold hearth that night.'],
+  outro: ["I slept by that cold fire pit."],
 });
 
 chapter({
   id: 'c6', title: 'The Shadow on the Rocks', act: 'Act II · Summer', season: 'summer', weather: 'clear', hour: 16.8, spawn: ['stumps', -30, 10],
   setup(g, S) { g.eco.blocked.add('leopard'); g.eco.spawnGroup('langur', sitePos('rocks', 40, 40), 6); g.ui.seeLore('kulu'); },
-  intro: ['The cut stumps led west, to rocks where the ghost trees grow.', 'Leopard country.'],
+  intro: ["The stumps kept going west, up to the rocks where the white ghost trees grow.", "That's leopard country."],
   objectives: [
     { text: 'Go west to the Piyorthadi rocks', marker: 'rocks', reach: ['rocks', 140] },
     { text: 'Find shelter among the rocks', marker: 'cave', check: (g, S) => S.flags.clue_cave,
-      done: (g) => { g.inv.locks.delete('bow'); g.ui.narrate(['Red figures on the rock. Deer, a bison, a tiger.', 'And thin two-legged figures drawing bows. They stand like me. They hunt like me.']); g.ui.addJournal('The ochre hunters', 'In a rock shelter, paintings in red ochre: animals I know, and among them people — two legs, like me — holding something that throws a stick. The painting taught me the bow.', 'clue'); g.ui.toast('New recipes: Bow, Arrows'); g.music.stinger('clue'); } },
-    { text: 'Craft a bow (<b>Tab</b>) — and arrows if you have feathers', check: (g) => g.inv.has('bow'), hint: 'Sinew from a kill, or 3 fibre. Bamboo from clumps (<b>E</b> with a knife).' },
-    { text: 'The Shadow is hunting you. Survive.', async run(g, S, gen) {
+      done: (g) => { g.inv.locks.delete('bow'); g.ui.narrate(["Someone had painted on the rock in red. Deer, a bison, a tiger.", "And skinny figures on two legs, pulling back bows. They stood like me. They hunted like me."]); g.ui.addJournal("The red hunters", "There are red paintings in a rock shelter: animals I know, and people with two legs like mine, holding a thing that throws sticks. I worked out the bow from looking at them.", 'clue'); g.ui.toast('New recipes: Bow, Arrows'); g.music.stinger('clue'); } },
+    { text: "Make a bow (<b>Tab</b>), and arrows if you have feathers", teach: ['craft', 'bowDraw'], check: (g) => g.inv.has('bow'), hint: "You need sinew from a kill, or 3 fibre. Cut bamboo from a clump with your knife (<b>E</b>)." },
+    { text: "The Shadow is hunting you. Stay alive.", teach: ['roar', 'block', 'dodge', 'bandage'], teachTitle: 'Staying alive', async run(g, S, gen) {
       if (g.time.hour < 18.3) g.setTime(18.6);
       const p = g.player.pos;
       const lp = V3(p.x + 35, 0, p.z - 25); lp.y = groundHeight(lp.x, lp.z);
@@ -335,14 +348,14 @@ chapter({
       }
       g.music.setCombat(0);
       if (S.gen !== gen) return;
-      g.ui.narrate(L.dead ? ['She did not get up.'] : ['She melted back into the rocks.', 'I did not see her again that summer.']);
+      g.ui.narrate(L.dead ? ["She didn't get up."] : ["She slipped off into the rocks.", "I didn't see her again that summer."]);
       setTimeout(() => { if (!L.dead) g.eco.remove(L); }, 30000);
       S.next();
     } },
-    { text: 'Press your hand to the wall beside the hunters (<b>E</b>)', marker: 'cave', check: (g, S) => S.flags.hand,
-      interact: { at: () => SITES.cave, r: 6, prompt: 'Press your hand to the rock', act: (g, S) => sitBeat(g, S, 'hand', ['My hand was the same shape as theirs.', 'Five fingers, a thumb that turns. Kaali\'s paw was nothing like it. I had always known that. I had never let myself look.'], { anim: 'gather' }) } },
+    { text: "Put your hand on the wall next to the hunters (<b>E</b>)", marker: 'cave', check: (g, S) => S.flags.hand,
+      interact: { at: () => SITES.cave, r: 6, prompt: "Put your hand on the rock", act: (g, S) => sitBeat(g, S, 'hand', ["My hand fit right over theirs.", "Five fingers and a thumb. Kaali's paw was nothing like that. I'd always known it. I just never let myself think about it."], { anim: 'gather' }) } },
   ],
-  outro: ['I drew my own figure on the cave wall in charcoal, beside the ochre hunters.', 'Then the wind turned, and smelled of wet dust.'],
+  outro: ["I took a burnt stick and drew myself on the wall next to them.", "Then the wind changed. It smelled like wet dust."],
   nextSeason: 'monsoon',
   cleanup(g) { g.eco.blocked.delete('leopard'); },
 });
@@ -350,12 +363,12 @@ chapter({
 chapter({
   id: 'c7', title: 'First Rain', act: 'Act III · Monsoon', season: 'monsoon', weather: 'storm', hour: 15.2, spawn: ['rocks', 260, 280],
   setup(g, S) { g.eco.blocked.add('dhole'); g.ui.seeLore('hawkcuckoo'); S.rainT = 0; S.rainAt = 0; },
-  intro: ['The first storm broke the heat in a single afternoon.'],
+  intro: ["The first storm broke the heat in one afternoon."],
   objectives: [
-    { text: 'Stand still in the rain and look up', hint: 'Stop moving and look up at the sky.',
-      tick: (g, S, dt) => { const P = g.player; if (P.speed < 0.4 && P.pitch > 0.45) S.rainT = (S.rainT || 0) + dt; if (S.rainT > 4 && !S.flags.rain) { S.flags.rain = true; g.ui.narrate(['I stood in it with my mouth open.', 'It ran into my eyes and down my back and I laughed, the only time I ever danced.', 'Somewhere Kaali would have shaken herself and looked at me as if I were mad.']); setTimeout(() => S.checkNow(), 9000); } },
+    { text: 'Stand still in the rain and look up', hint: "Stop moving and look up.",
+      tick: (g, S, dt) => { const P = g.player; if (P.speed < 0.4 && P.pitch > 0.45) S.rainT = (S.rainT || 0) + dt; if (S.rainT > 4 && !S.flags.rain) { S.flags.rain = true; g.ui.narrate(["I stood there with my mouth open.", "It ran in my eyes and down my back. I laughed. I might have danced a bit.", "Kaali would've shaken herself off and looked at me like I'd lost my mind."]); setTimeout(() => S.checkNow(), 9000); } },
       check: (g, S) => S.flags.rain && g.clock - (S.rainAt || (S.rainAt = g.clock)) > 8 },
-    { text: 'Something is whistling in the bamboo…', async run(g, S, gen) {
+    { text: "Something's whistling in the bamboo...", async run(g, S, gen) {
       await g.wait(7); if (S.gen !== gen) return;
       const p = g.player.pos;
       const c = V3(p.x - 60, 0, p.z + 40); c.y = groundHeight(c.x, c.z);
@@ -366,7 +379,7 @@ chapter({
       pack.group.engage('player', g.W);
       S.next();
     } },
-    { text: () => `Survive the Red Whistlers (${S_.pack ? S_.pack.filter((d) => d.dead).length : 0} down)`, hint: 'Back against a tree or rock. Club and spear hit hardest; a torch keeps them off.', async run(g, S, gen) {
+    { text: () => `Fight off the dholes (${S_.pack ? S_.pack.filter((d) => d.dead).length : 0} down)`, teach: ['block', 'dodge', 'roar', 'torch'], hint: "Get your back against a tree or a rock. The club and spear hit hardest, and they won't come near a torch.", async run(g, S, gen) {
       g.music.setCombat(1);
       while (S.gen === gen) {
         await g.wait(0.3); if (g.player.dead) return;
@@ -383,15 +396,15 @@ chapter({
       S.next();
     } },
   ],
-  outro: ['Lal, their leader, took a cut across the face.', 'The pack melted into the rain.'],
+  outro: ["I cut their leader across the face. I started calling her Lal.", "Then the whole pack was just gone, into the rain."],
   cleanup(g) { g.eco.blocked.delete('dhole'); },
 });
 
 chapter({
   id: 'c8', title: 'Chingari', act: 'Act III · Monsoon', season: 'monsoon', weather: 'rain', hour: 9.5, spawn: ['dholeDen', 90, -60],
-  intro: ['It rained for days. Streams became rivers.', 'Then, under the roar of water, a sound like a small animal crying.'],
+  intro: ["It rained for days. Every stream turned into a river.", "Then, over all that water, I heard something small crying."],
   objectives: [
-    { text: 'Follow the whimpering', marker: 'dholeDen', reach: ['dholeDen', 18], async run(g, S, gen) { while (S.gen === gen && S.objIndex === 0) { g.audio.animal('dhole', 'pain', sitePos('dholeDen')); await g.wait(2.5 + Math.random() * 2); } } },
+    { text: "Follow the crying", marker: 'dholeDen', reach: ['dholeDen', 18], async run(g, S, gen) { while (S.gen === gen && S.objIndex === 0) { g.audio.animal('dhole', 'pain', sitePos('dholeDen')); await g.wait(2.5 + Math.random() * 2); } } },
     { text: 'Dig the pup out of the flooding burrow (<b>E</b>)', marker: 'dholeDen', check: (g, S) => S.flags.rescued,
       done: (g, S) => {
         const pup = g.eco.spawnOne('dhole', sitePos('dholeDen', 1, 1.5), { companion: true, persistent: true, name: 'Chingari', scale: 0.78, bond: 1, hpMul: 2.2 });
@@ -399,28 +412,28 @@ chapter({
         const pack = g.eco.spawnGroup('dhole', sitePos('dholeDen', 30, 25), 4, { aggro: 0, persistent: false }).members;
         for (const d of pack) { d.bond = 0.7; d.lookAt = g.player.pos; d.setState('idle', 8); }
         setTimeout(() => { for (const d of pack) if (!d.dead) { d.threat = g.player.pos.clone(); d.setState('flee', 20); } }, 9000);
-        g.ui.narrate(['I carried her out by the scruff, the way Kaali once carried me.', 'Lal could have killed me on that bank. She didn\'t.']);
-        g.ui.addJournal('Chingari', 'A dhole pup from a flooded den. A flood child saved by a flood child. She will not leave me. (Q → Dhole whistle: send her at what you look at, or call her back.)', 'story');
+        g.ui.narrate(["I carried her out by the scruff, the way Kaali carried me.", "Lal could've killed me right there on the bank. She just watched."]);
+        g.ui.addJournal('Chingari', "A dhole pup from a flooded den. The flood nearly got both of us, I guess. She won't leave me alone now. (Hold Q → Dhole whistle to send her at something or call her back.)", 'story');
       } },
     { text: 'Sit with the pup until she stops shaking (<b>E</b> near her)', check: (g, S) => S.flags.calmPup,
       interact: { at: (g) => (g.companion && !g.companion.dead ? g.companion.pos : null), r: 4.5, prompt: 'Hold the pup',
-        act: (g, S) => { const k = g.companion; if (k) k.setState('rest', 40); sitBeat(g, S, 'calmPup', ['She shook for a long time. Then she slept, her nose under my arm.', 'I called her Chingari. A spark. There was fire in her, even then.', 'I had been carried out of the water once. Now I had carried someone.'], { hum: true }); } } },
+        act: (g, S) => { const k = g.companion; if (k) k.setState('rest', 40); sitBeat(g, S, 'calmPup', ["She shook for a long time. Then she fell asleep with her nose under my arm.", "I called her Chingari. It means spark. You'd understand if you met her.", "Someone carried me out of the water once. Now I'd done it for someone else."], { hum: true }); } } },
   ],
-  outro: ['From then on I was never alone in the forest again.'],
+  outro: ["I haven't been on my own since."],
 });
 
 chapter({
   id: 'c9', title: 'The Old Flood', act: 'Act III · Monsoon', season: 'monsoon', weather: 'cloudy', hour: 15.6, spawn: ['dholeDen', 160, 120],
   setup(g, S) { S.ensureChingari(); S.troop = g.eco.spawnGroup('langur', sitePos('sandbar', 25, 15), 6).members; g.eco.blocked.add('tiger'); },
-  intro: ['The river was huge, brown, loud.', 'The langurs led me to a fig tree above a sandbar, as if they knew the place.'],
+  intro: ["The river was huge now, brown and loud.", "I followed the langurs to a fig tree over a sandbar."],
   objectives: [
     { text: 'Follow the langurs to the old sandbar', marker: 'sandbar', reach: ['sandbar', 28] },
-    { text: 'Something iron is showing in the sand. Dig it out', marker: 'sandbar', check: (g, S) => S.flags.clue_cartwheel,
-      done: (g) => { g.ui.narrate(['An iron hoop as tall as me, wooden spokes rotted to stubs.', 'A curved blade. A small brass ring.', 'The same kind of thing as the lota. And the lota came from water.']); g.ui.addJournal('The old sandbar', 'Under the sand: a rusted iron hoop with rotted spokes, a curved blade, a brass ring. I did not know what any of it was. I knew it was the same kind of thing as the lota.', 'clue'); g.music.stinger('clue'); } },
+    { text: "Something hard is sticking out of the sand. Dig it out", marker: 'sandbar', check: (g, S) => S.flags.clue_cartwheel,
+      done: (g) => { g.ui.narrate(["A metal hoop as tall as me, with rotted wooden spokes.", "A curved blade. A little brass ring.", "The same kind of stuff as my lota. And my lota came out of the water."]); g.ui.addJournal('The old sandbar', "Under the sand I found a rusty metal hoop with rotted spokes, a curved blade and a brass ring. I didn't know what any of it was, but it's the same kind of thing as my lota.", 'clue'); g.music.stinger('clue'); } },
     { text: 'Sit by the river where the sand gave it up (<b>E</b>)', marker: 'sandbar', check: (g, S) => S.flags.river,
       interact: { at: () => SITES.sandbar, r: 9, prompt: 'Sit by the river',
-        act: (g, S) => sitBeat(g, S, 'river', ['The river was loud and brown, the way it must have been that night.', 'I do not remember the water. I remember being carried.', 'I hummed the four notes to it. It did not answer.'], { hum: true, journal: ['Where the river took them', 'The cart wheel lay where the river dropped it. Somewhere in that water were the people who owned the lota. I think they were mine.'] }) } },
-    { text: 'Night. Torn-Ear has come for the pups. Drive him off.', async run(g, S, gen) {
+        act: (g, S) => sitBeat(g, S, 'river', ["It must have looked like this that night.", "I don't remember the water. I only remember being carried.", "I hummed the four notes at it. I don't know what I expected."], { hum: true, journal: ['Where the river took them', "That hoop is where the river dropped it. Whoever owned the lota went into that water too. I think they were my people."] }) } },
+    { text: "It's night, and Torn-Ear has come for the pups. Drive him off.", async run(g, S, gen) {
       await g.ui.fade(true, 900); g.setTime(20.3); await g.ui.fade(false, 1200); if (S.gen !== gen) return;
       const p = g.player.pos; const tp = V3(p.x + 55, 0, p.z - 40); tp.y = groundHeight(tp.x, tp.z);
       const t = S.spawnTornEar(tp, { aggro: 1 });
@@ -436,7 +449,7 @@ chapter({
       if (S.gen !== gen) return;
       g.music.setCombat(0);
       if (!t.dead) S.tigerFlee(t, V3(VILLAGE.x, 0, VILLAGE.z + 500));
-      g.ui.narrate('He broke away north, toward the edge of the forest, where cattle graze.');
+      g.ui.narrate("He ran off north, out toward the edge of the forest where the cattle are.");
       S.next();
     } },
   ],
@@ -448,21 +461,21 @@ chapter({
 chapter({
   id: 'c10', title: 'The Tower', act: 'Act IV · After the Rains', season: 'post', weather: 'mist', hour: 6.6, spawn: ['shrine', 120, 240],
   setup(g, S) { S.ensureChingari(); g.ui.seeLore('banyan'); },
-  intro: ['After the rains the grass stood over my head and mist poured down the valleys every dawn.', 'Torn-Ear\'s pugmarks went north-west.'],
+  intro: ["After the rains the grass grew over my head, and every morning the valleys filled up with mist.", "Torn-Ear's tracks went north-west."],
   objectives: [
-    { text: 'Follow the pugmarks north-west', marker: 'shrine', reach: ['shrine', 20] },
-    { text: 'Look at the red stone under the saja', marker: 'shrine', check: (g, S) => S.flags.clue_shrine, done: (g) => { g.ui.narrate(['A stone painted red. An iron fork. Bangles hung on a branch, strips of red cloth tied round the trunk.', 'Someone came here to leave things, not to take them.']); g.ui.addJournal('Gifts under the saja', 'A red stone, an iron trident, little clay horses, bangles, red cloth. Gifts left, not taken.', 'clue'); } },
-    { text: 'A tall wooden thing stands above the trees. Reach it', marker: 'tower', reach: ['tower', 9] },
+    { text: "Follow the tracks north-west", marker: 'shrine', reach: ['shrine', 20] },
+    { text: 'Look at the red stone under the saja', marker: 'shrine', check: (g, S) => S.flags.clue_shrine, done: (g) => { g.ui.narrate(["A stone painted red, a metal fork, bangles on a branch, red cloth tied round the trunk.", "People came here to leave things, not take them. I'd never seen anything do that."]); g.ui.addJournal('Gifts under the saja', "A red stone, a three-pointed fork, little clay horses, bangles and red cloth. Someone left these on purpose.", 'clue'); } },
+    { text: "There's a tall wooden thing above the trees. Go to it", marker: 'tower', reach: ['tower', 9] },
     { text: 'Climb the ladder (<b>E</b>, then <b>W</b>)', marker: 'tower', check: (g, S) => S.flags.climbed || g.player.pos.y > SITES.tower.y + 6 },
     { text: 'Pick up the rattling box', check: (g, S) => S.flags.clue_towerItems,
-      done: (g) => { g.inv.add('matches', 1); g.ui.narrate(['I shook it. It rattled. I scraped a stick on its side and it burst into flame in my hand.', 'I dropped it. I did it again.', 'I laughed. I had never made that sound before.']); g.ui.addJournal('Fire in a box', 'On the tower: a cloth cap, a bottle you can see through, and a small box of sticks that make fire when scraped. Campfires no longer need the fire-saw.', 'clue'); g.music.stinger('clue'); } },
+      done: (g) => { g.inv.add('matches', 1); g.ui.narrate(["I shook it and it rattled. I scraped one of the little sticks on the side and it caught fire in my hand.", "I dropped it. Then I did it again. And again.", 'I laughed. I had never made that sound before.']); g.ui.addJournal('Fire in a box', "On the tower I found a cloth cap, a bottle you can see through, and a little box of sticks that catch fire when you scrape them. No more sawing bamboo to start a fire.", 'clue'); g.music.stinger('clue'); } },
     { text: 'Look north from the tower', check: (g, S) => S.lookedNorth, tick: (g, S, dt) => {
       const P = g.player; if (P.pos.y < SITES.tower.y + 6) { S.lookT = 0; return; }
       const ang = Math.atan2(VILLAGE.x - P.pos.x, -(VILLAGE.z - P.pos.z)), head = -P.yaw;
       let d = ang - head; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
       if (Math.abs(d) < 0.45) S.lookT = (S.lookT || 0) + dt; else S.lookT = 0;
       if (S.lookT > 1.5 && !S.lookedNorth) { S.lookedNorth = true; }
-    }, done: (g) => { g.ui.narrate(['Smoke, rising straight up into the still air.', 'And beyond the trees, small square shapes with red roofs.', 'A place.']); g.ui.addJournal('A place', 'From the tower top: a line of smoke, and beyond the trees, square shapes with red roofs.', 'clue'); g.music.stinger('clue'); } },
+    }, done: (g) => { g.ui.narrate(["Smoke, going straight up.", "And past the trees, little square shapes with red tops.", "People lived there."]); g.ui.addJournal('A place', "From the top of the tower you can see smoke and, past the trees, square shapes with red tops.", 'clue'); g.music.stinger('clue'); } },
   ],
   outro: [],
 });
@@ -470,30 +483,30 @@ chapter({
 chapter({
   id: 'c11', title: 'The Flute', act: 'Act IV · After the Rains', season: 'post', weather: 'clear', hour: 18.2, spawn: ['tower', -6, 8],
   setup(g, S) { S.ensureChingari(); S.spawnVillage(); },
-  intro: ['In the summer I had cut a whistle from bamboo.', 'For months I had been blowing the four notes into it. The four notes I hummed without knowing why.'],
+  intro: ["Back in the summer I'd started cutting whistles out of bamboo.", "I'd been trying to get the four notes out of them for months."],
   objectives: [
-    { text: 'Craft a bamboo flute (<b>Tab</b>)', check: (g) => g.inv.has('flute'), hint: '1 bamboo and a knife.' },
+    { text: "Make a bamboo flute (<b>Tab</b>)", check: (g) => g.inv.has('flute'), hint: "You need 1 bamboo and a knife." },
     { text: 'Go down to the riverbank below the tower', marker: 'fluteSpot', reach: ['fluteSpot', 10] },
     { text: 'Listen.', async run(g, S, gen) {
       if (g.time.hour < 19.5) { await g.ui.fade(true, 900); g.setTime(20.2); await g.ui.fade(false, 1400); }
       if (S.gen !== gen) return;
       await g.wait(4); if (S.gen !== gen) return;
       S.farFlute([0, 2, 4, 7, 4, 2, 0].map((s, i, a) => ({ semi: s, dur: i === a.length - 1 ? 2.5 : 0.7, meend: i % 2 === 1 })));
-      g.ui.narrate(['Across the black water, a sound that was not a bird and not an animal.', 'A long rising breath that bent from note to note.']);
+      g.ui.narrate(["Something was making a sound across the river. It wasn't a bird, and it wasn't any animal I knew.", "It was one long breath, sliding from note to note."]);
       await g.wait(9); if (S.gen !== gen) return;
       S.next();
     } },
-    { text: 'Answer it. (Hold <b>Q</b> → Four notes)', check: (g, S) => S.flags.answered, async run(g, S, gen) {
+    { text: 'Answer it. (Hold <b>Q</b> → Four notes)', teach: ['wheel', 'flute'], check: (g, S) => S.flags.answered, async run(g, S, gen) {
       const off = g.on('call', (e) => { if (e.kind === 'flute' && g.player.pos.distanceTo(sitePos('fluteSpot')) < 40) { S.flags.played = true; } });
       while (S.gen === gen && !S.flags.played) await g.wait(0.3);
       off(); if (S.gen !== gen) return;
       await g.wait(6); if (S.gen !== gen) return;
-      g.ui.narrate('The flute across the river stopped.');
+      g.ui.narrate("The sound across the river stopped.");
       await g.wait(3); if (S.gen !== gen) return;
       S.farFlute(THEME.map((s, i) => ({ semi: s, dur: i === 3 ? 1.6 : 0.6 })).concat([0, 2, 4, 7, 9, 7, 4, 2, 0].map((s, i, a) => ({ semi: s, dur: i === a.length - 1 ? 3.5 : 0.55, meend: i % 3 === 1 }))));
-      await g.wait(3); g.ui.narrate(['Then it played my four notes back. Correctly.', 'And kept going, into the rest of a song I did not know I knew.']);
+      await g.wait(3); g.ui.narrate(["Then it played my four notes back to me.", "And it kept going. There was more after them. I'd never known there was more."]);
       await g.wait(9);
-      g.ui.narrate('I did not know it was a song. I thought it was a sound that belonged to me. It belonged to them too.');
+      g.ui.narrate("I thought those notes were just mine. Somebody else knew them.");
       S.flags.answered = true;
     } },
   ],
@@ -509,10 +522,10 @@ chapter({
     S.cows = g.eco.spawnGroup('cow', f, 6, { persistent: true, radius: 25 }).members;
     g.eco.blocked.add('tiger');
   },
-  intro: ['At first light I crossed the river and watched from the treeline.', 'A boy. Thin, small, two-legged. Real.'],
+  intro: ["At first light I crossed the river and hid in the trees at the edge of the fields.", "There was a boy out there with some cows. Smaller than me. Skinny. An actual person."],
   objectives: [
     { text: 'Watch the herd boy from the treeline', marker: 'fields', reach: ['fields', 95] },
-    { text: 'Protect the boy. Kill Torn-Ear.', async run(g, S, gen) {
+    { text: 'Protect the boy. Kill Torn-Ear.', teach: ['finish'], async run(g, S, gen) {
       await g.wait(5); if (S.gen !== gen) return;
       for (const a of g.eco.animals) if (a.sp === 'langur' || a.sp === 'peafowl') { a.alarmCD = 0; a.alarm(g.W, 'tiger'); }
       g.audio.animal('cow', 'alarm', S.sukhi.pos);
@@ -543,19 +556,19 @@ chapter({
       }
       if (S.gen !== gen) return;
       if (!t.dead) {
-        g.ui.narrate('He lay in the grass, breathing like a bellows. The bright loop still in his leg.');
+        g.ui.narrate("He lay in the grass, breathing hard, with one of those bright loops still in his leg.");
         await g.wait(3);
-        const c = await g.ui.choice('Torn-Ear', 'Finish him with the knife', 'Kneel and pull the wire from his leg');
-        if (c === 'a') { g.player.finishTarget(t); await g.wait(2.5); g.ui.narrate(['I did what the forest does.']); }
-        else { g.ui.narrate(['I pulled the wire out of him. He did not fight me.', 'He was too old, and too tired, and it had hurt him for a long time.']); await g.wait(4); t.scripted = null; t.downed = false; t.hp = 0; t.die(g.W, {}); }
+        const c = await g.ui.choice('Torn-Ear', 'Finish him with the knife', "Kneel and pull the loop out of his leg");
+        if (c === 'a') { g.player.finishTarget(t); await g.wait(2.5); g.ui.narrate(["I made it quick."]); }
+        else { g.ui.narrate(["I pulled it out of him. He didn't fight me.", "He was old and tired, and it must have hurt him for years."]); await g.wait(4); t.scripted = null; t.downed = false; t.hp = 0; t.die(g.W, {}); }
       }
       g.inv.add('wire', 0);
-      g.ui.addJournal('The first clue and the last', 'The wire in Torn-Ear\'s leg. The first sign I ever found, and the last. Both made by people.', 'clue');
+      g.ui.addJournal("Torn-Ear's leg", "Those loops in Torn-Ear's leg were the first sign of people I ever found. People made them. I know that now.", 'clue');
       g.music.setCombat(0);
       S.next();
     } },
   ],
-  outro: ['Before I went to the village I walked back to the den, one last time.', 'Grass had grown up through the teak leaves where Kaali lay.', 'I told her about the boy with the flute. I think she would have liked him.'],
+  outro: ["Before I went to the village I walked back to the den one more time.", "Grass had come up through the leaves where Kaali was.", "I told her about the boy with the flute. I think she'd have liked him."],
   cleanup(g) { g.eco.blocked.delete('tiger'); },
 });
 
@@ -566,10 +579,10 @@ chapter({
     if (!S.sukhi) { const f = sitePos('fields'); S.sukhi = S.npc({ name: 'Sukhi', pos: f.clone().add(V3(-25, 0, 15)), scale: 0.8, build: 'child', cloth: 'dhoti', clothTex: g.T.clothWhite, topTex: g.T.clothKhaki, flute: true, skinKey: 'sukhi' }); }
     S.sukhi.up = 0; g.inv.add('lota', g.inv.has('lota') ? 0 : 1);
   },
-  intro: ['The boy did not run.'],
+  intro: ["The boy didn't run."],
   objectives: [
     { text: 'Go to the boy', markerFn: (g, S) => S.sukhi.pos, check: (g, S) => g.player.pos.distanceTo(S.sukhi.pos) < 4,
-      done: (g, S) => { S.sukhi.look = g.player.pos; S.sukhi.action = 'flute'; S.farFlute(THEME.map((s, i) => ({ semi: s, dur: i === 3 ? 1.8 : 0.6 })), S.sukhi.pos); setTimeout(() => { g.audio.hum(); g.ui.narrate(['He held out his flute the way I held out fruit to the langurs.', 'He played the four notes. I hummed them back.', '"Vanaj," he said. Forest-born. He laughed.']); }, 5000); setTimeout(() => { S.sukhi.action = null; }, 6000); } },
+      done: (g, S) => { S.sukhi.look = g.player.pos; S.sukhi.action = 'flute'; S.farFlute(THEME.map((s, i) => ({ semi: s, dur: i === 3 ? 1.8 : 0.6 })), S.sukhi.pos); setTimeout(() => { g.audio.hum(); g.ui.narrate(["He held his flute out to me, the way I hold out fruit to the langurs.", 'He played the four notes. I hummed them back.', "\"Vanaj,\" he said, pointing at the trees and then at me. Forest-born. Then he laughed."]); }, 5000); setTimeout(() => { S.sukhi.action = null; }, 6000); } },
     { text: 'Follow Sukhi to the village', markerFn: (g, S) => S.sukhi.pos, reach: ['village', 30], onStart: (g, S) => { S.sukhi.walkTo(V3(VILLAGE.x + 4, 0, VILLAGE.z + 10)); } },
     { text: 'Set the lota on the ground (<b>E</b>)', markerFn: (g, S) => S.aaji && S.aaji.pos, check: (g, S) => S.flags.placedLota },
   ],
@@ -577,15 +590,15 @@ chapter({
   async ending(g, S) {
     g.uiBlocking = true;
     await g.wait(1.5);
-    g.ui.narrate(['An old woman picked it up and turned it to the lamp.', 'Scratched into the rim, the way families here have always marked their steel, was a name.']);
+    g.ui.narrate(["An old woman picked it up and held it to the lamp.", "There was a name scratched into the rim. Families here mark their steel like that."]);
     await g.wait(9);
     g.ui.card('सुमित्रा', 'Sumitra', 6);
-    g.ui.narrate(['Her daughter.']);
+    g.ui.narrate(["It was her daughter's."]);
     await g.wait(6);
     g.music.stinger('ending');
-    g.ui.narrate(['She looked at me for a long time. Then she hummed four notes — the lullaby every mother in that village hums.', 'I hummed the rest.']);
+    g.ui.narrate(["She looked at me for a long time. Then she hummed four notes. Every mother in that village sings that lullaby.", 'I hummed the rest.']);
     await g.wait(13);
-    g.ui.card('"Mangalu"', 'It was the first time I heard my name.', 7);
+    g.ui.card('"Mangalu"', "That was the first time I heard my name.", 7);
     await g.wait(9);
     await g.ui.fade(true, 2500);
     const E = document.getElementById('ending'); E.classList.add('show');
@@ -634,17 +647,22 @@ export class Story {
     this.chIndex = i; this.objIndex = 0; this.flags = {}; this.lookedNorth = false; this.lookT = 0;
     g.ui.clearNarration();
     const c = this.chapter;
-    if (!opts.keepState) {
-      g.setSeason(c.season, c.weather);
-      g.setTime(c.hour);
-      const sp = sitePos(c.spawn[0], c.spawn[1], c.spawn[2]);
-      g.teleport(sp, c.spawnYaw || 0);
-    }
-    if (c.setup) c.setup(g, this);
-    g.save();
-    g.ui.card(c.title, c.act, 5.5);
-    g.music.stinger('chapter');
-    await g.wait(2.5); if (this.gen !== gen) return;
+    // Everything about a new place happens behind black, then picture and sound come up together on the way down to him
+    const build = async () => {
+      if (opts.onBlack) opts.onBlack();
+      if (!opts.keepState) {
+        g.setSeason(c.season, c.weather);
+        g.setTime(c.hour);
+        await g.teleportScene(sitePos(c.spawn[0], c.spawn[1], c.spawn[2]), c.spawnYaw || 0);
+      }
+      if (c.setup) c.setup(g, this);
+      g.save();
+    };
+    this.entering = true;
+    if (opts.keepState) await build();
+    else await g.enterScene(build, { dur: i === 0 && !opts.chapterSelect ? 9.5 : 6.5, title: [c.title, c.act], stinger: 'chapter' });
+    if (this.gen !== gen) return;
+    this.entering = false;
     g.ui.narrate(c.intro || []);
     this.beginObjective();
   }
@@ -652,6 +670,7 @@ export class Story {
     const g = this.g, o = this.obj, gen = this.gen;
     if (!o) return this.finishChapter();
     g.ui.setObjective(this.chapter.title, this.objText());
+    if (o.teach) g.lessons.teach(o.teach, o.teachTitle || '', true);
     if (o.hint) setTimeout(() => { if (this.obj === o) g.ui.toast(o.hint, 7); }, 1500);
     if (o.onStart) o.onStart(g, this);
     if (o.run) o.run(g, this, gen);
@@ -660,6 +679,7 @@ export class Story {
     const g = this.g, o = this.obj;
     if (!o) return;
     if (o.done) { try { o.done(g, this); } catch (e) { console.warn(e); } }   // a beat that fails must not wedge the chapter
+    g.lessons.endObjective();
     this.objIndex++;
     g.audio.ui('tick');
     setTimeout(() => this.beginObjective(), 600);
@@ -673,12 +693,12 @@ export class Story {
     const nextI = this.chIndex + 1;
     if (nextI >= CH.length) return;
     if (c.nextSeason) {
+      g.audio.scene(false, 1.2);
       await g.ui.fade(true, 1500); if (this.gen !== gen) return;
-      g.ui.card('Months pass', { summer: 'The burning months', monsoon: 'The rains', post: 'After the rains' }[c.nextSeason], 4);
-      await g.wait(1.5);
+      g.ui.card('Months went by', { summer: 'The hot months', monsoon: 'The rains', post: 'After the rains' }[c.nextSeason], 3);
+      await g.wait(3.4); if (this.gen !== gen) return;
       this.start(nextI);
-      await g.wait(1); g.ui.fade(false, 2000);
-    } else this.start(nextI, { keepState: false });
+    } else this.start(nextI);
   }
   checkNow() {
     const o = this.obj; if (!o || !o.check) return;
@@ -690,7 +710,7 @@ export class Story {
     for (const n of this.npcs) n.update(dt);
     // compass / map marker
     this.marker = null;
-    if (o) {
+    if (o && !this.entering) {
       if (o.markerFn) { const p = o.markerFn(g, this); if (p) this.marker = { x: p.x, z: p.z }; }
       else if (o.marker) this.marker = { x: SITES[o.marker].x, z: SITES[o.marker].z };
       else if (o.reach) this.marker = { x: SITES[o.reach[0]].x, z: SITES[o.reach[0]].z };
@@ -704,7 +724,7 @@ export class Story {
       const d = Math.hypot(g.player.pos.x - VILLAGE.x, g.player.pos.z - VILLAGE.z);
       if (d < 330) {
         const k = (330 - d) / 330; g.player.vel.x += (g.player.pos.x - VILLAGE.x) / d * k * 30 * dt; g.player.vel.z += (g.player.pos.z - VILLAGE.z) / d * k * 30 * dt;
-        if (!this._warned || performance.now() - this._warned > 20000) { this._warned = performance.now(); g.ui.narrate('The north smelled of smoke and dogs. Something in me would not go further. Not yet.'); }
+        if (!this._warned || performance.now() - this._warned > 20000) { this._warned = performance.now(); g.ui.narrate("It smelled of smoke and dogs up here. I wasn't ready to go any closer."); }
       }
     }
   }

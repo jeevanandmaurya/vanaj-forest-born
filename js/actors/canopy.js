@@ -9,13 +9,14 @@
 //
 //   on the ground   Space jumps; Space facing a trunk or a banyan's aerial root starts climbing it
 //   in the air      hold Space to catch any branch, liana, root or trunk within reach
-//   hanging         WASD pump the swing the way you push (relative to the camera, like leaning on a playground
-//                   swing: each push in time with the swing adds height, a push against it brakes);
-//                   Shift+W/S climbs up or slides down a liana; release Space to let go and fly,
-//                   E pulls up onto a thick branch, C drops
-//   on a trunk      W/S climb, A/D go round, Space leaps off backward, W at a limb's base steps out onto it
-//   on a root       W/S climb hand over hand, A/D go round it, W at the top steps onto the limb it hangs from,
-//                   Space leaps off
+//   on a rope       (a liana or a banyan root) two separate things:
+//                   WASD throws his weight, swinging the rope the way you push, relative to the camera; each push
+//                   in time with the swing adds height, a push against it brakes
+//                   Shift+W/S climbs up or down it hand over hand; at the top he steps up onto the limb
+//                   Liana: release Space to let go and fly. Root: press Space to leap off. C drops.
+//   on a branch     WASD swings and shuffles along it, E pulls up onto a thick one, release Space to let go, C drops
+//   on a trunk      W/S climb hand and foot all the way to the top of the tree, A/D go round, E steps out onto a limb
+//                   beside you, Space leaps off backward
 //   on a limb       W/S walk along it, Space leaps, C lowers you to hang from it
 import * as THREE from 'three';
 import { groundHeight } from '../world/terrain.js';
@@ -23,7 +24,7 @@ import { clamp } from '../core/noise.js';
 
 const GRAV = 20, ARM = 1.85, REACH = 1.6, HANDS = 1.75;
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c = new THREE.Vector3(), _d = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0);
-const _e = new THREE.Vector3(), _f = new THREE.Vector3(), _g = new THREE.Vector3();
+const _e = new THREE.Vector3(), _f = new THREE.Vector3(), _g = new THREE.Vector3(), _h = new THREE.Vector3();
 // how far (0..1) down a straight root from a to b the point nearest p lies
 function ropeT(V, p) { _e.subVectors(V.b, V.a); return clamp(_f.subVectors(p, V.a).dot(_e) / Math.max(1e-4, _e.lengthSq()), 0, 1); }
 
@@ -52,6 +53,17 @@ function along(L, s, out) {
 }
 function lengthOf(L) { let s = 0; for (let i = 0; i < L.pts.length - 1; i++) s += L.pts[i].distanceTo(L.pts[i + 1]); return s; }
 // trunk axis point and radius at a world height
+// Climbing is a gait: each hand or foot holds still on the wood while the body rises past it, then lets go and reaches
+// up. Right hand moves with left foot, left hand with right foot. STRIDE is how far he rises per full cycle.
+const STRIDE = 0.8, DUTY = 0.72, GAIT = STRIDE * DUTY / 2;
+// a limb's height about its centre (+1 top of its reach, -1 bottom) at phase ph, and how far it has lifted off the wood
+function gait(ph, out) {
+  ph = ((ph % 1) + 1) % 1;
+  if (ph < DUTY) { out.y = 1 - 2 * ph / DUTY; out.lift = 0; return out; }
+  const t = (ph - DUTY) / (1 - DUTY), s = t * t * (3 - 2 * t);
+  out.y = -1 + 2 * s; out.lift = Math.sin(t * Math.PI); return out;
+}
+const _g1 = { y: 0, lift: 0 }, _g2 = { y: 0, lift: 0 }, _bq = { point: new THREE.Vector3(), r: 0 };
 function trunkAt(T, y, out) {
   const P = T.pts;
   for (let i = 0; i < P.length - 1; i++) {
@@ -67,6 +79,8 @@ export class Canopy {
     this.vel = new THREE.Vector3();
     this.hold = null;           // hang: { kind, tree, limb, vine, pivot, grip, len }
     this.pose = { mode: null, gripR: new THREE.Vector3(), gripL: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0), yaw: 0, phase: 0, vel: new THREE.Vector3(), trunkC: new THREE.Vector3() };
+    Object.assign(this.pose, { footL: new THREE.Vector3(), footR: new THREE.Vector3(), out: new THREE.Vector3(1, 0, 0), side: new THREE.Vector3(0, 0, 1), fingersR: new THREE.Vector3(0, 1, 0), fingersL: new THREE.Vector3(0, 1, 0), thumbR: new THREE.Vector3(0, 0, 1), thumbL: new THREE.Vector3(0, 0, -1), open: 0, climbing: 0, legL: 0, legR: 0 });
+    this.prompt = null;
     this._q = { point: new THREE.Vector3(), dir: new THREE.Vector3(), r: 0 };
     this._hand = new THREE.Vector3(); this._vdir = new THREE.Vector3();
     this.off = new THREE.Vector3();   // how far the soft tree has carried the place he holds or stands on
@@ -86,10 +100,11 @@ export class Canopy {
       if (h.pivot) pull.subVectors(p, h.pivot).normalize();
     } else if (this.mode === 'limb') { L = this.limb; at = p; }
     else if (this.mode === 'rope' && this.rope.limb) { L = this.rope.limb; at = this.rope.a; load = 0.7; }
-    else if (this.mode === 'trunk' && this.tree.trunk) {
-      // climbing, the whole tree leans a touch toward him
-      const T = this.tree.trunk, t = clamp((p.y - T.pts[0].y) / Math.max(1, T.pts[T.pts.length - 1].y - T.pts[0].y), 0, 1), s0 = S.simOf(T.bi), o = this.pose.out;
-      if (o) S.droop(s0, t, o.x * 0.012, 0, o.z * 0.012);
+    else if (this.mode === 'trunk' && this.tree.spine) {
+      // climbing, the wood he is on leans a touch toward him, more as he gets out into the thin top of the tree
+      const sp = this.tree.spine; let i = 0; while (i < sp.pts.length - 2 && sp.pts[i + 1].y < this.gy) i++;
+      const s0 = S.simOf(sp.own[i].bi), t = sp.t[i], o = this.pose.out, lean = 0.012 / Math.max(0.25, sp.r[i] * 3);
+      S.droop(s0, t, o.x * lean, 0, o.z * lean);
       S.dispAt(s0, t, this.off); return;
     }
     if (!L) return;
@@ -176,9 +191,9 @@ export class Canopy {
         if (score < bs) { bs = score; best = { kind: 'vine', tree: T, vine: V, point: pt.clone(), along: t * V.len }; }
       }
       if (T.trunk && T.trunk.r[0] > 0.12) {
-        trunkAt(T.trunk, hand.y, this._q);
+        trunkAt(T.spine, hand.y, this._q);
         const dx = hand.x - this._q.point.x, dz = hand.z - this._q.point.z, reach = Math.hypot(dx, dz) - this._q.r;
-        if (reach < 0.8 && hand.y < T.top - 0.5 && reach - 0.2 < bs) { bs = reach - 0.2; best = { kind: 'trunk', tree: T }; }
+        if (reach < 0.8 && hand.y < T.top - 0.2 && reach - 0.2 < bs) { bs = reach - 0.2; best = { kind: 'trunk', tree: T }; }
       }
     }
     if (!best) return false;
@@ -195,10 +210,10 @@ export class Canopy {
   // ------------------------------------------------------------------ modes
   startTrunk(T, gripY) {
     const p = this.P.pos;
-    trunkAt(T.trunk, gripY, this._q);
+    trunkAt(T.spine, gripY, this._q);
     this.mode = 'trunk'; this.hold = null; this.tree = T;
     this.th = Math.atan2(p.z - this._q.point.z, p.x - this._q.point.x);
-    this.gy = Math.min(gripY, T.top - 0.6);
+    this.gy = Math.min(gripY, T.top - 0.05);
     this.vel.set(0, 0, 0); this.pose.phase = 0;
     this.g.audio.impact('wood', p, 0.35);
   }
@@ -219,7 +234,7 @@ export class Canopy {
   // a banyan root: `along` is how far down from its top the hands are
   startRope(T, V, along) {
     const p = this.P.pos;
-    this.mode = 'rope'; this.tree = T; this.rope = V; this.hold = null;
+    this.mode = 'rope'; this.tree = T; this.rope = V; this.hold = null; V.grabbed = true;
     this.ra = clamp(along, 0.4, V.len);
     const g = _a.copy(V.a).lerp(V.b, this.ra / V.len);
     this.th = Math.atan2(p.z - g.z, p.x - g.x);
@@ -227,11 +242,12 @@ export class Canopy {
     this.g.audio.impact('wood', p, 0.3);
   }
   startLimb(T, L, s, faceOut = 1) {
+    if (this.rope) this.rope.grabbed = false;
     this.mode = 'limb'; this.tree = T; this.limb = L; this.s = s; this.face = faceOut; this.hold = null;
     this.limbLen = lengthOf(L); this.vel.set(0, 0, 0);
   }
-  toAir(vel) { this.flight = { from: this.P.pos.clone(), swing: this.mode === 'hang' }; this.mode = 'air'; this.vel.copy(vel); if (this.hold && this.hold.vine) this.hold.vine.held = false; this.hold = null; }
-  drop() { if (this.hold && this.hold.vine) this.hold.vine.held = false; this.mode = null; this.hold = null; }
+  toAir(vel) { if (this.rope) this.rope.grabbed = false; this.flight = { from: this.P.pos.clone(), swing: this.mode === 'hang' }; this.mode = 'air'; this.vel.copy(vel); if (this.hold && this.hold.vine) this.hold.vine.held = false; this.hold = null; }
+  drop() { if (this.hold && this.hold.vine) this.hold.vine.held = false; if (this.rope) this.rope.grabbed = false; this.mode = null; this.hold = null; this.prompt = null; }
   land(vy) {
     const P = this.P;
     this.drop();
@@ -246,7 +262,7 @@ export class Canopy {
     this.scan(false);
     const cam = g.camera; cam.getWorldDirection(_d); const fwd = _d.setY(0).normalize().clone(), right = new THREE.Vector3(-fwd.z, 0, fwd.x);
     const iz = (k.KeyW ? 1 : 0) - (k.KeyS ? 1 : 0), ix = (k.KeyD ? 1 : 0) - (k.KeyA ? 1 : 0), hold = !!k.Space;
-    const pose = this.pose; pose.mode = this.mode; pose.vel.copy(this.vel);
+    const pose = this.pose; pose.mode = this.mode; pose.vel.copy(this.vel); this.prompt = null;
     if (this.mode === 'trunk') this.updateTrunk(dt, input, iz, ix, right);
     else if (this.mode === 'rope') this.updateRope(dt, input, iz, ix, fwd, right);
     else if (this.mode === 'limb') this.updateLimb(dt, input, iz, fwd);
@@ -259,78 +275,119 @@ export class Canopy {
     // behind it), unless the player is steering it
     if (!P.camUserT) P.yaw = P.lerpAngle(P.yaw, this.pose.yaw + (this.mode === 'limb' ? 0.7 : 0), Math.min(1, dt * (this.mode === 'trunk' || this.mode === 'rope' ? 2.5 : 1.4)));
     // tiring: hanging and climbing cost stamina; standing on a limb rests you; spent, you fall
-    if (this.mode === 'hang' || this.mode === 'trunk' || this.mode === 'rope') { P.stamina -= (this.mode === 'trunk' ? 2.8 : 2.2) * dt; if (P.stamina <= 0) { g.ui.toast('Arms gave out'); this.toAir(this.vel); this.cool = 1.2; } }
+    if (this.mode === 'hang' || this.mode === 'trunk' || this.mode === 'rope') { P.stamina -= 2.2 * dt; if (P.stamina <= 0) { g.ui.toast('Arms gave out'); this.toAir(this.vel); this.cool = 1.2; } }
     else if (this.mode === 'limb') P.stamina = Math.min(100, P.stamina + 12 * dt);
   }
+  // where a hand or foot goes on the wood: on the surface at height y, `lat` metres round from straight in front of him
+  onWood(T, y, out, side, lat, stand, res) {
+    trunkAt(T.spine, Math.min(y, T.top), _bq);
+    const a = lat / Math.max(0.2, _bq.r), r = _bq.r + stand;
+    return res.copy(_bq.point).add(this.off).addScaledVector(out, r * Math.cos(a)).addScaledVector(side, r * Math.sin(a));
+  }
   updateTrunk(dt, input, iz, ix, right) {
-    const P = this.P, T = this.tree, p = P.pos, q = trunkAt(T.trunk, this.gy, this._q);
-    const sprint = this.g.input.keys.ShiftLeft, vUp = iz * (sprint ? 2.6 : 1.7);
-    this.gy = clamp(this.gy + vUp * dt, groundHeight(q.point.x, q.point.z) + HANDS, T.top - 0.6);
+    const P = this.P, T = this.tree, p = P.pos, pz = this.pose, S = T.spine;
+    const sprint = this.g.input.keys.ShiftLeft, vUp = iz * (sprint ? 2.6 : 1.7), y0 = this.gy;
+    let q = trunkAt(S, this.gy, this._q);
+    this.gy = clamp(this.gy + vUp * dt, groundHeight(q.point.x, q.point.z) + HANDS, T.top - 0.05);
+    const risen = this.gy - y0;
+    if (this.gy >= T.top - 0.06 && !this.topped) { this.topped = true; this.g.emit('treetop', { tree: T }); }
+    if (this.gy < T.top - 1) this.topped = false;
     const tan = _a.set(-Math.sin(this.th), 0, Math.cos(this.th));
     this.th += ix * dt * 1.8 / (q.r + 0.32) * Math.sign(right.dot(tan) || 1);
-    trunkAt(T.trunk, this.gy, q);
-    const out = _b.set(Math.cos(this.th), 0, Math.sin(this.th));
+    q = trunkAt(S, this.gy, this._q);
+    const out = _b.set(Math.cos(this.th), 0, Math.sin(this.th)), side = _d.set(-out.z, 0, out.x);
+    // climbing is a gait, driven by the height gained (so it runs backward coming down), and by the steps round
+    pz.phase += risen / STRIDE + Math.abs(ix) * dt * 0.9;
+    const g1 = gait(pz.phase, _g1), g2 = gait(pz.phase + 0.5, _g2);
     const prev = _c.copy(p);
-    p.copy(q.point).addScaledVector(out, q.r + 0.32); p.y = this.gy - HANDS + (iz !== 0 ? 0.07 * Math.sin(this.pose.phase * Math.PI * 2) : 0);   // a heave with each pull
+    p.copy(q.point).add(this.off).addScaledVector(out, q.r + 0.34); p.y = this.gy - HANDS + 0.025 * Math.sin(pz.phase * Math.PI * 4);   // a heave with each pull
     this.vel.subVectors(p, prev).divideScalar(Math.max(dt, 1e-3)).clampLength(0, 4);   // no spike from the snap onto the bark
-    this.pose.phase += Math.abs(vUp) * dt * 1.6 + Math.abs(ix) * dt * 1.2;
-    this.pose.yaw = Math.atan2(out.x, out.z);       // facing the trunk (bodyYaw convention: forward is -Z rotated by yaw)
-    this.pose.trunkC.copy(q.point); this.pose.trunkR = q.r;
-    this.pose.up.set(0, 1, 0);
-    // hands on the bark either side, reaching up by turns as you climb
-    const side = _d.set(-out.z, 0, out.x), ph = this.pose.phase * Math.PI;
-    this.pose.gripR.copy(q.point).addScaledVector(out, q.r + 0.04).addScaledVector(side, -0.2); this.pose.gripR.y = this.gy + 0.12 + 0.22 * Math.sin(ph);
-    this.pose.gripL.copy(q.point).addScaledVector(out, q.r + 0.04).addScaledVector(side, 0.2); this.pose.gripL.y = this.gy + 0.12 - 0.22 * Math.sin(ph);
-    this.pose.out = this.pose.out || new THREE.Vector3(); this.pose.out.copy(out);
+    pz.yaw = Math.atan2(out.x, out.z);       // facing the wood (bodyYaw convention: forward is -Z rotated by yaw)
+    P.bodyYaw = pz.yaw;
+    pz.trunkC.copy(q.point); pz.trunkR = q.r; pz.up.set(0, 1, 0);
+    pz.out.copy(out); pz.side.copy(side);
+    // on his right as he faces the wood is -side. Hands and feet hold still on the bark, each reaching up in turn; the
+    // right hand goes with the left foot.
+    const hY = p.y + 1.36, fY = p.y + 0.3;
+    this.onWood(T, hY + g1.y * GAIT, out, side, -0.17, 0.035 + g1.lift * 0.09, pz.gripR);
+    this.onWood(T, hY + g2.y * GAIT, out, side, 0.17, 0.035 + g2.lift * 0.09, pz.gripL);
+    this.onWood(T, fY + g1.y * GAIT, out, side, 0.11, 0.04 + g1.lift * 0.07, pz.footL);
+    this.onWood(T, fY + g2.y * GAIT, out, side, -0.11, 0.04 + g2.lift * 0.07, pz.footR);
+    // the hands: fingers up the bark, palms flat on it, thumbs toward each other
+    const inn = _e.copy(out).negate();
+    pz.fingersR.set(0, 0.9, 0).addScaledVector(inn, 0.45); pz.fingersL.copy(pz.fingersR);
+    pz.thumbR.copy(side); pz.thumbL.copy(side).negate();
+    pz.open = q.r > 0.14 ? 0.8 : 0.25;   // flat on a trunk, closed on a thin stem
     if (iz !== 0 && Math.random() < dt * 3) this.g.audio.impact('wood', p, 0.18);
     // leap off backward, out and up
     if (input.pressed('Space')) { this.toAir(_c.copy(out).multiplyScalar(4.2).setY(4.6)); this.cool = 0.25; P.stamina -= 4; return; }
-    // step out onto a limb that starts at this height, on this side of the trunk
-    if (iz > 0) for (const L of T.limbs) {
-      if (L.level !== 1 || L.r[0] < 0.1) continue;
-      const b = L.pts[0], d1 = L.pts[Math.min(2, L.pts.length - 1)];
-      const ldir = _d.subVectors(d1, b).setY(0); if (ldir.lengthSq() < 0.01) continue; ldir.normalize();
-      if (Math.abs(b.y - (p.y + 0.3)) < 0.9 && ldir.dot(out) > 0.55) { this.startLimb(T, L, 0.5, 1); return; }
+    // a limb beside him at this height, on this side of the tree: E steps out onto it. (W always carries on climbing, to
+    // the very top of the tree.)
+    let L = null;
+    for (const C of T.limbs) {
+      if (C.r[0] < 0.1) continue;
+      const b = C.pts[0], d1 = C.pts[Math.min(2, C.pts.length - 1)];
+      if (Math.abs(b.y - (p.y + 0.3)) > 1.1 || Math.hypot(b.x - q.point.x, b.z - q.point.z) > q.r + 1) continue;
+      const ldir = _f.subVectors(d1, b).setY(0); if (ldir.lengthSq() < 0.01) continue; ldir.normalize();
+      if (ldir.dot(out) > 0.5) { L = C; break; }
+    }
+    if (L) {
+      this.prompt = 'Step out onto the branch';
+      if (input.pressed('KeyE')) { this.startLimb(T, L, 0.5, 1); return; }
     }
     // down at the foot of the tree
     if (iz < 0 && p.y <= groundHeight(p.x, p.z) + 0.05) { this.drop(); P.vel.set(out.x * 1.5, 0, out.z * 1.5); P.onGround = true; }
   }
-  // hand over hand up a banyan's aerial root, knees gripping it (posed like trunk climbing)
+  // on a banyan's aerial root, as on a liana, two separate things: Shift+W/S climbs hand over hand (Shift+A/D goes round
+  // it); plain WASD throws his weight, and the root swings the way he pushes
   updateRope(dt, input, iz, ix, fwd, right) {
-    const P = this.P, V = this.rope, T = this.tree, p = P.pos;
-    const sprint = this.g.input.keys.ShiftLeft, vUp = iz * (sprint ? 2.3 : 1.45);
+    const P = this.P, V = this.rope, T = this.tree, p = P.pos, pz = this.pose;
+    const shift = !!this.g.input.keys.ShiftLeft, climb = shift ? iz : 0, round = shift ? ix : 0, vUp = climb * 1.6, ra0 = this.ra;
     const dir = _a.subVectors(V.b, V.a).divideScalar(V.len);   // down the root
     // the hands never pass the top, and the feet never go below the ground at the root's foot
     const foot = groundHeight(V.b.x, V.b.z);
     const maxA = Math.max(0.45, dir.y < -0.2 ? Math.min(V.len, (V.a.y - foot - HANDS) / -dir.y) : V.len);
     this.ra = clamp(this.ra - vUp * dt, 0.45, maxA);
     const grip = _b.copy(V.a).addScaledVector(dir, this.ra);
-    // the root itself, bowed by wind and by him; his weight drags on it
-    const ropes = this.g.ropes; if (ropes) { if (ropes.sample(V, this.ra, _f)) grip.copy(_f); ropes.pull(V, this.ra, -Math.cos(this.th) * 2.5, -9.8 * 0.6, -Math.sin(this.th) * 2.5, dt); }
+    // the root itself, bowed by wind and by him; his weight drags on it, and his throws swing it
+    const ropes = this.g.ropes;
+    if (ropes) {
+      if (ropes.sample(V, this.ra, _f)) grip.copy(_f);
+      const push = _e.set(0, 0, 0); if (!shift) { push.addScaledVector(fwd, iz).addScaledVector(right, ix); if (push.lengthSq() > 0) push.normalize().multiplyScalar(26); }
+      ropes.pull(V, this.ra, -Math.cos(this.th) * 2.5 + push.x, -5.9, -Math.sin(this.th) * 2.5 + push.z, dt);
+    }
     const tan = _c.set(-Math.sin(this.th), 0, Math.cos(this.th));
-    this.th += ix * dt * 2.2 / (V.r + 0.3) * Math.sign(right.dot(tan) || 1);
-    const out = _c.set(Math.cos(this.th), 0, Math.sin(this.th));
-    const prev = _d.copy(p);
-    p.copy(grip).addScaledVector(out, V.r + 0.3); p.y = grip.y - HANDS + (iz !== 0 ? 0.06 * Math.sin(this.pose.phase * Math.PI * 2) : 0);
-    this.vel.subVectors(p, prev).divideScalar(Math.max(dt, 1e-3)).clampLength(0, 4);
-    this.pose.phase += Math.abs(vUp) * dt * 1.8 + Math.abs(ix) * dt * 1.2;
-    this.pose.mode = 'trunk';
-    this.pose.yaw = Math.atan2(out.x, out.z);
-    this.pose.trunkC.copy(grip); this.pose.trunkR = V.r; this.pose.up.set(0, 1, 0);
-    // one hand above the other on the root, taking turns as he climbs
-    const ph = this.pose.phase * Math.PI, side = _d.set(-out.z, 0, out.x);
-    this.pose.gripR.copy(grip).addScaledVector(out, V.r + 0.03).addScaledVector(side, -0.05); this.pose.gripR.y += 0.12 + 0.2 * Math.sin(ph);
-    this.pose.gripL.copy(grip).addScaledVector(out, V.r + 0.03).addScaledVector(side, 0.05); this.pose.gripL.y += 0.12 - 0.2 * Math.sin(ph);
-    this.pose.out = this.pose.out || new THREE.Vector3(); this.pose.out.copy(out);
-    if (iz !== 0 && Math.random() < dt * 2.5) this.g.audio.impact('wood', p, 0.12);
-    if (input.pressed('Space')) { this.toAir(_f.copy(out).multiplyScalar(4.2).setY(4.6)); this.cool = 0.25; P.stamina -= 4; return; }
+    this.th += round * dt * 2.2 / (V.r + 0.3) * Math.sign(right.dot(tan) || 1);
+    const out = _c.set(Math.cos(this.th), 0, Math.sin(this.th)), side = _d.set(-out.z, 0, out.x);
+    pz.phase += (ra0 - this.ra) / STRIDE + Math.abs(round) * dt * 0.9;
+    const g1 = gait(pz.phase, _g1), g2 = gait(pz.phase + 0.5, _g2);
+    const prev = _g.copy(p);
+    p.copy(grip).addScaledVector(out, V.r + 0.3); p.y = grip.y - HANDS + (climb !== 0 ? 0.025 * Math.sin(pz.phase * Math.PI * 4) : 0);
+    this.vel.subVectors(p, prev).divideScalar(Math.max(dt, 1e-3)).clampLength(0, 9);   // (leaping off keeps the swing)
+    pz.mode = 'trunk';
+    pz.yaw = Math.atan2(out.x, out.z); P.bodyYaw = pz.yaw;
+    pz.trunkC.copy(grip); pz.trunkR = V.r; pz.up.set(0, 1, 0);
+    pz.out.copy(out); pz.side.copy(side);
+    // fists one above the other, thumbs up, as you hold a pole; the feet grip it from either side, in turn with the hands
+    const place = (res, along, lat, off) => { const s = clamp(along, 0.2, V.len); if (!ropes || !ropes.sample(V, s, res)) res.copy(V.a).addScaledVector(dir, s); res.addScaledVector(out, V.r + off).addScaledVector(side, lat); };
+    const rel = (h) => this.ra + HANDS - h;   // metres down the root, h above his feet
+    place(pz.gripR, rel(1.36 + g1.y * GAIT), -0.04, 0.03 + g1.lift * 0.08);
+    place(pz.gripL, rel(1.36 + g2.y * GAIT), 0.04, 0.03 + g2.lift * 0.08);
+    place(pz.footL, rel(0.32 + g1.y * GAIT), 0.07, 0.02 + g1.lift * 0.06);
+    place(pz.footR, rel(0.32 + g2.y * GAIT), -0.07, 0.02 + g2.lift * 0.06);
+    const inn = _e.copy(out).negate();
+    pz.fingersR.copy(inn).multiplyScalar(0.9).addScaledVector(side, 0.45); pz.fingersL.copy(inn).multiplyScalar(0.9).addScaledVector(side, -0.45);
+    pz.thumbR.set(0, 1, 0); pz.thumbL.set(0, 1, 0); pz.open = 0;
+    if (climb !== 0 && Math.random() < dt * 2.5) this.g.audio.impact('wood', p, 0.12);
+    if (input.pressed('Space')) { this.toAir(_f.copy(out).multiplyScalar(4.2).setY(4.6).addScaledVector(this.vel, 0.8)); this.cool = 0.25; P.stamina -= 4; return; }
+    if (input.pressed('KeyC')) { this.toAir(_f.copy(out).multiplyScalar(1.2).addScaledVector(this.vel, 0.6)); this.cool = 0.5; return; }
     // at the top: out onto the limb the root hangs from, facing the way the camera looks
-    if (iz > 0 && this.ra <= 0.46 && V.limb) {
+    if (climb > 0 && this.ra <= 0.46 && V.limb) {
       const q = closestOn(V.limb, V.a, {});
       if (q.r > 0.09 && q.d < 1.6) { this.startLimb(T, V.limb, this.sOn(V.limb, q), q.dir.dot(fwd) >= 0 ? 1 : -1); p.copy(q.point); p.y += q.r; return; }
     }
     // at the foot: back on the ground
-    if (iz < 0 && this.ra >= maxA - 0.01) { this.drop(); p.y = Math.max(p.y, groundHeight(p.x, p.z)); P.vel.set(out.x * 1.5, 0, out.z * 1.5); P.onGround = true; }
+    if (climb < 0 && this.ra >= maxA - 0.01) { this.drop(); p.y = Math.max(p.y, groundHeight(p.x, p.z)); P.vel.set(out.x * 1.5, 0, out.z * 1.5); P.onGround = true; }
   }
   updateLimb(dt, input, iz, fwd) {
     const P = this.P, L = this.limb, p = P.pos, q = along(L, this.s, this._q);
@@ -368,7 +425,7 @@ export class Canopy {
       // Shift+W/S: hand over hand up or down the liana; the swing settles while he climbs
       h.along = clamp(h.along - iz * 1.3 * dt, 0.3, h.vine.len - 0.15); h.len = h.len0 = h.along + ARM;
       v.multiplyScalar(1 - Math.min(1, 1.6 * dt));
-      this.pose.phase += 2.4 * dt;
+      this.pose.phase += 1.3 * iz * dt / STRIDE;
       // at the top: up onto the limb it hangs from
       const L = h.vine.limb;
       if (iz > 0 && h.along <= 0.31 && L) {
@@ -395,9 +452,14 @@ export class Canopy {
       } else v.multiplyScalar(1 - 0.22 * dt);
     }
     v.clampLength(0, 14);
-    // through the physics world: a swing into a trunk, a rock or a wall bounces off it; feet down on the ground
-    // or on top of a rock, he stands
-    const vy0 = v.y, hit = this.sweep(p, v, dt);
+    // Where the rope lets him go this frame, then through the physics world with his whole body along it: a swing into a
+    // trunk, a limb, a rock or a wall stops there and slides along it, and the rope only ever pulls him along a clear
+    // path, so nothing can drag him through. Feet down on the ground or on top of a rock, he stands.
+    const vy0 = v.y, n0 = _a.subVectors(p, h.pivot); if (n0.lengthSq() < 1e-4) n0.set(0, -1, 0); n0.normalize();
+    const step = _b.copy(p).addScaledVector(v, dt).sub(h.pivot); if (step.lengthSq() < 1e-4) step.set(0, -1, 0); step.normalize();
+    if (step.y > 0.35) { step.y = 0.35; step.normalize(); }   // the swing never goes over the top of the hold
+    step.multiplyScalar(h.len).add(h.pivot).sub(p);
+    const up0 = _e.copy(n0).negate(), hit = this.moveBody(p, v, step, up0, h.kind === 'vine' ? h.vine.limb : h.limb);
     const fast = Math.hypot(v.x, v.z) > 1.3;
     if (hit && hit.ny > 0.6 && vy0 < 0.5 && !fast) { this.land(vy0); return; }
     // feet down on the ground (or a rock) while the swing is going: he tucks his legs up and the swing runs on
@@ -405,17 +467,23 @@ export class Canopy {
     if (hit && hit.ny > 0.6) { h.len = Math.max(ARM * 0.7, Math.min(h.len, p.distanceTo(h.pivot) - 0.05)); v.y = Math.max(v.y, 0); }
     else if (h.len < h.len0) h.len = Math.min(h.len0, h.len + 0.9 * dt);
     const n = _a.subVectors(p, h.pivot); const d = n.length() || 1; n.multiplyScalar(1 / d);
-    if (n.y > 0.35) { n.y = 0.35; n.normalize(); }   // the swing never goes over the top of the hold
-    p.copy(h.pivot).addScaledVector(n, h.len);
-    v.addScaledVector(n, -v.dot(n));
+    // the rope only pulls: held taut he stays on the circle; pressed in against something it goes slack
+    if (d >= h.len - 0.015) { p.copy(h.pivot).addScaledVector(n, h.len); v.addScaledVector(n, -v.dot(n)); }
     // the hands: on the branch either side of the grip, or on the liana an arm's length above the body
     const grip = h.kind === 'vine' ? _b.copy(p).addScaledVector(n, -ARM) : h.pivot;
     const side = _c.set(-n.z, 0, n.x).normalize();
     if (h.kind === 'branch') side.copy(h.dir).setY(0).normalize();
     this.pose.gripR.copy(grip).addScaledVector(side, 0.11); this.pose.gripL.copy(grip).addScaledVector(side, -0.11);
-    // climbing the liana: one hand above the other, taking turns
-    if (h.kind === 'vine' && this.g.input.keys.ShiftLeft && iz !== 0) { const s = 0.16 * Math.sin(this.pose.phase * Math.PI); this.pose.gripR.addScaledVector(n, -0.08 - s); this.pose.gripL.addScaledVector(n, -0.08 + s); }
     this.pose.up.copy(n).negate();
+    // how the hands sit: over the top of a branch, palms forward; on a liana, fists round it
+    { const pz = this.pose, fw = _f.set(-Math.sin(pz.yaw), 0, -Math.cos(pz.yaw));
+      pz.open = 0;
+      pz.fingersR.copy(pz.up).multiplyScalar(0.8).addScaledVector(fw, 0.6); pz.fingersL.copy(pz.fingersR);
+      if (h.kind === 'branch') { pz.thumbR.copy(side).multiplyScalar(-Math.sign(side.dot(_g.set(-fw.z, 0, fw.x))) || -1); pz.thumbL.copy(pz.thumbR).negate(); }
+      else { pz.thumbR.copy(pz.up); pz.thumbL.copy(pz.up); } }
+    // climbing the liana: one hand above the other, taking turns, the legs drawing up by turns with them
+    this.pose.climbing = 0;
+    if (h.kind === 'vine' && this.g.input.keys.ShiftLeft && iz !== 0) { const g1 = gait(this.pose.phase, _g1), g2 = gait(this.pose.phase + 0.5, _g2); this.pose.gripR.addScaledVector(n, -0.1 - g1.y * 0.2); this.pose.gripL.addScaledVector(n, -0.1 - g2.y * 0.2); this.pose.climbing = 1; this.pose.legL = 0.5 + 0.5 * g1.y; this.pose.legR = 0.5 + 0.5 * g2.y; }
     // facing: along the swing, but he does not turn round at each end of it (swinging back he goes backwards,
     // as on a playground swing), so the camera behind him stays steady too
     const hv = _d.set(v.x, 0, v.z);
@@ -438,6 +506,7 @@ export class Canopy {
       const q = closestOn(h.limb, h.point, {}), s = this.sOn(h.limb, q);
       this.startLimb(h.tree, h.limb, s, 1); p.copy(q.point); p.y += q.r; return;
     }
+    if (h.kind === 'branch' && h.r > 0.09) this.prompt = v.length() < 2.5 ? 'Pull yourself up onto the branch' : null;
     // let go: fly on with a lift (the release hop of vine-swinging games)
     if (!hold) {
       const sp = v.length();
@@ -445,23 +514,32 @@ export class Canopy {
       this.toAir(_d.copy(v).add(boost)); this.cool = 0.22;
     }
   }
-  // move the feet along v*dt through the physics world (a ball at the ankles, so it meets trunks, rocks, walls and
-  // the ground but not the limb the hands hold); on a hit, stop there and lose the speed into the surface with a
-  // little bounce. Returns the hit (with its normal) or null.
-  sweep(p, v, dt) {
+  // Move his body by `step` through the physics world, sliding along whatever it meets: on a hit he stops at the
+  // surface, loses the speed going into it (with a small bounce) and carries on along it with what is left of the
+  // step. `up` runs from the feet toward the hands. Returns the last hit (with its normal) or null.
+  moveBody(p, v, step, up, ignore) {
     const ph = this.g.phys;
-    if (!ph) { p.addScaledVector(v, dt); return null; }
-    const d = _f.copy(v).multiplyScalar(dt), from = _g.copy(p); from.y += 0.3;
-    const h = ph.sweepBall(from, d, 0.28);
-    if (!h) { p.add(d); return null; }
-    p.addScaledVector(d, Math.max(0, h.t - 0.01 / Math.max(1e-4, d.length())));
-    const vn = v.x * h.nx + v.y * h.ny + v.z * h.nz;
-    if (vn < 0) {
-      v.x -= h.nx * vn * 1.25; v.y -= h.ny * vn * 1.25; v.z -= h.nz * vn * 1.25;
-      if (vn < -2.5 && h.ny < 0.6) { this.g.audio.impact('wood', p, Math.min(1, -vn / 8)); if (vn < -9) this.P.hurt((-vn - 9) * 4, null, { kind: 'fall' }); }
+    if (!ph) { p.add(step); return null; }
+    let last = null;
+    for (let i = 0; i < 3; i++) {
+      const l = step.length(); if (l < 1e-5) break;
+      const h = ph.sweepBody(p, up, step, ignore);
+      if (!h) { p.add(step); break; }
+      last = h;
+      const t = Math.max(0, h.t - 0.012 / l);
+      p.addScaledVector(step, t);
+      step.multiplyScalar(1 - t);
+      const sn = step.x * h.nx + step.y * h.ny + step.z * h.nz; if (sn < 0) { step.x -= h.nx * sn; step.y -= h.ny * sn; step.z -= h.nz * sn; }
+      const vn = v.x * h.nx + v.y * h.ny + v.z * h.nz;
+      if (vn < 0) {
+        const e = h.ny > 0.6 ? 1 : 1.2;
+        v.x -= h.nx * vn * e; v.y -= h.ny * vn * e; v.z -= h.nz * vn * e;
+        if (vn < -2.5 && h.ny < 0.6) { this.g.audio.impact('wood', p, Math.min(1, -vn / 8)); if (vn < -9) this.P.hurt((-vn - 9) * 4, null, { kind: 'fall' }); }
+      }
     }
-    return h;
+    return last;
   }
+  sweep(p, v, dt, up) { return this.moveBody(p, v, _h.copy(v).multiplyScalar(dt), up, null); }
   // a limb close under the feet (the limb landing takes it, not the ground landing)
   limbUnder(p) {
     for (const T of this.trees) for (const L of T.limbs) { const q = closestOn(L, p, {}); if (q.r > 0.1 && q.d < q.r + 0.45 && p.y > q.point.y) return true; }
@@ -474,7 +552,7 @@ export class Canopy {
     const F = this.flight; if (F && F.swing && !F.told && Math.hypot(p.x - F.from.x, p.z - F.from.z) > 4) { F.told = true; this.g.emit('swung'); }
     v.y -= GRAV * dt;
     v.addScaledVector(fwd, iz * 3 * dt).addScaledVector(right, ix * 3 * dt);
-    const vy0 = v.y, hit = this.sweep(p, v, dt);
+    const vy0 = v.y, hit = this.sweep(p, v, dt, _up);
     // came down on top of something that is not a limb (a rock, a roof, the tower deck, the ground): stand there
     if (hit && hit.ny > 0.6 && vy0 <= 0.5 && !this.limbUnder(p)) { this.land(vy0); return; }
     const hv = _d.set(v.x, 0, v.z); if (hv.lengthSq() > 0.25) { this.pose.yaw = Math.atan2(-hv.x, -hv.z); P.bodyYaw = this.pose.yaw; }

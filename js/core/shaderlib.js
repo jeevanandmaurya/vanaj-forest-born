@@ -3,6 +3,7 @@ import * as THREE from 'three';
 
 export const G = {
   uTime: { value: 0 },
+  uFocus: { value: new THREE.Vector4() },
   uSunDir: { value: new THREE.Vector3(0.3, 0.8, 0.2).normalize() },
   uSunCol: { value: new THREE.Color(1, 0.95, 0.85) },
   uSunVis: { value: 1 },
