@@ -3,7 +3,7 @@
 //
 // The game's own code and page: from the network when there is one, so a new version is never missed, revalidated cheaply with a 304; if
 // the network is gone or slow, from here. Libraries, models, fonts and pictures hardly ever change and are large: from here, first.
-const CACHE = 'vanaj-v1', SLOW_MS = 1500;
+const CACHE = 'vanaj-v2', SLOW_MS = 1500;
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())));
