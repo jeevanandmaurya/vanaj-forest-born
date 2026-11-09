@@ -1,8 +1,8 @@
 // Touch controls for phones and tablets. A floating joystick on the left half (each finger tracked by its own
 // touch id, the stick centred where the thumb lands, its throw clamped), drag-to-look on the right half, and
 // buttons for the discrete actions. Buttons send the same keyboard and mouse events the game already handles, so
-// every action has one code path. Jump/Grab is held to keep a grip in the trees and released to let go: the
-// one-touch scheme of vine-swinging games.
+// every action has one code path. Jump/Grab is a tap in the trees: one to take hold, and he keeps it with the thumb free
+// for the stick; another to let go.
 import { icon } from './icons.js';
 import { iconFor } from './ui.js';
 
@@ -17,7 +17,7 @@ const BTN = [
   ['call', 'Call', 'wheel', 2.6, 2.05, 0.8, false],
   ['climb', 'Climb', 'climb', 0.2, 2.6, 0.9, true],   // only in the trees: stick up or down with it held climbs a rope
 ];
-const TOP = [['bag', 'Bag', 'Tab'], ['notes', 'Notes', 'KeyJ'], ['menu', 'Pause', 'Escape']];   // (the map: tap the minimap)
+const TOP = [['season', 'Change season', 'KeyN'], ['bag', 'Bag', 'Tab'], ['notes', 'Notes', 'KeyJ'], ['menu', 'Pause', 'Escape']];   // (the map: tap the minimap; the season: free roam only)
 
 export function isTouchDevice() {
   return (window.matchMedia && matchMedia('(pointer: coarse)').matches) || new URLSearchParams(location.search).has('touch');
@@ -64,6 +64,7 @@ export class TouchControls {
       #touch .ttop { position:absolute; right:max(8px, env(safe-area-inset-right)); top:max(6px, env(safe-area-inset-top)); display:flex; gap:5px; }
       #touch .tt { pointer-events:auto; width:38px; height:38px; border-radius:10px; background:rgba(18,15,10,.5); border:1px solid rgba(240,230,205,.32); color:#f2e8d2; display:flex; align-items:center; justify-content:center; }
       #touch .tt .ic { width:21px; height:21px; } #touch .tt.on { background:rgba(232,149,58,.6); }
+      #touch .tt.season { display:none; } body.free-roam #touch .tt.season { display:flex; } body.touch.free-roam #clock { right:calc(max(8px, env(safe-area-inset-right)) + 176px); }
       /* the HUD for a phone held sideways: small, round the edges, the middle left for the game */
       /* the minimap in the corner, what to do beside it */
       body.touch #minimap, #touch .tmini { left:var(--edge); top:6px; width:96px; height:96px; } #touch .tmini { position:absolute; border-radius:50%; pointer-events:auto; }
@@ -106,7 +107,7 @@ export class TouchControls {
       box.appendChild(b); this.btn[id] = b; this.bindButton(b, key, hold);
     }
     const top = root.querySelector('.ttop');
-    for (const [id, name, key] of TOP) { const b = document.createElement('div'); b.className = 'tt'; b.setAttribute('aria-label', name); b.innerHTML = icon(id); top.appendChild(b); this.bindButton(b, key, false); }
+    for (const [id, name, key] of TOP) { const b = document.createElement('div'); b.className = 'tt ' + id; b.setAttribute('aria-label', name); b.innerHTML = icon(id); top.appendChild(b); this.bindButton(b, key, false); }
     this.bindButton(root.querySelector('.tmini'), 'KeyM', false);   // (tap the minimap for the big map)
     this.bindStick(root.querySelector('.tleft'), root.querySelector('.tstick'), root.querySelector('.tknob'));
     this.bindLook(root.querySelector('.tright'));
@@ -133,6 +134,7 @@ export class TouchControls {
     const n = w === 'bow' ? inv.count('arrow') : w === 'spear' ? inv.count('spear') : '', b = this.btn.weapon.querySelector('b');
     if (b && n !== this._n) { b.textContent = n; this._n = n; }
     const can = !!g.ui._prompt; if (can !== this._can) { document.body.classList.toggle('can-use', can); this._can = can; }
+    { const fr = !!g.story.done; if (fr !== this._fr) { document.body.classList.toggle('free-roam', fr); this._fr = fr; } }
     const tr = this.root.classList.contains('trees'); if (tr !== this._tr) { document.body.classList.toggle('in-trees', tr); this._tr = tr; }
   }
   // A phone game wants the phone sideways, but nothing stops play for it: held upright the game goes on, and a small note says so for
@@ -168,8 +170,8 @@ export class TouchControls {
   key(code, down) {
     if (code === 'wheel') { if (down && !this.g.wheelOpen) this.key('KeyQ', true); return; }
     if (code === 'nextWeapon') { if (down) this.g.input.wheel += 1; return; }
-    // Climb: Shift for the climbing, and a grip as well, since one thumb can't hold both it and Jump/Grab
-    if (code === 'climb') { this.climbing = down; const k = this.g.input.keys; k.ShiftLeft = down; k.Space = down; return; }
+    // Climb: Shift for the climbing (the grip looks after itself)
+    if (code === 'climb') { this.climbing = down; this.g.input.keys.ShiftLeft = down; return; }
     if (code === 'KeyE' && down && !this.g.currentInteraction && this.g.finishPromptFor && this.g.finishPromptFor()) code = 'KeyF';
     if (code.startsWith('mouse')) {
       const b = +code.slice(5), I = this.g.input;

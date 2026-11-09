@@ -508,6 +508,8 @@ export class NearTrees {
   }
   softOf(T) { for (const s of this.slots) if (s.T === T || (T && s.T.key === T.key)) return s.soft; return null; }
   slotOf(T) { for (const s of this.slots) if (s.T.key === T.key) return s; return null; }
+  // a tree cut down: it goes, without handing back to the forest's copy of it
+  forget(key) { const s = this.slots.find((x) => x.T.key === key); if (!s) return; for (const m of s.meshes) { this.scene.remove(m); m.geometry.dispose(); } this.slots.splice(this.slots.indexOf(s), 1); }
   makeSlot(T, hi, row) {
     const M = this.mat(T.spName), meshes = [];
     const mk = (geo, mat, depth, shadow = true) => {

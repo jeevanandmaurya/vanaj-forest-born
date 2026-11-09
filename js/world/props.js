@@ -8,6 +8,7 @@ import { mulberry32, clamp } from '../core/noise.js';
 import { patch, NOISE_GLSL } from '../core/shaderlib.js';
 import { PAINTED, PU } from '../core/palette.js';
 import { toon, toonify } from '../core/toon.js';
+import { CLEARINGS } from './flora.js';
 
 export const SITES = {};
 function site(id, x, z, name, r = 6) { SITES[id] = { id, x, z, name, r, y: height(x, z) }; return SITES[id]; }
@@ -418,6 +419,7 @@ ${NOISE_GLSL}
     // bones from old meals on the apron and around the mouth
     for (let i = 0; i < 9; i++) { const bx2 = dc.x + (rng() - 0.5) * 3.4, bz2 = dc.z + 1.6 + rng() * 2.2; const b = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.03, 0.25 + rng() * 0.3, 5), this.mats.bone); b.position.set(bx2, gy(bx2, bz2) + 0.04, bz2); b.rotation.set(Math.PI / 2, rng() * 3, 0); g.add(b); }
     { const kx = dc.x + 1.6, kz = dc.z + 2.2; const skull = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), this.mats.bone); skull.scale.set(1, 0.8, 1.6); skull.position.set(kx, gy(kx, kz) + 0.07, kz); skull.rotation.y = 0.8; g.add(skull); }
+    const marks = this.buildLodge(g, { gy, world, V, wood, earth, rng, nz, S });
     this.add(g, S.x, S.z, S.y, rot);
     this.veg.addExclusion(S.x, S.z, 14);
     // colliders: along the trunk, the root plate and the bank (the mouth itself stays open to walk up to)
@@ -425,7 +427,129 @@ ${NOISE_GLSL}
     { const [wx, wz] = world(pc.x, pc.z); this.collider(wx, wz, 1.3); const [ex, ez] = world(pc.x, pc.z + 1.3); this.collider(ex, ez, 0.9); const [fx2, fz2] = world(pc.x, pc.z - 1.3); this.collider(fx2, fz2, 0.9); }
     { const [wx, wz] = world(dc.x - 0.9, dc.z - 0.3); this.collider(wx, wz, 1.2); const [ex, ez] = world(dc.x + 1.0, dc.z - 0.2); this.collider(ex, ez, 0.9); }
     // tally marks: scratched into the trunk's flank beside the mouth
-    { const p = trunkCurve.getPointAt(0.3), [wx, wz] = world(p.x, p.z + 0.5); this.addInteract({ id: 'denMarks', pos: new THREE.Vector3(wx, S.y + p.y, wz), r: 3.2, prompt: 'Look at the marks', kind: 'clue' }); }
+    this.addInteract({ id: 'denMarks', pos: marks, r: 2.2, prompt: 'Look at the marks', kind: 'clue' });
+  }
+  // Where he lives. The wolves' burrow is too small for a boy who has grown, so over the years he has dug out the bank behind the root
+  // plate into a chamber he can stand up in, roofed with bent saplings and packed earth: a low mound from outside, with a hooped passage
+  // for a door. Inside, a post, the rafters, a bed of leaves and hide, a hearth, wood stacked by the wall, the old bones, and his rows
+  // of scratches. Nothing in it is made by anyone but him: he has never seen a house.
+  // Local to the den's group. Returns where the marks are, in the world.
+  buildLodge(g, { gy, world, V, wood, earth, rng, nz, S }) {
+    const cx = -11.5, cz = -1.6, RX = 6.6, RZ = 5.8, RY = 3.7, WALL = 0.6, mAz = 0.72, W = 1.3, H = 2.35;
+    const Dx = Math.sin(mAz), Dz = Math.cos(mAz);   // the way out
+    // a point on the dome: az round it, el up it, `inset` in from the outside
+    const dome = (az, el, inset, lump) => {
+      const cr = Math.pow(Math.cos(el), 0.55), sy = Math.pow(Math.sin(el), 0.9);
+      let x = Math.sin(az) * cr * (RX - inset), z = Math.cos(az) * cr * (RZ - inset), y = sy * (RY - inset);
+      if (lump) { const l = 1 + 0.055 * nz(x * 0.9, z * 0.9) + 0.025 * nz(x * 2.3 + 2, y * 2); x *= l; z *= l; y *= l; }
+      return [cx + x, y, cz + z];
+    };
+    const inDoor = (x, y, z) => { const ax = (x - cx) * Dx + (z - cz) * Dz; if (ax <= 0) return false; const lat = (x - cx) * Dz - (z - cz) * Dx; return (lat / W) ** 2 + (y / H) ** 2 < 1; };
+    const build = (pos, col, idx) => { const G = new THREE.BufferGeometry(); G.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); G.setAttribute('color', new THREE.Float32BufferAttribute(col, 3)); G.setIndex(idx); G.computeVertexNormals(); const m = new THREE.Mesh(G, earth); g.add(m); return m; };
+    // the two skins of the mound, with the door cut out of them
+    const shell = (inset, inner) => {
+      const NA = 112, NE = 28, pos = [], col = [], idx = [], rel = [];
+      for (let j = 0; j <= NE; j++) for (let i = 0; i <= NA; i++) {
+        const az = i / NA * Math.PI * 2, el = j / NE * Math.PI / 2, [x, y, z] = dome(az, el, inset, !inner), base = gy(x, z);
+        pos.push(x, base - 0.1 + y, z); rel.push(y);
+        const n = nz(x * 1.3, z * 1.3);
+        if (inner) { const near = clamp(1 - Math.hypot(x - (cx + Dx * 5), z - (cz + Dz * 5)) / 8, 0, 1), t = (0.34 + 0.2 * el + 0.08 * n) * (0.8 + near * 0.55); col.push(t, t * 0.94, t * 0.88); }
+        else { const top = clamp(el * 1.3 + 0.25 * n, 0, 1), t = 0.74 + 0.14 * n; col.push(t * (1 - top * 0.22), t * (0.93 - top * 0.02), t * (0.82 - top * 0.3)); }
+      }
+      const at = (i, j) => j * (NA + 1) + i, cut = (a) => inDoor(pos[a * 3], rel[a], pos[a * 3 + 2]);
+      for (let j = 0; j < NE; j++) for (let i = 0; i < NA; i++) {
+        const a = at(i, j), b = at(i + 1, j), c = at(i, j + 1), d = at(i + 1, j + 1);
+        if (cut(a) || cut(b) || cut(c) || cut(d)) continue;
+        if (inner) { idx.push(a, c, b); if (j < NE - 1) idx.push(b, c, d); } else { idx.push(a, b, c); if (j < NE - 1) idx.push(b, d, c); }
+      }
+      return build(pos, col, idx);
+    };
+    shell(0, false); shell(WALL, true);
+    // the passage: an arch of packed earth through the wall, inner and outer skins and the lips that join them
+    const r0 = 1 / Math.hypot(Dx / RX, Dz / RZ), s0 = r0 - WALL - 0.75, s1 = r0 + 1.5;
+    const archPt = (s, u, w, h) => { const lat = w * Math.cos(u), x = cx + Dx * s + Dz * lat, z = cz + Dz * s - Dx * lat; return [x, gy(x, z) - 0.1 + h * Math.sin(u), z]; };
+    {
+      const NS = 10, NU = 20, pos = [], col = [], idx = [];
+      const skin = (w, h, wf, hf, inner) => {
+        const o = pos.length / 3;
+        for (let k = 0; k <= NS; k++) for (let i = 0; i <= NU; i++) {
+          const f = k / NS, s = s0 + (s1 - s0) * f, [x, y, z] = archPt(s, i / NU * Math.PI, w + wf * (1 - f), h + hf * (1 - f)); pos.push(x, y, z);
+          const n = nz(x * 2, z * 2), t = inner ? (0.42 + f * 0.42 + 0.06 * n) : 0.72 + 0.14 * n; col.push(t, t * (inner ? 0.9 : 0.92), t * (inner ? 0.78 : 0.76));
+        }
+        for (let k = 0; k < NS; k++) for (let i = 0; i < NU; i++) { const a = o + k * (NU + 1) + i, b = a + 1, c = a + NU + 1, d = c + 1; if (inner) idx.push(a, c, b, b, c, d); else idx.push(a, b, c, b, d, c); }
+        return o;
+      };
+      const oi = skin(W, H, 0, 0, true), oo = skin(W + 0.5, H + 0.42, 0.75, 0.6, false);
+      // the lips at each end (both windings, for they are seen from either side)
+      for (const k of [0, NS]) for (let i = 0; i < NU; i++) { const a = oi + k * (NU + 1) + i, b = a + 1, c = oo + k * (NU + 1) + i, d = c + 1; idx.push(a, b, c, b, d, c, a, c, b, b, c, d); }
+      build(pos, col, idx);
+    }
+    // the floor: packed earth, dark at the walls, with the trodden way out through the passage
+    {
+      const NA = 48, NR = 9, pos = [], col = [], idx = [];
+      for (let k = 0; k <= NR; k++) for (let i = 0; i <= NA; i++) {
+        const f = k / NR, az = i / NA * Math.PI * 2, x = cx + Math.sin(az) * (RX - WALL + 0.1) * f, z = cz + Math.cos(az) * (RZ - WALL + 0.1) * f;
+        pos.push(x, gy(x, z) + 0.05, z);
+        const t = (0.62 - f * f * 0.2 + 0.05 * nz(x * 3, z * 3)); col.push(t, t * 0.9, t * 0.76);
+      }
+      for (let k = 0; k < NR; k++) for (let i = 0; i < NA; i++) { const a = k * (NA + 1) + i, b = a + NA + 1, c = a + 1, d = b + 1; if (k) idx.push(a, b, c); idx.push(c, b, d); }
+      const o = pos.length / 3, NS = 12;
+      for (let k = 0; k <= NS; k++) for (const lat of [-1.05, 0, 1.05]) {
+        const s = s0 - 0.3 + (s1 + 1.4 - s0 + 0.3) * k / NS, x = cx + Dx * s + Dz * lat, z = cz + Dz * s - Dx * lat;
+        pos.push(x, gy(x, z) + 0.05 + (lat === 0 ? 0.008 : 0), z); const t = lat === 0 ? 0.74 : 0.7; col.push(t, t * 0.9, t * 0.76);
+      }
+      for (let k = 0; k < NS; k++) for (let l = 0; l < 2; l++) { const a = o + k * 3 + l, b = a + 3, c = a + 1, d = b + 1; idx.push(a, c, b, b, c, d); }
+      build(pos, col, idx);
+    }
+    const poleM = std({ color: 0x6a4c34, vertexColors: true });
+    const log = (pts, r0_, r1_, segs = 12) => g.add(new THREE.Mesh(this.logTube(new THREE.CatmullRomCurve3(pts), (t) => r0_ + (r1_ - r0_) * t, { segs, radial: 7, shade: () => 0.85 + rng() * 0.15, seed: 300 + Math.floor(rng() * 400) }), poleM));
+    // bent saplings holding up the passage
+    for (const s of [s1 - 0.08, s0 + 1.05, s0 + 0.2]) { const pts = []; for (let i = 0; i <= 8; i++) { const [x, y, z] = archPt(s, i / 8 * Math.PI, W - 0.05, H - 0.05); pts.push(V(x, y, z)); } log(pts, 0.085, 0.07, 18); }
+    // the post and the rafters
+    const postTop = gy(cx, cz) - 0.1 + RY - WALL;
+    log([V(cx, gy(cx, cz) - 0.1, cz), V(cx + 0.04, gy(cx, cz) + 1.5, cz + 0.03), V(cx, postTop + 0.08, cz)], 0.17, 0.12, 8);
+    for (let k = 0; k < 9; k++) {
+      const az = k / 9 * Math.PI * 2 + 0.2, [x, y, z] = dome(az, 0.62, WALL + 0.05, false), wy = gy(x, z) - 0.1 + y;
+      if (inDoor(x, y, z)) continue;
+      const mx = (cx + x) * 0.5, mz = (cz + z) * 0.5;
+      log([V(cx, postTop - 0.1, cz), V(mx, Math.min(gy(mx, mz) + dome(az, 1.05, WALL + 0.12, false)[1] - 0.1, (postTop + wy) * 0.5 + 0.12), mz), V(x, wy, z)], 0.075, 0.06, 10);
+    }
+    this.collider(...world(cx, cz), 0.22);
+    // the bed, on the far side from the door: a heap of dry leaves with a hide over it, another rolled up for his head
+    const ang = mAz + Math.PI + 0.45, bx = cx + Math.sin(ang) * (RX - WALL) * 0.62, bz = cz + Math.cos(ang) * (RZ - WALL) * 0.62, by = gy(bx, bz);
+    const lump = (r, sx, sy, sz, col, x, y, z, rot = 0, rough = 1) => { const G = new THREE.SphereGeometry(r, 14, 9); G.scale(sx, sy, sz); const p = G.attributes.position; for (let i = 0; i < p.count; i++) { const k = 1 + 0.07 * nz(p.getX(i) * 7, p.getZ(i) * 7); p.setXYZ(i, p.getX(i) * k, p.getY(i) * k, p.getZ(i) * k); } G.computeVertexNormals(); const m = new THREE.Mesh(G, std({ color: col, roughness: rough })); m.position.set(x, y, z); m.rotation.y = rot; g.add(m); return m; };
+    lump(1, 1.3, 0.26, 0.72, 0x8a6f3a, bx, by + 0.1, bz, ang + Math.PI / 2);
+    lump(1, 1.12, 0.2, 0.58, 0x6b4a2e, bx, by + 0.2, bz, ang + Math.PI / 2);
+    { const px = bx + Math.cos(ang) * 0.82, pz = bz - Math.sin(ang) * 0.82; lump(0.2, 1.5, 0.75, 1.1, 0x57402c, px, by + 0.36, pz, ang); }
+    // the hearth, between the post and the door
+    const hx = cx + Dx * 2.0 + Dz * 0.5, hz = cz + Dz * 2.0 - Dx * 0.5, hy = gy(hx, hz) + 0.05;
+    for (let i = 0; i < 9; i++) { const a = i / 9 * Math.PI * 2, s = new THREE.Mesh(new THREE.DodecahedronGeometry(0.13 + rng() * 0.04, 0), std({ color: 0x6e665c })); s.position.set(hx + Math.cos(a) * 0.48, hy + 0.05, hz + Math.sin(a) * 0.48); s.rotation.set(rng() * 3, rng() * 3, 0); g.add(s); }
+    { const ash = new THREE.Mesh(new THREE.CircleGeometry(0.42, 12), std({ color: 0x241c16 })); ash.rotation.x = -Math.PI / 2; ash.position.set(hx, hy + 0.012, hz); g.add(ash); }
+    for (let i = 0; i < 4; i++) { const a = i * 1.57 + 0.4, l = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, 0.7, 6), this.mats.darkWood); l.rotation.set(1.15, a, 0, 'YXZ'); l.position.set(hx, hy + 0.13, hz); g.add(l); }
+    // wood stacked against the wall, and what he has kept
+    { const az = mAz - 1.5, sx = cx + Math.sin(az) * (RX - WALL) * 0.83, sz = cz + Math.cos(az) * (RZ - WALL) * 0.83, sy = gy(sx, sz) + 0.05;
+      for (let i = 0; i < 12; i++) { const m = new THREE.Mesh(new THREE.CylinderGeometry(0.035 + rng() * 0.02, 0.045, 1.1 + rng() * 0.3, 6), this.mats.wood), row = i < 5 ? 0 : i < 9 ? 1 : 2, off = i - [0, 5, 9][row] - [2, 1.5, 1][row]; m.rotation.set(0, az, Math.PI / 2, 'YXZ'); m.position.set(sx + Math.cos(az) * off * 0.1, sy + 0.05 + row * 0.085, sz - Math.sin(az) * off * 0.1); g.add(m); } }
+    { const az = mAz + 1.35; for (let i = 0; i < 7; i++) { const x = cx + Math.sin(az + (i - 3) * 0.05) * (RX - WALL) * 0.84, z = cz + Math.cos(az + (i - 3) * 0.05) * (RZ - WALL) * 0.84, b = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.028, 0.24 + rng() * 0.26, 5), this.mats.bone); b.position.set(x, gy(x, z) + 0.09, z); b.rotation.set(Math.PI / 2 - 0.1, rng() * 3, 0); g.add(b); } }
+    // the marks: rows of scratches on the wall by the bed, one for every night
+    const t0 = ang + 1.15, geos = [];
+    for (let r = 0; r < 6; r++) for (let c = 0; c < 24; c++) {
+      if (r === 5 && c > 15) continue;
+      const az = t0 + c * 0.036 + (c % 5 === 4 ? 0.012 : 0), el = 0.2 + r * 0.075, [x, y, z] = dome(az, el, WALL - 0.012, false);
+      const G = new THREE.BoxGeometry(0.016, 0.13 + (rng() - 0.5) * 0.03, 0.03); G.rotateY(az); G.rotateZ((rng() - 0.5) * 0.14); G.translate(x, gy(x, z) - 0.1 + y, z); geos.push(G);
+    }
+    { const m = new THREE.Mesh(mergeGeometries(geos, false), std({ color: 0x17100a })); m.castShadow = false; g.add(m); }
+    // stones along the foot of the mound either side of the door
+    for (let i = 0; i < 26; i++) { const az = mAz + (i < 13 ? 1 : -1) * (0.3 + (i % 13) * 0.11), x = cx + Math.sin(az) * RX * 1.02, z = cz + Math.cos(az) * RZ * 1.02, s = new THREE.Mesh(new THREE.DodecahedronGeometry(0.16 + rng() * 0.2, 0), this.mats.rock); s.position.set(x, gy(x, z) + 0.04, z); s.rotation.set(rng() * 3, rng() * 3, rng() * 3); s.scale.y = 0.65; g.add(s); }
+    // in the world
+    const [wcx, wcz] = world(cx, cz), W3 = (x, y, z) => { const [a, b] = world(x, z); return new THREE.Vector3(a, S.y + y, b); };
+    this.veg.addExclusion(wcx, wcz, 13.5);
+    CLEARINGS.push({ x: wcx, z: wcz, r: Math.max(RX, RZ) + 0.4 });
+    { const [dx, dz] = world(cx + Dx * (r0 + 0.6), cz + Dz * (r0 + 0.6)); CLEARINGS.push({ x: dx, z: dz, r: 2.6 }); }
+    const hearth = W3(hx, hy + 0.1, hz), bed = W3(bx, by + 0.4, bz), door = W3(cx + Dx * (s1 + 1), gy(cx + Dx * (s1 + 1), cz + Dz * (s1 + 1)), cz + Dz * (s1 + 1));
+    this.addInteract({ id: 'denBed', pos: bed, r: 2.4, prompt: 'Sleep here (until morning)', kind: 'rest' });
+    const ca = Math.cos(0.2), sa = Math.sin(0.2), rx2 = (RX - 0.2) ** 2, rz2 = (RZ - 0.2) ** 2;
+    this.den = { hearth, bed, door, inside: (x, z) => { const dx = x - wcx, dz = z - wcz, lx = dx * ca - dz * sa, lz = dx * sa + dz * ca; return lx * lx / rx2 + lz * lz / rz2 < 1; } };
+    const [mx, , mz] = dome(t0 + 12 * 0.036, 0.4, WALL, false); return W3(mx, gy(mx, mz) + 1.0, mz);
   }
   buildHives() {
     // giant rock bee combs hanging under the branches of a big mahua near the termite flats

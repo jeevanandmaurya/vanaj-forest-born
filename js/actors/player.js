@@ -44,6 +44,7 @@ export const WEAPONS = {
   spear: { dmg: 32, range: 3.0, time: 0.75, hitAt: 0.4, stam: 12, anim: 'thrust', bleed: 1.3, weight: 1.1, throwDmg: 58 },
   bow: { dmg: 40, range: 0, time: 0.6, stam: 4, anim: 'none', weight: 0.5 },
   torch: { dmg: 10, range: 2.1, time: 0.62, hitAt: 0.32, stam: 8, anim: 'swing', bleed: 0.1, weight: 0.9, fire: true },
+  axe: { dmg: 22, range: 2.2, time: 0.72, hitAt: 0.38, stam: 11, anim: 'swing', bleed: 0.8, weight: 1.4 },
 };
 
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _n = new THREE.Vector3();
@@ -101,7 +102,7 @@ export class Player {
     const j = this.body.j;
     for (const k in this.W3) if (this.W3[k] && this.W3[k].parent) this.W3[k].parent.remove(this.W3[k]);
     for (const k in this.vmW) if (this.vmW[k] && this.vmW[k].parent) this.vmW[k].parent.remove(this.vmW[k]);
-    const grip = { knife: 0.04, club: 0.08, spear: 0.55, torch: 0.12, bow: 0 };
+    const grip = { knife: 0.04, club: 0.08, spear: 0.55, torch: 0.12, bow: 0, axe: 0.1 };
     const attach = (Wset, handR, handL) => {
       const m = Wset[w]; if (!m) return;
       m.rotation.set(Math.PI / 2, 0, 0); m.position.set(0, -0.075, -(grip[w] || 0));
@@ -111,7 +112,7 @@ export class Player {
     };
     attach(this.W3, j.handR, j.handL);
     // first-person grips: the forearm points forward, so weapons run along the fingers (-y), tilted up
-    const vmAng = { knife: 0.45, club: 0.75, spear: 0.12, torch: 0.85 };
+    const vmAng = { knife: 0.45, club: 0.75, spear: 0.12, torch: 0.85, axe: 0.7 };
     const vw = this.vmW[w];
     if (vw) {
       if (w === 'bow') { vw.rotation.set(-Math.PI / 2, Math.PI, 0); vw.position.set(0, -0.07, 0); this.vm.arms.L.hand.add(vw); }
@@ -170,6 +171,7 @@ export class Player {
     if (this.canopy.mode) { this.canopy.update(dt, input); this.postUpdate(dt, input); return; }
     this.canopy.updateBend(dt);   // a limb he just left springs back
     // movement intent
+    this.jumpedNow = false;
     const k = g.uiBlocking ? {} : input.keys;
     let ix = (k.KeyD ? 1 : 0) - (k.KeyA ? 1 : 0), iz = (k.KeyW ? 1 : 0) - (k.KeyS ? 1 : 0);
     const fwd = _v1.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)), right = _v2.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
@@ -224,7 +226,7 @@ export class Player {
       this.vel.y += (ty - this.pos.y) * 6 * dt - this.vel.y * 3 * dt;
       this.onGround = false;
     } else {
-      if (input.pressed('Space') && this.onGround && !this.blocking && this.stamina > 8 && !g.uiBlocking) { this.vel.y = 5.4; this.onGround = false; this.stamina -= 8; g.audio.footstep(this.surface(), 0.8); }
+      if (input.pressed('Space') && this.onGround && !this.blocking && this.stamina > 8 && !g.uiBlocking) { this.vel.y = 5.4; this.onGround = false; this.stamina -= 8; this.jumpedNow = true; this.canopy.grabT = 0; g.audio.footstep(this.surface(), 0.8); }
       this.vel.y -= 20 * dt;
     }
     // Movement through the physics world: Rapier's character controller slides Vanaj along trunks, rocks, walls,
@@ -281,8 +283,8 @@ export class Player {
       } else if (this.onGround && this.pos.y - gy2 < 0.45 && this.vel.y <= 0) { this.pos.y = gy2; this.vel.y = 0; }
       else this.onGround = false;
     } else if (this.pos.y < gy2) this.pos.y = gy2;
-    // in the air with Space held: catch whatever branch, liana or trunk is in reach
-    if (!this.onGround && !this.swimming && input.keys.Space && !g.uiBlocking && this.vel.y < 3.5 && this.canopy.tryGrab(this.vel)) { this.postUpdate(dt, input); return; }
+    // in the air, Space tapped or held: catch whatever branch, liana or trunk is in reach
+    if (!this.onGround && !this.swimming && !g.uiBlocking && this.canopy.wantGrab(input, dt) && this.vel.y < 3.5 && this.canopy.tryGrab(this.vel)) { this.postUpdate(dt, input); return; }
     const hs = Math.hypot(this.vel.x, this.vel.z);
     this.speed = hs;
     // facing (TPP): face move dir, or camera when aiming/attacking
@@ -402,8 +404,17 @@ export class Player {
     // On a lean level his limbs are posed no oftener than 30 times a second (his body still moves every frame). In the trees it is every
     // frame, where the hands must stay on the branch. Posing him is the costliest single thing in a frame's game logic.
     this._poseDt = (this._poseDt || 0) + dt;
-    const posed = cm || this._poseDt >= g.q.poseStep - 0.002;
-    if (posed) { this.body.root.updateMatrixWorld(true); animateHumanoid(this.body, this._poseDt, anim); this._poseDt = 0; }
+    // Walking is posed every frame too: a planted foot is only planted when it is posed, so between poses it slid along with the body and snapped back.
+    // Posing also moves the body itself (the hips drop to the lower foot, the feet reach the ground, he sways), and those frames in between
+    // left that out, so he bobbed up and down thirty times a second. They carry the last pose's offset now.
+    const posed = cm || this.speed > 0.25 || !this.onGround || this._poseDt >= g.q.poseStep - 0.002;
+    { const R = this.body.root, O = this._poseOff || (this._poseOff = new THREE.Vector3()), B = this._poseBase || (this._poseBase = new THREE.Vector3());
+      if (posed) { B.copy(R.position); R.updateMatrixWorld(true); animateHumanoid(this.body, this._poseDt, anim); this._poseDt = 0; O.subVectors(R.position, B); }
+      else R.position.add(O); }
+    // the bow in his hand: the string comes back with the draw, an arrow on it
+    { const bw = this.W3.bow, ar = this.W3.arrow, on = this.weapon === 'bow' && this.aim > 0.1 && g.inv.count('arrow') > 0 && !cm;
+      if (bw && bw.userData.string) { const s = bw.userData.string.geometry.attributes.position, z = 0.005 - (this.aim > 0.1 ? this.draw * 0.47 : 0); if (s.getZ(1) !== z) { s.setZ(1, z); s.needsUpdate = true; } }
+      if (ar) { if (on) { if (ar.parent !== bw) bw.add(ar); ar.visible = this.view !== 'fpp'; ar.rotation.set(Math.PI / 2, 0, 0); ar.position.set(0, 0, 0.39 - this.draw * 0.47); } else if (ar.parent) ar.parent.remove(ar); } }
     // footsteps land when a foot does (the old timer ran at speed/0.7 a second: twice a real cadence, out of step)
     if (posed && this.onGround && !this.climb && !this.canopy.mode && this.speed > 0.6) {
       const run = clamp((this.speed - 3) / 4, 0, 1);
@@ -485,8 +496,18 @@ export class Player {
     } else {
       const aimK = Math.max(this.aim, this.blocking ? 0.3 : 0);
       const dist = lerp(this.camDist, 1.7, aimK) * (this.swimming ? 1.2 : 1) * (this.canopy.mode === 'hang' || this.canopy.mode === 'air' ? 1.25 : 1);
-      const sideOff = lerp(0.45, 0.6, aimK);
-      const tgt = _v1.set(this.pos.x, this.pos.y + eyeH + 0.05 + (this.swimming ? 0.6 : 0), this.pos.z);
+      // Straight behind him and fixed to him, so he stays in the middle of the screen. (It used to chase a point over his shoulder by a time
+      // constant, while the turn of the view was instant: every turn slid him sideways, and at an uneven frame rate the gap between
+      // him and the camera changed from frame to frame, which reads as him shaking.) Aiming moves him aside to clear the line.
+      // Height alone is smoothed, for steps and rough ground, and catching a hold is eased by the same offset that eases his body.
+      const sideOff = lerp(0, 0.55, aimK), vis = this._vis, cm = this.canopy.mode;
+      const fx = this.pos.x + (vis ? vis.x : 0), fy = this.pos.y + (vis ? vis.y : 0), fz = this.pos.z + (vis ? vis.z : 0);
+      const CF = this._camF || (this._camF = new THREE.Vector3(fx, fy, fz));
+      if (CF.distanceToSquared(_v3.set(fx, fy, fz)) > 16) { CF.set(fx, fy, fz); this._camEye = undefined; this._camD = undefined; }
+      if (cm && cm !== 'limb') { const k = damp(0.04, dt); CF.x += (fx - CF.x) * k; CF.y += (fy - CF.y) * k; CF.z += (fz - CF.z) * k; }
+      else { CF.x = fx; CF.z = fz; CF.y += (fy - CF.y) * damp(this.onGround ? 0.05 : 0.02, dt); }
+      this._camEye = this._camEye === undefined ? eyeH : this._camEye + (eyeH - this._camEye) * damp(0.08, dt);
+      const tgt = _v1.set(CF.x, CF.y + this._camEye + 0.05 + (this.swimming ? 0.6 : 0), CF.z);
       tgt.x += Math.cos(this.yaw) * sideOff; tgt.z += -Math.sin(this.yaw) * sideOff;
       const dir = _v2.set(Math.sin(this.yaw) * Math.cos(this.pitch), -Math.sin(this.pitch), Math.cos(this.yaw) * Math.cos(this.pitch));
       // ground collision along boom
@@ -500,11 +521,12 @@ export class Player {
       else { const ex = tgt.x + dir.x * d, ez = tgt.z + dir.z * d;
         const f = Math.min(g.veg.segmentHit(tgt.x, tgt.z, ex, ez, 0.28), g.props.segmentHit ? g.props.segmentHit(tgt.x, tgt.z, ex, ez, 0.28) : 1);
         if (f < 1) d = Math.max(0.35, d * f); }
-      const want = _v3.copy(tgt).addScaledVector(dir, d);
+      // (the boom comes in quickly when something is in the way and goes back out slowly, so a passing trunk does not make it jump)
+      this._camD = this._camD === undefined ? d : this._camD + (d - this._camD) * damp(d < this._camD ? 0.025 : 0.2, dt);
+      const want = _v3.copy(tgt).addScaledVector(dir, this._camD);
       const gyc = groundHeight(want.x, want.z) + 0.3; if (want.y < gyc) want.y = gyc;
-      this.camPos.lerp(want, damp(this.canopy.mode ? 0.06 : 0.035, dt));
-      if (this.camPos.distanceTo(want) > 14) this.camPos.copy(want);
-      cam.position.copy(this.camPos);
+      this.camPos.copy(want);
+      cam.position.copy(want);
       cam.rotation.set(this.pitch + sy, this.yaw + sx, 0, 'YXZ');
     }
     if (g.arrival) this.arrivalCamera(dt);
@@ -670,6 +692,7 @@ export class Player {
     const { target, point, dir } = this.meleeTargets(W.range);
     if (!target) {
       // hit tree / ground for feedback
+      if (a.weapon === 'axe' && g.felling && g.felling.chop()) return;
       const tr = g.veg.nearestTree(this.pos.x - Math.sin(this.yaw) * 1.2, this.pos.z - Math.cos(this.yaw) * 1.2, 1.2);
       if (tr) { g.audio.impact('wood', this.pos, 0.8); this.shake = 0.3; }
       return;

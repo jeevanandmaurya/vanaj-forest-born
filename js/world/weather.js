@@ -124,7 +124,7 @@ export class Weather {
   }
   update(dt, gameDtHours, hour, cam, sky) {
     this.timer -= gameDtHours;
-    if (this.timer <= 0 && !this.forced) this.pick();
+    if (this.timer <= 0 && !this.forced && !this.hold) this.pick();   // (hold: in the story each chapter keeps the weather it was written with)
     const k = Math.min(1, dt * 0.08);
     for (const key in this.target) this.env[key] = lerp(this.env[key], this.target[key], k);
     const cfg = SEASONS[this.season];

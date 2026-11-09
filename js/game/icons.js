@@ -27,6 +27,7 @@ const P = {
   cold: '<path d="M12 2v20M3.3 7l17.4 10M3.3 17L20.7 7M12 6L9.5 3.500M12 6l2.5-2.500M12 18l-2.5 2.500M12 18l2.5 2.5"/>',
   look: '<path d="M5 12l3.5-3.500M5 12l3.5 3.500M5 12h14M19 12l-3.5-3.500M19 12l-3.5 3.5"/>',
   move: '<circle cx="12" cy="12" r="8.5"/><circle class="f" cx="12" cy="12" r="3.5"/>',
+  season: '<path class="f" d="M20.5 3.5C11 3.500 4.500 8 4.500 14.500c0 1.700.5 3.200 1.300 4.300C7 20 8.500 20.500 10 20.500c6.500 0 10.500-7 10.500-17z"/><path d="M3 22c2.500-5 6-8.500 11-11.500"/>',
 };
 export const icon = (k) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${P[k] || ''}</svg>`;
 // the picture for a word used in the lessons' list of controls on a phone

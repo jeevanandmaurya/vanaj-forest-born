@@ -38,6 +38,8 @@ export function iconFor(k) {
     case 'arrow': line('#8a6a44', 3, [[12, 52], [50, 14]]); x.fillStyle = '#333'; x.beginPath(); x.moveTo(52, 12); x.lineTo(44, 16); x.lineTo(48, 20); x.fill(); line('#1a6a5a', 4, [[12, 52], [18, 46]]); break;
     case 'knife': line('#7a5a3a', 6, [[14, 50], [26, 38]]); x.fillStyle = '#3a3636'; x.beginPath(); x.moveTo(26, 38); x.lineTo(52, 12); x.lineTo(32, 42); x.fill(); break;
     case 'club': line('#7a5a3a', 6, [[14, 52], [40, 22]]); blob('#6a4a2a', 44, 18, 10); break;
+    case 'axe': line('#7a5a3a', 6, [[16, 54], [40, 14]]); x.fillStyle = '#3a3636'; x.beginPath(); x.moveTo(34, 10); x.lineTo(54, 14); x.lineTo(50, 32); x.lineTo(38, 22); x.fill(); break;
+    case 'log': line('#7a5a3a', 12, [[12, 44], [50, 26]]); blob('#c8a070', 50, 26, 6); break;
     case 'spear': line('#a8a048', 4, [[10, 56], [48, 18]]); x.fillStyle = '#3a3636'; x.beginPath(); x.moveTo(56, 8); x.lineTo(44, 16); x.lineTo(50, 22); x.fill(); break;
     case 'bow': x.strokeStyle = '#a8a048'; x.lineWidth = 4; x.beginPath(); x.arc(14, 32, 26, -1.1, 1.1); x.stroke(); line('#ddd', 1, [[26, 9], [26, 55]]); break;
     case 'torch': line('#7a5a3a', 5, [[22, 56], [36, 24]]); blob('#ff8a2a', 38, 16, 9); blob('#ffd060', 38, 16, 4); break;
@@ -160,7 +162,8 @@ export class UI {
     const cross = 'cross' + (P.aim > 0.3 ? ' aim' : '') + (this.hitT > 0 ? ' hit' : '') + (this.hitKill ? ' kill' : '');
     if (cross !== this._cross) { this.cross.className = cross; this._cross = cross; }
     if (this.hitT <= 0) this.hitKill = false;
-    this.put(this.cross, 'o', g.uiBlocking ? '0' : '1');
+    // (behind him, with him in the middle of the screen, the dot sits on his head: there it shows only while aiming, or for a hit)
+    this.put(this.cross, 'o', g.uiBlocking || (P.view !== 'fpp' && P.aim <= 0.05 && this.hitT <= 0) ? '0' : '1');
     // ---- from here on, eight times a second
     this._slowT = (this._slowT || 0) - dt;
     if (this._slowT > 0) return;

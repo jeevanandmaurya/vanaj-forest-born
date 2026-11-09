@@ -61,15 +61,16 @@ export const SKILLS = {
   walkLimb: { g: 'Trees', k: 'W', t: 'Walk along it. S turns you round', d: (g, P) => P.canopy.mode === 'limb' && P.speed > 0.8 },
   leap: { g: 'Trees', k: 'Space', t: 'Jump off the branch', d: (g, P, k, L) => P.canopy.mode === 'air' && L.prev === 'limb' },
   lower: { g: 'Trees', k: 'C', t: 'Lower yourself to hang from the branch', d: (g, P, k, L) => P.canopy.mode === 'hang' && L.prev === 'limb' },
-  catch: { g: 'Trees', k: 'Space', t: 'Hold in the air to catch a liana or branch. Keep holding or you let go', d: (g, P) => P.canopy.mode === 'hang' },
-  pump: { g: 'Trees', k: 'W A S D', t: 'Throw your weight to swing the rope. Push in time with the swing', d: (g, P, k) => swung(P) && anyMove(k) && !k.ShiftLeft },
+  catch: { g: 'Trees', k: 'Space', t: 'Tap in the air to catch a liana or branch. He keeps hold by himself', d: (g, P) => P.canopy.mode === 'hang' },
+  pump: { g: 'Trees', k: 'W A S D', t: 'Kick with your legs to swing the rope. Push in time with the swing', d: (g, P, k) => swung(P) && anyMove(k) && !k.ShiftLeft },
   ropeClimb: { g: 'Trees', k: 'Shift W', t: 'Hold Shift with W or S to climb up or down the rope', d: (g, P, k) => (P.canopy.mode === 'hang' || P.canopy.mode === 'rope') && k.ShiftLeft && (k.KeyW || k.KeyS) },
-  letGo: { g: 'Trees', k: 'Space', t: 'Let go of Space mid-swing to fly', d: (g, P, k, L) => P.canopy.mode === 'air' && L.prev === 'hang' },
+  letGo: { g: 'Trees', k: 'Space', t: 'Tap Space again mid-swing to let go and fly', d: (g, P, k, L) => P.canopy.mode === 'air' && L.prev === 'hang' },
   pullUp: { g: 'Trees', k: 'E', t: 'Pull yourself up onto a thick branch', d: (g, P, k, L) => P.canopy.mode === 'limb' && L.prev === 'hang' },
   dropOff: { g: 'Trees', k: 'C', t: 'Drop', d: (g, P, k, L) => g.input.pressed('KeyC') && (L.prev === 'hang' || L.prev === 'rope') },
   rootGrab: { g: 'Trees', k: 'Space', t: 'Face a banyan root and grab it', d: (g, P) => P.canopy.mode === 'rope' },
-  rootSwing: { g: 'Trees', k: 'W A S D', t: 'Throw your weight to swing the root', d: (g, P, k) => P.canopy.mode === 'rope' && anyMove(k) && !k.ShiftLeft },
+  rootSwing: { g: 'Trees', k: 'W A S D', t: 'Kick with your legs to swing the root', d: (g, P, k) => P.canopy.mode === 'rope' && anyMove(k) && !k.ShiftLeft },
   rootLeap: { g: 'Trees', k: 'Space', t: 'Jump off', d: (g, P, k, L) => P.canopy.mode === 'air' && L.prev === 'rope' },
+  fell: { g: 'Living', k: 'Left-click', t: 'Strike a tree with the axe until it falls. Stand clear of where it goes', on: 'treeCut' },
 };
 
 // the same lessons with a thumb: buttons for keys, and different words where the words were about the keyboard
@@ -78,7 +79,7 @@ const TOUCH_TEXT = {
   run: 'Push the stick all the way forward to run. It tires you out', eatKey: 'Eat from your bag', bandage: 'Bind a bleeding wound from your bag (needs a leaf bandage)',
   equip: 'Switch what you\'re holding', dodge: 'Dodge while blocking', spearThrow: 'Aim the spear, then throw it', bowDraw: 'Aim the bow, hold Strike to draw, let go to shoot',
   wheel: 'Tap Call, then tap the call you want', climbUp: 'Climb up or down. Hold Climb to go faster', walkLimb: 'Walk along it. Pull back on the stick to turn round',
-  catch: 'Hold Jump in the air to catch a liana or branch. Keep holding or you let go', ropeClimb: 'Hold Climb and push the stick up or down to climb the rope', letGo: 'Let go of Jump mid-swing to fly', pump: 'Push the stick to swing the rope, in time with the swing',
+  catch: 'Tap Jump in the air to catch a liana or branch. He keeps hold by himself', ropeClimb: 'Hold Climb and push the stick up or down to climb the rope', letGo: 'Tap Jump again mid-swing to let go and fly', pump: 'Push the stick to kick and swing the rope, in time with the swing',
 };
 const NOT_ON_TOUCH = ['view', 'torchOff'];   // no button for these on a phone
 // when something comes up for the first time, teach what goes with it
@@ -90,6 +91,7 @@ const MOMENTS = [
   { ids: ['letGo', 'pullUp', 'dropOff'], title: 'Hanging', when: (g, P) => P.canopy.mode === 'hang' },
   { ids: ['rootSwing', 'ropeClimb', 'rootLeap'], title: 'On a banyan root', when: (g, P) => P.canopy.mode === 'rope' },
   { ids: ['bowDraw'], title: 'The bow', when: (g) => g.inv.equipped === 'bow' },
+  { ids: ['fell'], title: 'The axe', when: (g) => g.inv.equipped === 'axe' },
   { ids: ['spearThrow'], title: 'The spear', when: (g) => g.inv.equipped === 'spear' },
   { ids: ['torch', 'torchOff'], title: 'The torch', when: (g) => g.inv.has('torch') && g.sky.night > 0.5 },
   { ids: ['bandage'], title: 'You\'re bleeding', when: (g, P) => P.bleed > 0.2 && g.inv.has('bandage') },

@@ -31,6 +31,8 @@ export const ITEMS = {
   knife: { name: 'Stone knife', desc: "Sharp edge. Cuts, skins, stabs.", weapon: 'knife' },
   club: { name: 'Club', desc: "A heavy knotted branch. Hits hard.", weapon: 'club' },
   spear: { name: 'Spear', desc: 'Bamboo with lashed flint. Thrust, or throw.', weapon: 'spear' },
+  axe: { name: 'Stone axe', desc: 'A flint head lashed into a split haft. Fells a tree, given time.', weapon: 'axe' },
+  log: { name: 'Firewood', desc: 'Split from a tree you felled. One lights a whole fire.' },
   bow: { name: 'Bow', desc: 'Bamboo bow strung with sinew.', weapon: 'bow' },
   torch: { name: 'Torch', desc: "Fire on a stick. Big cats keep back from it, and smoke calms bees.", weapon: 'torch' },
   flute: { name: 'Bamboo flute', desc: "Six holes. It can play the four notes." },
@@ -47,8 +49,9 @@ export const RECIPES = [
   { id: 'knife', needs: { stone: 2 }, desc: "Hit stone on stone until one edge comes off sharp." },
   { id: 'club', needs: { stick: 2, fiber: 1 }, tool: 'knife' },
   { id: 'spear', needs: { bamboo: 1, flint: 1, fiber: 2 }, tool: 'knife' },
+  { id: 'axe', needs: { stick: 1, flint: 1, fiber: 2 }, tool: 'knife', lock: 'axe', desc: 'Like whatever made the flat cuts on those stumps.' },
   { id: 'torch', needs: { stick: 1, fiber: 1, leaves: 2 } },
-  { id: 'campfire', needs: { stick: 5, stone: 3 }, desc: 'Fire-saw of bamboo, or the fire box if you have it.' },
+  { id: 'campfire', needs: { stick: 5, stone: 3 }, alt: { log: 1, stone: 3 }, desc: 'Fire-saw of bamboo, or the fire box if you have it.' },
   { id: 'bandage', needs: { leaves: 3, fiber: 1 } },
   { id: 'flute', needs: { bamboo: 1 }, tool: 'knife' },
   { id: 'bow', needs: { bamboo: 2, sinew: 1 }, alt: { bamboo: 2, fiber: 3 }, tool: 'knife', lock: 'bow' },
@@ -57,7 +60,7 @@ export const RECIPES = [
 ];
 
 export class Inventory {
-  constructor() { this.items = {}; this.locks = new Set(['bow']); this.equipped = 'fists'; this.armor = 0; }
+  constructor() { this.items = {}; this.locks = new Set(['bow', 'axe']); this.equipped = 'fists'; this.armor = 0; }
   count(k) { return this.items[k] || 0; }
   add(k, n = 1) { this.items[k] = (this.items[k] || 0) + n; if (this.items[k] <= 0) delete this.items[k]; }
   take(k, n = 1) { if (this.count(k) < n) return false; this.add(k, -n); return true; }
@@ -77,7 +80,7 @@ export class Inventory {
     if (r.id === 'hidewrap') this.armor = 0.2;
     return true;
   }
-  weapons() { return ['fists', 'knife', 'club', 'spear', 'bow', 'torch'].filter((w) => w === 'fists' || this.has(w)); }
+  weapons() { return ['fists', 'knife', 'club', 'spear', 'bow', 'torch', 'axe'].filter((w) => w === 'fists' || this.has(w)); }
   toJSON() { return { items: this.items, locks: [...this.locks], equipped: this.equipped, armor: this.armor }; }
   load(o) { this.items = o.items || {}; this.locks = new Set(o.locks || []); this.equipped = o.equipped || 'fists'; this.armor = o.armor || 0; }
 }

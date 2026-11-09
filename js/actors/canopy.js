@@ -5,16 +5,16 @@
 // Gibbon", Game Developer 2022): the body is a point hanging from the hand like a pendulum. A grab keeps the
 // velocity across the arm and loses only the part along it, so a catch with the arm square to the motion carries
 // all the speed on; release flies ballistically to the next hold. Controls follow vine-swinging games: hold to
-// grab, release to let go (one button), so the same scheme works on a touch screen.
+// grab, tap again to let go (one button), so the same scheme works on a touch screen with the thumb free to steer.
 //
 //   on the ground   Space jumps; Space facing a trunk or a banyan's aerial root starts climbing it
-//   in the air      hold Space to catch any branch, liana, root or trunk within reach
+//   in the air      tap Space to catch any branch, liana, root or trunk within reach. He keeps hold by himself.
 //   on a rope       (a liana or a banyan root) two separate things:
 //                   WASD throws his weight, swinging the rope the way you push, relative to the camera; each push
 //                   in time with the swing adds height, a push against it brakes
 //                   Shift+W/S climbs up or down it hand over hand; at the top he steps up onto the limb
-//                   Liana: release Space to let go and fly. Root: press Space to leap off. C drops.
-//   on a branch     WASD swings and shuffles along it, E pulls up onto a thick one, release Space to let go, C drops
+//                   He kicks with his legs the way you push. Tap Space to let go and fly. C drops.
+//   on a branch     WASD swings and shuffles along it, E pulls up onto a thick one, tap Space to let go, C drops
 //   on a trunk      W/S climb hand and foot all the way to the top of the tree, A/D go round, E steps out onto a limb
 //                   beside you, Space leaps off backward
 //   on a limb       W/S walk along it, Space leaps, C lowers you to hang from it
@@ -79,7 +79,8 @@ export class Canopy {
     this.vel = new THREE.Vector3();
     this.hold = null;           // hang: { kind, tree, limb, vine, pivot, grip, len }
     this.pose = { mode: null, gripR: new THREE.Vector3(), gripL: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0), yaw: 0, phase: 0, vel: new THREE.Vector3(), trunkC: new THREE.Vector3() };
-    Object.assign(this.pose, { footL: new THREE.Vector3(), footR: new THREE.Vector3(), out: new THREE.Vector3(1, 0, 0), side: new THREE.Vector3(0, 0, 1), fingersR: new THREE.Vector3(0, 1, 0), fingersL: new THREE.Vector3(0, 1, 0), thumbR: new THREE.Vector3(0, 0, 1), thumbL: new THREE.Vector3(0, 0, -1), open: 0, climbing: 0, legL: 0, legR: 0 });
+    this.grabT = 0; this.latch = false; this.heldT = 0;   // (tap to grip: see wantGrab)
+    Object.assign(this.pose, { steer: new THREE.Vector3(), free: 0, footL: new THREE.Vector3(), footR: new THREE.Vector3(), out: new THREE.Vector3(1, 0, 0), side: new THREE.Vector3(0, 0, 1), fingersR: new THREE.Vector3(0, 1, 0), fingersL: new THREE.Vector3(0, 1, 0), thumbR: new THREE.Vector3(0, 0, 1), thumbL: new THREE.Vector3(0, 0, -1), open: 0, climbing: 0, legL: 0, legR: 0 });
     this.prompt = null;
     this._q = { point: new THREE.Vector3(), dir: new THREE.Vector3(), r: 0 };
     this._hand = new THREE.Vector3(); this._vdir = new THREE.Vector3();
@@ -112,6 +113,15 @@ export class Canopy {
     const d = clamp(0.00055 * s * s / Math.pow(Math.max(0.04, L.r[0]), 1.6), 0, 0.3) * load;
     S.droop(si, tt, pull.x * d, pull.y * d, pull.z * d);
     S.dispAt(si, tt, this.off);
+  }
+  // Is he reaching for a hold? A tap counts for a moment, so it need not land on the very frame a branch comes in reach; a held key counts too.
+  // The press that jumped him off the ground is not a reach (tap again in the air to catch), and neither is the press that just let go,
+  // until the key has come back up.
+  wantGrab(input, dt) {
+    if (!input.keys.Space) this.latch = false;
+    this.grabT = Math.max(0, this.grabT - dt);
+    if (input.pressed('Space') && !this.P.jumpedNow) this.grabT = 0.4;
+    return this.grabT > 0 || (!!input.keys.Space && !this.latch);
   }
   // the spring of the limb at hand, for a kick when he lands on it
   kickLimb(L, vx, vy, vz) { const S = this.g.near && this.g.near.softOf(this.tree); if (S && L) S.kick(S.simOf(L.bi), vx, vy, vz); }
@@ -246,7 +256,7 @@ export class Canopy {
     this.mode = 'limb'; this.tree = T; this.limb = L; this.s = s; this.face = faceOut; this.hold = null;
     this.limbLen = lengthOf(L); this.vel.set(0, 0, 0);
   }
-  toAir(vel) { if (this.rope) this.rope.grabbed = false; this.flight = { from: this.P.pos.clone(), swing: this.mode === 'hang' }; this.mode = 'air'; this.vel.copy(vel); if (this.hold && this.hold.vine) this.hold.vine.held = false; this.hold = null; }
+  toAir(vel) { this.latch = !!this.g.input.keys.Space; this.grabT = 0; if (this.rope) this.rope.grabbed = false; this.flight = { from: this.P.pos.clone(), swing: this.mode === 'hang' }; this.mode = 'air'; this.vel.copy(vel); if (this.hold && this.hold.vine) this.hold.vine.held = false; this.hold = null; }
   drop() { if (this.hold && this.hold.vine) this.hold.vine.held = false; if (this.rope) this.rope.grabbed = false; this.mode = null; this.hold = null; this.prompt = null; }
   land(vy) {
     const P = this.P;
@@ -258,11 +268,17 @@ export class Canopy {
   // ------------------------------------------------------------------ per frame
   update(dt, input) {
     const P = this.P, g = this.g, k = g.uiBlocking ? {} : input.keys, p = P.pos;
-    this.cool = Math.max(0, this.cool - dt);
+    this.cool = Math.max(0, this.cool - dt); P.jumpedNow = false;
     this.scan(false);
     const cam = g.camera; cam.getWorldDirection(_d); const fwd = _d.setY(0).normalize().clone(), right = new THREE.Vector3(-fwd.z, 0, fwd.x);
-    const iz = (k.KeyW ? 1 : 0) - (k.KeyS ? 1 : 0), ix = (k.KeyD ? 1 : 0) - (k.KeyA ? 1 : 0), hold = !!k.Space;
+    const iz = (k.KeyW ? 1 : 0) - (k.KeyS ? 1 : 0), ix = (k.KeyD ? 1 : 0) - (k.KeyA ? 1 : 0);
     const pose = this.pose; pose.mode = this.mode; pose.vel.copy(this.vel); this.prompt = null;
+    this.heldT = this.mode === 'hang' ? this.heldT + dt : 0;
+    // the stick, as his legs take it: where he is throwing his weight on a rope or a root (Shift is the hands climbing, and the legs follow those)
+    { const on = (this.mode === 'hang' || this.mode === 'rope') && !k.ShiftLeft && (iz !== 0 || ix !== 0), s = Math.min(1, dt * 7);
+      if (on) { _e.copy(fwd).multiplyScalar(iz).addScaledVector(right, ix).normalize(); pose.steer.lerp(_e, s); } else pose.steer.multiplyScalar(1 - s);
+      pose.free += ((on && this.mode === 'rope' ? 1 : 0) - pose.free) * s; }
+    const hold = this.mode === 'air' ? this.wantGrab(input, dt) : !!k.Space;
     if (this.mode === 'trunk') this.updateTrunk(dt, input, iz, ix, right);
     else if (this.mode === 'rope') this.updateRope(dt, input, iz, ix, fwd, right);
     else if (this.mode === 'limb') this.updateLimb(dt, input, iz, fwd);
@@ -507,8 +523,8 @@ export class Canopy {
       this.startLimb(h.tree, h.limb, s, 1); p.copy(q.point); p.y += q.r; return;
     }
     if (h.kind === 'branch' && h.r > 0.09) this.prompt = v.length() < 2.5 ? 'Pull yourself up onto the branch' : null;
-    // let go: fly on with a lift (the release hop of vine-swinging games)
-    if (!hold) {
+    // let go, with a tap: fly on with a lift (the release hop of vine-swinging games)
+    if (input.pressed('Space') && this.heldT > 0.12) {
       const sp = v.length();
       const boost = _c.copy(v).multiplyScalar(sp > 0.5 ? 0.9 / sp : 0).setY(2.4);
       this.toAir(_d.copy(v).add(boost)); this.cool = 0.22;

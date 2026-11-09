@@ -856,6 +856,8 @@ const SPECIES_LIST = [
 ];
 export const SP = {}; SPECIES_LIST.forEach((s, i) => (SP[s.name] = i));
 const STRIDE = 7; // x y z rot scale species variant
+// where grass does not grow, though nothing else says so (the floor of the den): { x, z, r }
+export const CLEARINGS = [];
 const _lk = new THREE.Vector3(), SEMAL_RED = new THREE.Color('#d0342a');
 
 export class Vegetation {
@@ -1042,7 +1044,7 @@ export class Vegetation {
       const nv = SPECIES_LIST[sp].variants;
       out.push(x, y, z, r4 * 6.283, scale, sp, Math.floor(rng() * nv));
     }
-    return { cx, cz, data: new Float32Array(out) };
+    return { cx, cz, data: this.withoutCut(new Float32Array(out)) };
   }
   // The list of trees to draw is rebuilt every 10 m the camera moves. Done in one go that is a dropped frame or two each time on a phone,
   // every couple of seconds at a run, so it is done over several frames, a couple of milliseconds in each. Nothing changes on screen, and
@@ -1187,6 +1189,40 @@ export class Vegetation {
     return out;
   }
   writeNear(mesh, T) { writeMat(mesh, null, 0, T.x, T.y, T.z, T.rot, T.s, T.g); mesh.instanceMatrix.needsUpdate = true; }
+  // Trees that have been cut down (js/world/felling.js). Everything that knows about a tree reads the cell it stands in, so it is enough
+  // to take it out of that, now and whenever the cell is made again.
+  withoutCut(d) {
+    if (!this.cut || !this.cut.size) return d;
+    const out = []; for (let i = 0; i < d.length; i += STRIDE) { if (this.cut.has(Math.round(d[i] * 100) * 1e6 + Math.round(d[i + 2] * 100))) continue; for (let k = 0; k < STRIDE; k++) out.push(d[i + k]); }
+    return new Float32Array(out);
+  }
+  cutTree(T) {
+    const key = T.key; (this.cut || (this.cut = new Set())).add(key);
+    this.finishList();
+    const cell = this.cells.get(Math.floor(T.x / CHUNK) * 100003 + Math.floor(T.z / CHUNK)); if (cell) cell.data = this.withoutCut(cell.data);
+    if (this.climbCache) this.climbCache.delete(key);
+    this.hidden.delete(key);
+    const s = this.slotMap && this.slotMap.get(key); if (s) { zeroMat(s.m.b0, s.m.l0, s.i); upload(s); this.slotMap.delete(key); }
+    const c = this.colliders; for (let i = 0; i < c.length; i += 3) if (Math.hypot(c[i] - T.x, c[i + 1] - T.z) < 0.01) { c.splice(i, 3); break; }
+    const p = this.perches; for (let i = 0; i < p.length; i += 4) if (Math.hypot(p[i] - T.x, p[i + 2] - T.z) < 0.01) { p.splice(i, 4); break; }
+  }
+  // a saved list of cut trees: every cell is made again without them, the next time it is wanted
+  markCut(keys) {
+    this.cut = new Set(keys); this.finishList(); this.cells.clear(); if (this.climbCache) this.climbCache.clear(); this.lastPos.set(1e9, 0, 1e9);
+  }
+  // A tree of its own to knock over: the same materials and shapes as the forest's, and so its shaders are already built. Its matrix
+  // is the one place it is moved from, since leaf cards are placed in the shader from that alone.
+  makeFalling(T) {
+    const t = T.tmpl, name = T.spName, parts = [], lean = this.q.lean, lm = this.leafMats[name];
+    for (const [geo, mat, depth] of [[lean && t.barkLow || t.bark, this.barkMats[name], null], [lm && t.leaf, lm, lm && lm.userData.depth]]) {
+      if (!geo || !mat) continue;
+      const m = new THREE.InstancedMesh(geo, mat, 1); m.frustumCulled = false; m.castShadow = true; m.receiveShadow = !(PAINTED && mat.userData && mat.userData.drop);
+      if (depth) m.customDepthMaterial = depth;
+      writeMat(m, null, 0, T.x, T.y, T.z, T.rot, T.s, T.g); m.instanceMatrix.needsUpdate = true;
+      this.scene.add(m); parts.push(m);
+    }
+    return parts;
+  }
   // (a new list half made would reach the GPU with this one tree's change, so it is finished first)
   finishList() { if (this.job) { while (!this.job.next().done); this.job = null; } }
   hide(key) { this.finishList(); this.hidden.add(key); const s = this.slotMap.get(key); if (s) { zeroMat(s.m.b0, s.m.l0, s.i); upload(s); } }
@@ -1447,6 +1483,7 @@ export class Grass {
       const x = cx * S + rng() * S, z = cz * S + rng() * S;
       const y = height(x, z);
       if (waterAt(x, z) > y - 0.05) continue;
+      if (CLEARINGS.some((c) => (x - c.x) ** 2 + (z - c.z) ** 2 < c.r * c.r)) continue;
       const tall = (b.grass > 0.5 || b.open > 0.6) && rng() < 0.55;
       (tall ? outT : out).push(x, y - 0.05, z, rng() * 6.28, 0.7 + rng() * 0.6);
     }

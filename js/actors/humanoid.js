@@ -335,6 +335,14 @@ export function buildWeapons(T) {
     for (let k = 0; k < 5; k++) { const n = new THREE.Mesh(new THREE.ConeGeometry(0.02, 0.06, 5), wood); n.position.set(Math.cos(k * 1.3) * 0.07, 0.68 + k * 0.03, Math.sin(k * 1.3) * 0.07); n.rotation.z = Math.cos(k * 1.3) * -1.2; n.rotation.x = Math.sin(k * 1.3) * 1.2; g.add(n); }
     g.userData = { tip: 0.8 }; W.club = g;
   }
+  // stone axe: a flint head lashed into a split haft
+  {
+    const g = new THREE.Group();
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.026, 0.72, 7), wood); shaft.position.y = 0.26; g.add(shaft);
+    const head = new THREE.Mesh(new THREE.OctahedronGeometry(0.075, 0), flint); head.scale.set(1.45, 0.95, 0.34); head.position.set(0.075, 0.56, 0); g.add(head);
+    const lash = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.1, 7), fiber); lash.position.y = 0.55; g.add(lash);
+    g.userData = { tip: 0.6 }; W.axe = g;
+  }
   // stone knife
   {
     const g = new THREE.Group();

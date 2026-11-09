@@ -664,6 +664,8 @@ const lerp = (a, b, t) => a + (b - a) * t;
 const ease = (t) => t * t * (3 - 2 * t);
 const dirOf = (out, fx, ux, rx) => out.set(0, 0, 0).addScaledVector(_f, fx).addScaledVector(_u, ux).addScaledVector(_r, rx).normalize();
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _v4 = new THREE.Vector3();
+const _hA = new THREE.Vector3(), _hB = new THREE.Vector3(), _hC = new THREE.Vector3(), _hD = new THREE.Vector3(), _upW = new THREE.Vector3(0, 1, 0);
+const _gF = [new THREE.Vector3(), new THREE.Vector3()], _gH = [new THREE.Vector3(), new THREE.Vector3()];
 
 // ------------------------------------------------------------------------------------------- how he moves
 // Locomotion as a blend space, not a chain of cross-fades: walk, jog and sprint all start on the left foot, so they
@@ -838,6 +840,13 @@ export function animateRiggedHuman(h, dt, a) {
       for (const n of ['DEF-hips', 'DEF-spine001', 'DEF-spine002', 'DEF-spine003', 'DEF-neck', 'DEF-shoulderL', 'DEF-shoulderR']) if (Bn[n]) toBind(R, Bn[n], st);
       const c = Bn['DEF-spine003']; if (c) { c.rotateX(Math.sin(h.t * 1.5) * 0.012 * st); c.updateMatrixWorld(true); }
     } }
+  // On the wood the back is upright and close to it, whatever the crouching clip was doing: only the arms and legs reach
+  if (R.K && a.canopy && a.canopy.mode === 'trunk' && !a.dead) {
+    const hips = Bn['DEF-hips'], hp = R.frames.hipPos;
+    hips.position.x = hp.x; hips.position.y = hp.y * 0.98; hips.position.z = hp.z;
+    R.inst.updateMatrixWorld(true);
+    for (const n of ['DEF-hips', 'DEF-spine001', 'DEF-spine002', 'DEF-spine003', 'DEF-neck', 'DEF-shoulderL', 'DEF-shoulderR']) if (Bn[n]) toBind(R, Bn[n], 1);
+  }
   // swimming: lay the body along the water and pull with the arms
   h.swimS += ((a.swim || 0) - h.swimS) * Math.min(1, dt * 4);
   R.body.rotation.x = h.swimS * 1.25; R.body.position.y = -h.swimS * 0.9;
@@ -893,15 +902,25 @@ export function animateRiggedHuman(h, dt, a) {
       const down = _v3.copy(C.up).negate().addScaledVector(C.vel, -0.05).normalize(), kick = Math.sin(h.t * 3) * 0.12 * (1 - (C.tuck || 0));
       h.tuck = (h.tuck || 0) + ((C.tuck || 0) - (h.tuck || 0)) * Math.min(1, dt * 10);
       h.climbLeg = (h.climbLeg || 0) + ((C.climbing || 0) - (h.climbLeg || 0)) * Math.min(1, dt * 8);
-      const leg = (s) => { const k = Math.max(h.tuck, h.climbLeg * (s > 0 ? C.legL : C.legR) * 0.85); return _v4.copy(down).multiplyScalar(1 - k * 0.85).addScaledVector(_f, k * 0.95 + s * kick).addScaledVector(_r, -0.12 * s).normalize(); };
+      // pushing the stick, he works the swing with his legs: both thrown the way he wants to go, scissoring as they kick
+      const pump = C.steer ? C.steer.length() : 0, sciss = Math.sin(h.t * 8) * 0.32 * pump;
+      const leg = (s) => { const k = Math.max(h.tuck, h.climbLeg * (s > 0 ? C.legL : C.legR) * 0.85); _v4.copy(down).multiplyScalar(1 - k * 0.85).addScaledVector(_f, k * 0.95 + s * (kick + sciss)).addScaledVector(_r, -0.12 * s); if (pump > 0.01) _v4.addScaledVector(C.steer, 0.8); return _v4.normalize(); };
       aim(thL, shL, leg(1), 1); aim(shL, ftL, _v4.copy(down).addScaledVector(_f, -0.15 - h.tuck * 0.2).normalize(), 1);
       aim(thR, shR, leg(-1), 1); aim(shR, ftR, _v4.copy(down).addScaledVector(_f, -0.15 - h.tuck * 0.2).normalize(), 1);
     } else if (C.mode === 'trunk') {
       // the feet are on the wood too (the climb's gait places them), knees out to the sides, soles flat against it
       const inn = _v3.copy(C.out).negate();
+      const free = C.free || 0;
       for (const [th, sh, ft, s, target, fr] of [[thL, shL, ftL, -1, C.footL, R.K && R.frames.footL], [thR, shR, ftR, 1, C.footR, R.K && R.frames.footR]]) {
-        ik2(th, sh, ft, target, _v4.copy(_r).multiplyScalar(s * 0.45).add(_v1.set(0, 0.35, 0)).addScaledVector(inn, -0.8));
-        if (fr) setFrame(R, ft, fr, _v4.set(0, 0.55, 0).addScaledVector(inn, 0.85), _v1.copy(_r).negate());
+        let to = target;
+        // on a root, pushing the stick: the feet come off it and kick out the way he is throwing his weight, and that is what swings it
+        if (free > 0.01) {
+          th.getWorldPosition(_hA); _hB.set(0, -1, 0);
+          if (C.steer) _hB.addScaledVector(C.steer, 0.75).addScaledVector(_hC.copy(_f), s * Math.sin(h.t * 8) * 0.3);
+          _hA.addScaledVector(_hB.normalize(), 0.72); to = _hD.copy(target).lerp(_hA, free);
+        }
+        ik2(th, sh, ft, to, _v4.copy(_r).multiplyScalar(s * 0.45).add(_v1.set(0, 0.35, 0)).addScaledVector(inn, -0.8));
+        if (fr && free < 0.5) setFrame(R, ft, fr, _v4.set(0, 0.55, 0).addScaledVector(inn, 0.85), _v1.copy(_r).negate());
       }
     } else if (C.mode === 'air') {
       const ahead = _v3.copy(C.vel).setY(0).multiplyScalar(0.12).add(_v4.set(0, 1, 0)).normalize();
@@ -910,19 +929,26 @@ export function animateRiggedHuman(h, dt, a) {
     }
   }
   const aimDir = _v4.copy(_f).applyAxisAngle(_r, -lp).normalize();
+  let along = 0;   // how far the spear lies along the line of aim, not upright in the fist
   if (!a.dead && h.swimS < 0.5 && !(C && C.mode !== 'limb')) {
     // carried weapon: right forearm held forward
     if (['spear', 'club', 'torch', 'knife'].includes(w) && !act) { aim(faR, hR, dirOf(_v1, 0.85, 0.15, -0.05), 0.7); }
-    if (w === 'spear' && !act && !(a.aim > 0.01)) { aim(faL, hL, dirOf(_v1, 0.8, 0.3, 0.15), 0.6); }
     if (a.aim > 0.01 && w === 'bow') {
+      // the bow arm straight out in front of his chest; the drawing hand on the string, pulled back toward his jaw, elbow out behind
       const d = a.draw || 0, k = a.aim;
-      aim(uaL, faL, aimDir, k); aim(faL, hL, aimDir, k);
-      aim(uaR, faR, _v1.copy(aimDir).multiplyScalar(0.35).addScaledVector(_r, 0.75).normalize(), k);
-      aim(faR, hR, _v2.copy(aimDir).multiplyScalar(-0.6 - d * 0.4).addScaledVector(_r, -0.5).normalize(), k);
+      _v1.copy(aimDir).addScaledVector(_r, 0.2).normalize();
+      aim(uaL, faL, _v1, k); aim(faL, hL, _v1, k);
+      hL.getWorldPosition(_hA); hR.getWorldPosition(_hB);
+      _hA.addScaledVector(aimDir, 0.03 - d * 0.47).addScaledVector(_upW, -0.015);
+      ik2(uaR, faR, hR, _hB.lerp(_hA, k), _v3.copy(_r).multiplyScalar(0.8).addScaledVector(aimDir, -0.7).addScaledVector(_upW, 0.12));
     }
     if (a.aim > 0.01 && w === 'spear') {
-      aim(uaR, faR, dirOf(_v1, -0.45, 0.75, 0.25), a.aim); aim(faR, hR, dirOf(_v2, 0.55, 0.65, 0), a.aim);
+      // up by his ear, the point out along the line of the throw, the elbow out and back behind it
+      uaR.getWorldPosition(_hA); hR.getWorldPosition(_hB);
+      _hA.addScaledVector(_upW, 0.2).addScaledVector(aimDir, 0.02).addScaledVector(_r, 0.1);
+      ik2(uaR, faR, hR, _hB.lerp(_hA, a.aim), _v3.copy(_r).multiplyScalar(0.8).addScaledVector(aimDir, -0.5).addScaledVector(_upW, -0.3));
       aim(uaL, faL, aimDir, a.aim * 0.8);
+      along = a.aim;
     }
     if (act) {
       const t = act.t;
@@ -931,11 +957,19 @@ export function animateRiggedHuman(h, dt, a) {
         const up = lerp(lerp(0.2, 0.95, wind), -0.55, strike), fw = lerp(lerp(0.6, -0.35, wind), 0.85, strike);
         const k = 1 - rec;
         aim(uaR, faR, dirOf(_v1, fw, up, 0.25), k); aim(faR, hR, dirOf(_v2, fw + 0.2, up + 0.1, 0.05), k);
-      } else if (act.type === 'stab' || act.type === 'thrust') {
+      } else if (act.type === 'thrust') {
+        // both hands on the shaft: drawn back by the hip, then driven out along the line of aim
+        const wind = ease(Math.min(1, t / 0.28)), strike = ease(Math.min(1, Math.max(0, (t - 0.28) / 0.13))), rec = ease(Math.max(0, (t - 0.5) / 0.5));
+        uaR.getWorldPosition(_hA); hR.getWorldPosition(_hB);
+        _hA.addScaledVector(aimDir, lerp(lerp(0.3, 0, wind), 0.62, strike)).addScaledVector(_r, lerp(0.18, 0.02, strike)).addScaledVector(_upW, -0.22);
+        ik2(uaR, faR, hR, _hB.lerp(_hA, 1 - rec), _v3.copy(_r).multiplyScalar(0.8).addScaledVector(_upW, -0.5).addScaledVector(aimDir, -0.2));
+        along = 1 - rec;
+        hR.getWorldPosition(_hA); hL.getWorldPosition(_hB);
+        _hA.addScaledVector(aimDir, 0.38); ik2(uaL, faL, hL, _hB.lerp(_hA, along), _v3.copy(_r).multiplyScalar(-0.8).addScaledVector(_upW, -0.5));
+      } else if (act.type === 'stab') {
         const wind = ease(Math.min(1, t / 0.28)), strike = ease(Math.min(1, Math.max(0, (t - 0.28) / 0.13))), rec = ease(Math.max(0, (t - 0.5) / 0.5));
         const fw = lerp(lerp(0.4, -0.5, wind), 1, strike);
         aim(uaR, faR, dirOf(_v1, fw, -0.1, 0.35 - strike * 0.3), 1 - rec); aim(faR, hR, aimDir, (1 - rec) * strike);
-        if (act.type === 'thrust') aim(faL, hL, aimDir, (1 - rec) * strike * 0.8);
       } else if (act.type === 'throw') {
         const strike = ease(Math.min(1, t / 0.25)), rec = ease(Math.max(0, (t - 0.35) / 0.65));
         aim(uaR, faR, dirOf(_v1, lerp(-0.5, 0.9, strike), lerp(0.8, 0.1, strike), 0.2), 1 - rec); aim(faR, hR, dirOf(_v2, lerp(0.4, 1, strike), lerp(0.7, -0.1, strike), 0), 1 - rec);
@@ -963,11 +997,31 @@ export function animateRiggedHuman(h, dt, a) {
     hR.getWorldPosition(_v1).lerp(a.reach.to, a.reach.w);
     ik2(uaR, faR, hR, _v1, _v3.copy(_r).multiplyScalar(0.8).add(_v2.set(0, 0.25, 0)).addScaledVector(_f, -0.3));
   }
+  // The hands themselves. aim() turns a bone the shortest way round, so a hand kept whatever twist the clip had left in it, and could
+  // end up palm out or back to front round what it was holding. Now every hand is set: thumb to the side a thumb would be on for an
+  // arm in that direction (up when reaching forward, forward when hanging), the forearm turning with it so the wrist is not wrung,
+  // and the weapon goes where the hand says. A spear along the line of aim has the thumb along the shaft and the fingers across it.
+  const hands = !!R.K && !a.dead && !(C && C.mode !== 'limb') && h.swimS < 0.5;
+  if (hands) {
+    const set = [[faR, hR, R.frames.handR, R.frames.armR], [faL, hL, R.frames.handL, R.frames.armL]];
+    for (let i = 0; i < 2; i++) {
+      const [fa, hb, fr, fra] = set[i], F = _gF[i], H = _gH[i];
+      fa.getWorldPosition(_hA); hb.getWorldPosition(_hB);
+      F.subVectors(_hB, _hA).normalize(); _hC.copy(F);
+      H.crossVectors(_r, F); if (H.lengthSq() < 0.06) H.copy(_upW).addScaledVector(F, -F.y); H.normalize();
+      if (along > 0.01 && (i === 0 || (act && act.type === 'thrust'))) {
+        H.lerp(aimDir, along).normalize();
+        F.addScaledVector(H, -F.dot(H)); if (F.lengthSq() < 0.04) F.copy(_r).multiplyScalar(i ? 1 : -1).addScaledVector(H, -(i ? 1 : -1) * _r.dot(H)); F.normalize();
+      }
+      setFrame(R, fa, fra, _hC, H); setFrame(R, hb, fr, F, H);
+    }
+  }
   // grip frames follow the hands: fingers along -Y, handle along +Z
-  for (const [grip, fa, hb, side] of [[h.j.handR, faR, hR, 1], [h.j.handL, faL, hL, -1]]) {
+  for (const [grip, fa, hb, side, i] of [[h.j.handR, faR, hR, 1, 0], [h.j.handL, faL, hL, -1, 1]]) {
     fa.getWorldPosition(_a); hb.getWorldPosition(_b);
     const fd = _d.subVectors(_b, _a).normalize();
-    const handle = _v3.copy(_r).multiplyScalar(side).cross(fd).normalize();
+    if (hands) fd.copy(_gF[i]);
+    const handle = hands ? _v3.copy(_gH[i]).multiplyScalar(side) : _v3.copy(_r).multiplyScalar(side).cross(fd).normalize();
     if (handle.lengthSq() < 1e-6) handle.copy(_f);
     const y = _v1.copy(fd).negate(), z = handle, x = _v2.crossVectors(y, z).normalize(); z.crossVectors(x, y).normalize();
     _m.makeBasis(x, y, z);
@@ -992,7 +1046,7 @@ export function animateRiggedHuman(h, dt, a) {
   // not depend on the bone's own axes): right is negative yaw about the up axis, up is positive about body-right
   const head = Bn['DEF-head'];
   if (head && !a.dead) {
-    let wy = 0, wp = 0;
+    let wy = 0, wp = C && C.mode === 'trunk' ? 0.42 : 0;   // (on the wood he looks up it, not into the bark)
     if (a.lookAt) {
       head.getWorldPosition(_v1); _v2.subVectors(a.lookAt, _v1);
       const fx = _v2.dot(_f), rx = _v2.dot(_r);

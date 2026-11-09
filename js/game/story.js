@@ -629,7 +629,7 @@ chapter({
     E.classList.remove('show');
     await g.ui.fade(false, 2000);
     g.uiBlocking = false; g.requestLock();
-    g.ui.setObjective('Free roam', 'The forest and the village are yours. Both sounds at once.');
+    g.ui.setObjective('Free roam', `The forest and the village are yours. Both sounds at once. ${g.touch ? 'The leaf at the top changes the season.' : '<b>N</b> changes the season.'}`);
     S.done = true; g.save();
   },
 });
@@ -647,7 +647,7 @@ export class Story {
     g.on('climbed', () => (this.flags.climbed = true));
     g.on('swung', () => (this.flags.swung = true));
     g.on('eat', (e) => { if (e.item === 'termites') this.flags.ateTermites = true; });
-    g.on('clue', (e) => { this.flags['clue_' + e.id] = true; });
+    g.on('clue', (e) => { this.flags['clue_' + e.id] = true; if (e.id === 'stump' && g.inv.locks.delete('axe')) g.ui.toast('You could make something that cuts like that (Bag)'); });
     g.on('*', () => this.checkNow());
   }
   // leave the current chapter (back to the title): its scripts stop, its people, items and companion go

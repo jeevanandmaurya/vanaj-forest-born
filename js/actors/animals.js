@@ -1438,7 +1438,7 @@ export class Ecosystem {
         a.animStep = cd2 < 400 ? 0 : cd2 < 2500 ? st : st * 2;
       }
       // how often it thinks: one that is after the player or is in a scene of the story, always; otherwise by distance
-      const every = d2 < nearR2 || a.companion || a.scripted || a.target === 'player' ? 0 : d2 < midR2 ? 0.066 : d2 < 40000 ? 0.133 : 0.25;
+      const every = d2 < nearR2 || a.companion || a.scripted || a.target === 'player' ? 0 : d2 < nearR2 * 4 ? 0.033 : d2 < midR2 ? 0.066 : d2 < 40000 ? 0.133 : 0.25;
       a.lodAcc += dt;
       if (a.lodAcc >= every) { a.update(a.lodAcc, W); a.lodAcc = 0; }
     }
