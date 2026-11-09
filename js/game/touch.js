@@ -112,6 +112,8 @@ export class TouchControls {
     this.bindLook(root.querySelector('.tright'));
     document.body.classList.add('touch');
     game.touch = true;
+    // (the computer's own buttons and clickable minimap, set up before it was known this is a touch screen; the touch controls have their own)
+    { const bar = document.getElementById('deskbar'), mini = document.getElementById('minimap'); if (bar) bar.remove(); if (mini) { mini.classList.remove('click'); mini.onclick = mini.onmousedown = null; mini.removeAttribute('title'); } }
     const hint = document.getElementById('title-hint'); if (hint) hint.textContent = 'Tap anywhere to hear the flute';
     this.setupLandscape();
     this.setupWheel();

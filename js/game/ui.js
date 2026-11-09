@@ -80,6 +80,27 @@ export class UI {
     // the minimap: north up, Vanaj in the middle, his arrow turning with him
     const mini = el('div', '', '<canvas width="192" height="192"></canvas><i>N</i><svg viewBox="-10 -10 20 20"><path d="M0-8 6 7 0 3-6 7Z"/></svg>'); mini.id = 'minimap'; this.hud.appendChild(mini);
     this.miniCv = mini.querySelector('canvas'); this.miniArrow = mini.querySelector('svg');
+    // On a computer: the essentials in plain sight, each with the key that does the same (with the mouse captured for looking, the key is the way).
+    // A click sends that key, so there is one code path. Phones have these in the touch controls.
+    {
+      const send = (code) => { for (const t of ['keydown', 'keyup']) window.dispatchEvent(new KeyboardEvent(t, { code, key: code, bubbles: true })); };
+      const bar = el('div'); bar.id = 'deskbar'; this.hud.appendChild(bar);
+      // (the game takes a mouse press anywhere as a strike: not on these)
+      bar.onmousedown = mini.onmousedown = (e) => e.stopPropagation();
+      for (const [ic, name, code, key] of [['bag', 'Bag', 'Tab', 'Tab'], ['map', 'Map', 'KeyM', 'M'], ['notes', 'Notes', 'KeyJ', 'J'], ['menu', 'Pause', 'Escape', 'Esc']]) {
+        const b = el('button', '', `${icon(ic)}<small>${key}</small>`); b.title = `${name} (${key})`; b.setAttribute('aria-label', name); b.tabIndex = -1; b.onclick = (e) => { e.stopPropagation(); send(code); b.blur(); }; bar.appendChild(b);
+      }
+      mini.title = 'Map (M)'; mini.classList.add('click'); mini.onclick = (e) => { e.stopPropagation(); send('KeyM'); };
+    }
+    // from the pause menu too: on a computer the mouse is held for looking during play, so this is where it can reach them
+    { const row = el('div'); row.id = 'pause-go'; $('btn-resume').after(row);
+      for (const [ic, name, panel] of [['map', 'Map', 'map'], ['bag', 'Bag', 'inv'], ['notes', 'Notes', 'journal']]) {
+        const b = el('button', '', `${icon(ic)}<span>${name}</span>`);
+        b.onclick = () => { const g = this.g; g.paused = false; g.uiBlocking = false; $('pause').classList.remove('show'); this.toggle(panel); };
+        row.appendChild(b);
+      } }
+    // a click or tap outside the map, bag or notes closes them
+    for (const id of ['map', 'inv', 'journal']) { const pn = $(id); if (pn) { pn.addEventListener('mousedown', (e) => e.stopPropagation()); pn.addEventListener('click', (e) => { if (e.target === pn && this.open === id) { this.close(); this.g.requestLock && this.g.requestLock(); } }); } }
     // your own mark: tap the big map to set it, tap it again to take it away
     const tg = $('target'), pt = tg.cloneNode(true); pt.id = 'ptarget'; pt.querySelectorAll('[id]').forEach((n) => { n.id = 'p' + n.id; }); tg.parentElement.appendChild(pt);
     $('mapcv').addEventListener('click', (e) => {
