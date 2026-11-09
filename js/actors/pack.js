@@ -4,6 +4,7 @@
 // the pouch, and it grows with the count. Everything here sits in a group that follows his upper back (js/actors/humanrig.js),
 // in metres: +z is the way he faces.
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { toon } from '../core/toon.js';
 import { PAINTED } from '../core/palette.js';
 import { mulberry32 } from '../core/noise.js';
@@ -50,21 +51,47 @@ export class Pack {
   refresh(inv) {
     const c = (k) => inv.count(k), sum = (...ks) => ks.reduce((n, k) => n + c(k), 0);
     const food = sum('mahua', 'ber', 'tendu', 'mushroom', 'termites', 'honey'), counts = [c('stick'), c('bamboo'), c('stone'), c('flint'), c('leaves'), c('fiber'), c('hide'), sum('meat_raw', 'meat_cooked'), food, c('bone')];
-    const sig = counts.join();
+    const lean = this.lean, sig = counts.join() + lean;
     if (sig === this.sig) return;
     this.sig = sig;
     const [sticks, bamboo, stones, flints, leaves, fibre, hide, meat, fd, bone] = counts;
-    const show = (o, on) => { o.visible = on; if (on) o.traverse((x) => { x.visible = true; }); };
-    this.sticks.forEach((s, i) => { s.visible = i < sticks; });
-    this.poles.forEach((s, i) => { s.visible = i < bamboo; });
+    // each piece here is a draw call of its own. On Low (lean) the load shows as a few of each, without the little ropes that tie it on
+    const show = (o, on) => { o.visible = on; if (on) o.traverse((x) => { x.visible = true; }); if (on && lean && o.children[1]) o.children[1].visible = false; };
+    this.sticks.forEach((s, i) => { s.visible = i < (lean ? Math.min(sticks, 2) : sticks); });
+    this.poles.forEach((s, i) => { s.visible = i < (lean ? Math.min(bamboo, 1) : bamboo); });
     const load = sticks + bamboo > 0;
-    this.bundle.visible = load; this.ties.forEach((t) => { t.visible = load; });
-    this.stones.forEach((s, i) => { s.visible = i < stones; });
-    this.flints.forEach((s, i) => { s.visible = i < flints; });
+    this.bundle.visible = load; this.ties.forEach((t) => { t.visible = load && !lean; });
+    this.stones.forEach((s, i) => { s.visible = i < (lean ? Math.min(stones, 2) : stones); });
+    this.flints.forEach((s, i) => { s.visible = i < flints && !lean; });
     const net = stones + flints > 0;
-    this.net.visible = net; this.netLines.forEach((t) => { t.visible = net; }); this.netTie.visible = net;
-    show(this.leaves, leaves > 0); show(this.fibre, fibre > 0); show(this.hide, hide > 0); show(this.meat, meat > 0); show(this.food, fd > 0); show(this.bone, bone > 0);
+    this.net.visible = net; this.netLines.forEach((t) => { t.visible = net && !lean; }); this.netTie.visible = net && !lean;
+    show(this.leaves, leaves > 0); show(this.fibre, fibre > 0 && !lean); show(this.hide, hide > 0); show(this.meat, meat > 0); show(this.food, fd > 0 && !lean); show(this.bone, bone > 0 && !lean);
     this.strap.visible = counts.some((n) => n > 0);
+    if (this.baked) this.baked.visible = false;
+    if (lean) this.bake();
+  }
+  // On a lean level all that shows of the load is one mesh, its pieces' colours painted on its vertices: a dozen draw calls become one. It is
+  // made again only when the load changes.
+  bake() {
+    const G = this.group, parts = [], up = new THREE.Matrix4(), col = new THREE.Color();
+    const shown = (o) => { for (; o && o !== G; o = o.parent) if (!o.visible) return false; return true; };
+    G.traverse((o) => {
+      if (!o.isMesh || o === this.baked) return;
+      if (shown(o)) {
+        up.identity(); for (let p = o; p && p !== G; p = p.parent) { p.updateMatrix(); up.premultiply(p.matrix); }
+        const src = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone(), g = new THREE.BufferGeometry();
+        g.setAttribute('position', src.attributes.position); g.setAttribute('normal', src.attributes.normal); g.applyMatrix4(up);
+        col.copy(o.material.color); const n = g.attributes.position.count, c = new Float32Array(n * 3);
+        for (let i = 0; i < n; i++) { c[i * 3] = col.r; c[i * 3 + 1] = col.g; c[i * 3 + 2] = col.b; }
+        g.setAttribute('color', new THREE.BufferAttribute(c, 3)); parts.push(g);
+      }
+    });
+    G.traverse((o) => { if (o.isMesh && o !== this.baked) o.visible = false; });
+    if (!parts.length) return;
+    if (!this.baked) { this.baked = new THREE.Mesh(new THREE.BufferGeometry(), PAINTED ? toon({ color: 0xffffff, vertexColors: true, rim: 0.4, key: 'rope' }) : new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92 })); this.baked.frustumCulled = false; G.add(this.baked); }
+    this.baked.geometry.dispose();
+    this.baked.geometry = mergeGeometries(parts, false);
+    this.baked.visible = true;
   }
 }
 

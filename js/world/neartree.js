@@ -84,12 +84,12 @@ function softRef(BR, plan, bi, t) {   // the spring and bend weight for a point 
 }
 
 // ------------------------------------------------------------------------------------- bark
-function meshBark(nb, BR, plan, hi, rng) {
+function meshBark(nb, BR, plan, hi, rng, lean) {
   const fl = hi.P && hi.P.flute, flPh = (hi.sk && hi.sk.flPh) || 0, flare = hi.P ? hi.P.flare : 0, H = hi.H, base = hi.kind === 'bamboo' ? 0.9 : 1;
   const p0 = new THREE.Vector3(), p1 = new THREE.Vector3(), p2 = new THREE.Vector3(), p3 = new THREE.Vector3(), last = new THREE.Vector3();
   BR.forEach((b, bi) => {
     const S = b.pts, n = S.length; if (n < 2 || b.noMesh) return;
-    const lv = b.level, segs = lv >= 3 ? 4 : Math.max(lv === 0 ? 20 : 7, Math.round((b.segs || 8) * 1.7)), sub = lv >= 3 ? 1 : 3;
+    const lv = b.level, segs = lean ? (lv === 0 ? 10 : lv >= 2 ? 3 : 5) : lv >= 3 ? 4 : Math.max(lv === 0 ? 20 : 7, Math.round((b.segs || 8) * 1.7)), sub = lv >= 3 || (lean && lv >= 1) ? 1 : lean ? 2 : 3;
     const start = nb.p.length / 3, ph1 = rng() * 6.28, ph2 = rng() * 6.28, knob = lv === 0 ? 0.03 : lv === 1 ? 0.045 : lv === 2 ? 0.03 : 0, r00 = b.r[0];
     // Where a branch leaves its parent. A side branch swells into a collar, but never wider than the wood it grows from (its
     // first ring is inside that wood, so a wider one stood out as an open lip). A branch carrying straight on from its
@@ -209,9 +209,9 @@ function leafCard(nb, p, dir, up, size, tint, rnd, sb, st, shade) {
   put(-hw, L, f - L * 0.14, 0, 1, nl); put(0, L, -L * 0.14, 0.5, 1, nl); put(hw, L, f - L * 0.14, 1, 1, nr);
   nb.i.push(base, base + 4, base + 3, base, base + 1, base + 4, base + 1, base + 5, base + 4, base + 1, base + 2, base + 5);
 }
-function meshLeaves(cards, hi, BR, plan, name, rng) {
+function meshLeaves(cards, hi, BR, plan, name, rng, lean) {
   const spec = LEAF[name]; if (!spec) return;
-  const size = spec[1], per = Math.round(spec[2] * 1.5), tint = (hi.spec && hi.spec.tint) || [1, 1, 1], tips = hi.kind === 'tree' ? hi.sk.leaves : hi.leaves;
+  const size = spec[1] * (lean ? 1.5 : 1), per = Math.max(1, Math.round(spec[2] * (lean ? 0.5 : 1.5))), tint = (hi.spec && hi.spec.tint) || [1, 1, 1], tips = hi.kind === 'tree' ? hi.sk.leaves : hi.leaves;
   const dir = new THREE.Vector3(), up = new THREE.Vector3(), p = new THREE.Vector3(), o = new THREE.Vector3();
   for (const l of tips) {
     const [sb, st] = l.b !== undefined ? softRef(BR, plan, l.b, l.t ?? 1) : [0, 0];
@@ -228,7 +228,7 @@ function meshLeaves(cards, hi, BR, plan, name, rng) {
   }
 }
 // a finer version of the painted masses: more, smaller sprites from the same positions
-function meshSprites(nb, hi, BR, plan, rng) {
+function meshSprites(nb, hi, BR, plan, rng, lean) {
   const src = hi.leafGeo(); if (!src) return;
   const P = src.attributes.position, N = src.attributes.normal, C = src.attributes.color, W = src.attributes.aWind, Z = src.attributes.aSize;
   // nearest simulated branch point for each sprite
@@ -240,8 +240,8 @@ function meshSprites(nb, hi, BR, plan, rng) {
     let best = null, bd = Infinity; for (const e of seg) { const d = e[0].distanceToSquared(_p); if (d < bd) { bd = d; best = e; } }
     const [sb, st] = best ? softRef(BR, plan, best[1], best[2]) : [0, 0];
     const size = Z.getX(v);
-    for (let k = 0; k < 3; k++) {
-      const jx = k ? (rng() - 0.5) * size * 0.85 : 0, jy = k ? (rng() - 0.5) * size * 0.55 : 0, jz = k ? (rng() - 0.5) * size * 0.85 : 0, r = rng(), sz = size * (0.42 + rng() * 0.18), base = nb.p.length / 3;
+    for (let k = 0; k < (lean ? 1 : 3); k++) {
+      const jx = k ? (rng() - 0.5) * size * 0.85 : 0, jy = k ? (rng() - 0.5) * size * 0.55 : 0, jz = k ? (rng() - 0.5) * size * 0.85 : 0, r = rng(), sz = size * (lean ? 0.75 : 0.42 + rng() * 0.18), base = nb.p.length / 3;
       for (const [u, vv] of [[0, 0], [1, 0], [1, 1], [0, 1]]) nb.v(_p.x + jx, _p.y + jy, _p.z + jz, N.getX(v), N.getY(v), N.getZ(v), u, vv, C.getX(v), C.getY(v), C.getZ(v), W.getX(v), r, sb, st, sz);
       nb.i.push(base, base + 1, base + 2, base, base + 2, base + 3);
     }
@@ -321,13 +321,14 @@ function meshExtras(nb, cards, hi, BR, plan, name, rng) {
   }
 }
 
-function buildHi(tmpl, name, seed) {
+// lean (Low): the same tree in about a third of the triangles, fewer and larger leaves, and no moss, fungi or climbers on it
+function buildHi(tmpl, name, seed, lean) {
   const hi = tmpl.hi, BR = branchesOf(hi), plan = softPlan(BR), rng = mulberry32(seed);
   const barkB = new NB(false, true), sprB = new NB(true), cardB = new NB(), extB = new NB();
-  meshBark(barkB, BR, plan, hi, rng);
-  meshSprites(sprB, hi, BR, plan, rng);
-  meshLeaves(cardB, hi, BR, plan, name, rng);
-  meshExtras(extB, cardB, hi, BR, plan, name, rng);
+  meshBark(barkB, BR, plan, hi, rng, lean);
+  meshSprites(sprB, hi, BR, plan, rng, lean);
+  meshLeaves(cardB, hi, BR, plan, name, rng, lean);
+  if (!lean) meshExtras(extB, cardB, hi, BR, plan, name, rng);
   return { bark: barkB.geo(), sprites: sprB.p.length ? sprB.geo() : null, cards: cardB.p.length ? cardB.geo() : null, extras: extB.p.length ? extB.geo() : null, plan, BR };
 }
 
@@ -463,8 +464,11 @@ export class NearTrees {
   }
   applyQuality() {
     const q = this.g.q;
-    this.max = !PAINTED ? 0 : q.name === 'Low' ? 1 : q.name === 'Medium' ? 5 : q.name === 'High' ? 7 : SLOTS;
-    this.R = q.name === 'Low' ? 9 : q.name === 'Medium' ? 22 : q.name === 'High' ? 26 : 30;
+    this.max = !PAINTED ? 0 : Math.min(SLOTS, q.nearMax);
+    // (nearR 0: only for the tree he is climbing. Walking past, the nearest tree kept swapping between its two forms, a jump you could see.)
+    this.R = q.nearR;
+    if (this.cache && this.lean !== !!q.lean) this.cache.clear();   // (the lean trees or the full ones: make them afresh)
+    this.lean = !!q.lean;
   }
   mat(name) {
     if (this.mats[name]) return this.mats[name];
@@ -493,14 +497,14 @@ export class NearTrees {
     }
     return (this.mats[name] = out);
   }
-  hiFor(T) { let h = this.cache.get(T.tmpl); if (!h) { h = buildHi(T.tmpl, T.spName, 3301 + T.tmpl.seed); this.cache.set(T.tmpl, h); } return h; }
-  // all detailed meshes up front, during loading, so none is built mid-game (not on Low, where they come as needed)
+  hiFor(T) { let h = this.cache.get(T.tmpl); if (!h) { h = buildHi(T.tmpl, T.spName, 3301 + T.tmpl.seed, this.lean); this.cache.set(T.tmpl, h); } return h; }
+  // all detailed meshes up front, during loading, so none is built mid-game: for the shapes in use on this level, in this level's form
   prebuild() {
-    if (!this.max || this.g.q.name === 'Low') return;
-    SP_LOOP: for (const arr of this.veg.templates) for (const t of arr) {
-      if (!t.hi) continue SP_LOOP;
-      if (!this.cache.has(t)) this.cache.set(t, buildHi(t, t.spName, 3301 + t.seed));
-    }
+    if (!this.max) return;
+    this.veg.templates.forEach((arr, s) => { for (let v = 0; v < arr.length; v++) {
+      const t = arr[v]; if (!t.hi) break;
+      if (this.veg.nearShape(s, v) === v && !this.cache.has(t)) this.cache.set(t, buildHi(t, t.spName, 3301 + t.seed, this.lean));
+    } });
   }
   softOf(T) { for (const s of this.slots) if (s.T === T || (T && s.T.key === T.key)) return s.soft; return null; }
   slotOf(T) { for (const s of this.slots) if (s.T.key === T.key) return s; return null; }
@@ -525,7 +529,7 @@ export class NearTrees {
       this.t = 12;
       // ranked by how close he is to the tree's crown, not its trunk: under a banyan he is near it, however far its trunk
       const reach = (t) => Math.hypot(t.x - focus.x, t.z - focus.z) - t.tmpl.crownR * t.s * 0.6;
-      const list = this.veg.climbNear(focus.x, focus.z, this.R + 12).filter((t) => t.tmpl && t.tmpl.hi && reach(t) < this.R).sort((a, b) => reach(a) - reach(b));
+      const list = !this.R ? [] : this.veg.climbNear(focus.x, focus.z, this.R + 12).filter((t) => t.tmpl && t.tmpl.hi && reach(t) < this.R).sort((a, b) => reach(a) - reach(b));
       const want = list.slice(0, this.max);
       if (force && !want.some((t) => t.key === force.key)) { want.pop(); want.unshift(force); }
       for (const s of this.slots) if (!want.some((t) => t.key === s.T.key)) { for (const m of s.meshes) { this.scene.remove(m); m.geometry.dispose(); } this.veg.show(s.T.key); s.row = -s.row - 1; }

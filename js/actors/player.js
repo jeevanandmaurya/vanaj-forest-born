@@ -2,6 +2,7 @@
 // weapons (fists, stone knife, club, spear thrust+throw, bow, torch), melee hit zones, sneak attacks, blocking,
 // dodge, projectiles that stick in flesh, finishing moves, survival stats, bleeding, sickness, animal calls.
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildHumanoid, animateHumanoid, buildWeapons, buildViewArms, skinMaterial } from './humanoid.js';
 import { PAINTED } from '../core/palette.js';
 import { toonify } from '../core/toon.js';
@@ -10,6 +11,31 @@ import { Pack, heldMesh } from './pack.js';
 import { groundHeight, groundNormal, waterAt, biomeAt, HALF } from '../world/terrain.js';
 import { clamp, lerp, damp, spring } from '../core/noise.js';
 import { G } from '../core/shaderlib.js';
+
+// The rigid pieces on each bone of a body, as one mesh per look: they are made apart, each with its own material, and never move on the bone.
+function mergeOnBones(root) {
+  const sets = new Map(), same = new Map();
+  const hex = (c) => (c ? c.getHexString() : '');
+  const alike = (m) => { const k = [m.type, m.map ? m.map.uuid : '', hex(m.color), m.vertexColors, m.side, m.alphaTest, m.flatShading, hex(m.emissive), m.customProgramCacheKey()].join('|'); if (!same.has(k)) same.set(k, m); return same.get(k); };
+  root.traverse((o) => {
+    if (!o.isMesh || o.isSkinnedMesh || o.isInstancedMesh || o.userData.ink || !o.parent || !o.parent.isBone || !o.visible || Array.isArray(o.material)) return;
+    const g = o.geometry; o.updateMatrix();
+    if (Object.keys(g.morphAttributes).length || g.groups.length || o.matrix.determinant() < 0) return;
+    const m = alike(o.material), attrs = Object.keys(g.attributes).sort().map((n) => n + g.attributes[n].itemSize + g.attributes[n].array.constructor.name + g.attributes[n].normalized).join();
+    const key = [o.parent.uuid, m.uuid, !!g.index, attrs].join('|');
+    if (!sets.has(key)) sets.set(key, { list: [], m });
+    sets.get(key).list.push(o);
+  });
+  for (const { list, m } of sets.values()) {
+    if (list.length < 2) continue;
+    const geo = mergeGeometries(list.map((o) => o.geometry.clone().applyMatrix4(o.matrix)), false);
+    if (!geo) continue;
+    const one = new THREE.Mesh(geo, m), first = list[0], bone = first.parent;
+    one.castShadow = first.castShadow; one.receiveShadow = first.receiveShadow; one.frustumCulled = false;
+    bone.add(one);
+    for (const o of list) bone.remove(o);
+  }
+}
 
 export const WEAPONS = {
   fists: { dmg: 7, range: 1.7, time: 0.5, hitAt: 0.24, stam: 6, anim: 'punch', bleed: 0.2, weight: 0.6, surf: 'flesh' },
@@ -37,12 +63,13 @@ export class Player {
     this.projectiles = []; this.stuck = [];
     this.spawn = new THREE.Vector3();
     // Vanaj is about fifteen: a lean, half-grown boy of ~1.55 m, not a grown man
-    this.body = buildHumanoid({ hair: 'shaggy', cloth: 'wrap', clothTex: g.T.ragCloth, skinColor: '#a0714e', skinKey: 'skin-player', lean: 0.95, build: 'teen', sculpt: true, proportions: 'teen', outline: 0.0055, detail: g.q.name === 'Low' ? 1.5 : 1, scale: 0.94 });
+    this.body = buildHumanoid({ hair: 'shaggy', cloth: 'wrap', clothTex: g.T.ragCloth, skinColor: '#a0714e', skinKey: 'skin-player', lean: 0.95, build: 'teen', sculpt: true, proportions: 'teen', outline: 0.0055, detail: g.q.bodyDetail, scale: 0.94 });
     g.scene.add(this.body.root);
     this.bodyMats = new Set(); this.body.root.traverse((o) => { if (o.isMesh) this.bodyMats.add(o.material); });
     this.W3 = buildWeapons(g.T);
     this.canopy = new Canopy(this);   // climbing, hanging and swinging in the trees
     this.pack = this.body.j.pack ? new Pack(this.body.j.pack) : null;   // what he carries, tied on his back
+    this.applyQuality();
     this.dip = { x: 0, v: 0 }; this.lean = { x: 0, v: 0 }; this.look = { t: 0, target: null, pt: new THREE.Vector3() };
     if (PAINTED) for (const k in this.W3) if (this.W3[k]) toonify(this.W3[k], { outline: 0.008, soften: 2 });
     // first-person viewmodel
@@ -80,7 +107,7 @@ export class Player {
       m.rotation.set(Math.PI / 2, 0, 0); m.position.set(0, -0.075, -(grip[w] || 0));
       if (w === 'bow') { m.rotation.set(Math.PI / 2, 0, 0); m.position.set(0, -0.07, 0); handL.add(m); }
       else handR.add(m);
-      m.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+      m.traverse((o) => { if (o.isMesh) o.castShadow = !this.g.q.lean; });
     };
     attach(this.W3, j.handR, j.handL);
     // first-person grips: the forearm points forward, so weapons run along the fingers (-y), tilted up
@@ -101,12 +128,26 @@ export class Player {
     if (this.vmFlame.visible) { this.vmW.torch.userData.firePoint.add(this.vmFlame); this.vmFlame.position.set(0, 0.03, 0); }
     this.aim = 0; this.draw = 0;
   }
+  // On a lean level only the body itself casts a shadow and has an outline. His hair, clothes and pack are a dozen draw calls more, each of
+  // them twice over for the shadow, and at a phone's size the outline of the body is the one that reads. The pieces of his clothes on
+  // each bone are one mesh, too (they are made apart, and each never moves on its bone).
+  applyQuality() {
+    const low = this.g.q.lean;
+    if (this.pack) this.pack.lean = low;
+    if (low && !this.rigidMerged) { this.rigidMerged = true; mergeOnBones(this.body.root); }
+    this.body.root.traverse((o) => {
+      if (!o.isMesh) return;
+      if (o.userData.ink) o.visible = !low || (o.parent && o.parent.name === 'Body');
+      else if (o.name !== 'Body') o.castShadow = !low;
+    });
+    for (const k in this.W3) if (this.W3[k]) this.W3[k].traverse((o) => { if (o.userData.ink) o.visible = !low; });
+  }
   setView(v) {
     this.view = v;
     const fpp = v === 'fpp';
     for (const m of this.bodyMats) { m.colorWrite = !fpp; m.depthWrite = !fpp; }
     if (this.pack) this.pack.group.visible = !fpp;
-    for (const k in this.W3) if (this.W3[k]) this.W3[k].traverse((o) => { if (o.isMesh) { o.material.colorWrite = true; o.visible = !fpp; } });
+    for (const k in this.W3) if (this.W3[k]) this.W3[k].traverse((o) => { if (o.isMesh) { o.material.colorWrite = true; o.visible = !fpp && !(o.userData.ink && this.g.q.lean); } });
   }
   // ----------------------------------------------------------------------------------------- update
   update(dt, input) {
@@ -358,10 +399,13 @@ export class Player {
     this.body.root.position.y += Math.min(0, spring(this.dip, 0, 0.09, dt));
     this.body.root.rotation.set(0, this.bodyYaw + Math.PI, cm ? 0 : this.lean.x);
     if (cm === 'hang') { _qt.setFromUnitVectors(_up0, this.canopy.pose.up); this.body.root.quaternion.premultiply(_qt); }   // hang along the arm
-    this.body.root.updateMatrixWorld(true);
-    animateHumanoid(this.body, dt, anim);
+    // On a lean level his limbs are posed no oftener than 30 times a second (his body still moves every frame). In the trees it is every
+    // frame, where the hands must stay on the branch. Posing him is the costliest single thing in a frame's game logic.
+    this._poseDt = (this._poseDt || 0) + dt;
+    const posed = cm || this._poseDt >= g.q.poseStep - 0.002;
+    if (posed) { this.body.root.updateMatrixWorld(true); animateHumanoid(this.body, this._poseDt, anim); this._poseDt = 0; }
     // footsteps land when a foot does (the old timer ran at speed/0.7 a second: twice a real cadence, out of step)
-    if (this.onGround && !this.climb && !this.canopy.mode && this.speed > 0.6) {
+    if (posed && this.onGround && !this.climb && !this.canopy.mode && this.speed > 0.6) {
       const run = clamp((this.speed - 3) / 4, 0, 1);
       if (this.stepFeet(dt)) { g.audio.footstep(this.surface(), this.crouch ? 0.35 : 0.6 + run * 0.5, null, run); if (this.sprinting && Math.random() < 0.3) g.fx.dust(this.pos, 0.5); }
     } else if (this.swimming && this.speed > 0.3) { this.footPhase += dt * 0.8; if (this.footPhase > 1) { this.footPhase = 0; g.audio.footstep('water', 0.6); } }

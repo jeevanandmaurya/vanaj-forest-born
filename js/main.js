@@ -9,6 +9,7 @@ import { PerfOverlay } from './core/perf.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { Pass } from 'three/addons/postprocessing/Pass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { G } from './core/shaderlib.js';
@@ -39,17 +40,46 @@ import { Music } from './audio/music.js';
 import { Inventory, Pickups, ITEMS, RECIPES } from './game/items.js';
 import { Story } from './game/story.js';
 import { UI } from './game/ui.js';
-import { TouchControls, isTouchDevice } from './game/touch.js';
-import { SketchBook, PANELS } from './game/sketch.js';
+import { TouchControls, isTouchDevice, canFullscreen, isFullscreen, goFullscreen } from './game/touch.js';
+import { Plates, PLATE_COUNT } from './game/sketch.js';
+import { IntroSound } from './audio/intro.js';
 import { Lessons } from './game/lessons.js';
 
 const _grv = new THREE.Vector3(), _grd = new THREE.Vector3(), _grc = new THREE.Color();
+// Low is the phone level at 60 FPS, and what it costs is mostly draw calls, each of which takes three.js some 15 microseconds on a
+// laptop and several times that on a phone, before its GPU does anything. What each extra setting does:
+// lean: the light forms of everything: trees, ground shader, near trees, small props casting no shadow, post-processing in one pass.
+// shadowEvery: redraw the shadow map every Nth frame while he stands still. softShadow: 17 shadow samples a pixel, or 4 if false.
+// treeVariants: how many shapes of each species are in use (teak has one more: each shape is two or four more draw calls). farOneShape:
+// past the near trees, only one shape of each. treeThin: the share of trees kept in the outer half of the view.
+// chunkSegs: cells a side in a ground chunk: beside him, one further, the rest. farSegs: the same for the map-wide ground mesh.
+// waterFine, waterFar: how far water is drawn in full, and at all. fireLights: lights for fires and torches: every pixel of every lit
+// surface pays for each, on or off. nearMax, nearR: how many soft near trees, and how far (0: only the one he is climbing).
+// animalDraw, inkDraw, animalShadow: metres at which an animal is drawn, is outlined, casts a shadow (villagers too).
+// aiNear, aiMid: metres out to which animals think every frame, then at 15 Hz; beyond that 7 Hz and 4 Hz. actorR: metres out to
+// which they move through the physics world. animStep: seconds between poses for an animal 20 m away, doubled past 50 m.
+// physStep, poseStep: seconds between steps of the physics world, and between poses of his body. bodyDetail, npcDetail: cell size of the
+// sculpted bodies, at loading (3 is about a ninth of the triangles of 1).
 const QUALITY = {
-  low: { name: 'Low', pr: 0.7, shadow: 1024, shadowDist: 40, treeNear: 50, treeFar: 360, grassR: 26, grassDensity: 0.45, grassCap: 4000, bloom: false, chunkR: 3, env: false, treeCap0: 900, treeCap1: 4000, rainDrops: 2500, aa: false },
-  medium: { name: 'Medium', pr: 1.0, shadow: 2048, shadowDist: 55, treeNear: 75, treeFar: 520, grassR: 38, grassDensity: 0.75, grassCap: 7000, bloom: true, chunkR: 4, env: true, treeCap0: 1300, treeCap1: 6500, rainDrops: 4000, aa: false },
-  high: { name: 'High', pr: 1.25, shadow: 2048, shadowDist: 70, treeNear: 125, treeFar: 700, grassR: 52, grassDensity: 1.0, grassCap: 10000, bloom: true, chunkR: 5, env: true, treeCap0: 1800, treeCap1: 9000, rainDrops: 5000, aa: true },
-  ultra: { name: 'Ultra', pr: 2.0, shadow: 4096, shadowDist: 90, treeNear: 170, treeFar: 900, grassR: 68, grassDensity: 1.3, grassCap: 16000, bloom: true, chunkR: 6, env: true, treeCap0: 2600, treeCap1: 13000, rainDrops: 6000, aa: true },
+  low: { name: 'Low', lean: true, pr: 0.7, shadow: 1024, shadowDist: 30, shadowEvery: 2, softShadow: false, farPics: true, treeNear: 36, treeFar: 230, treeVariants: 1, farOneShape: true, treeThin: 0.7, grassR: 24, grassDensity: 0.4, grassCap: 2500, bloom: false, chunkR: 2, chunkSegs: [56, 24, 12], farSegs: 160, waterFine: 90, waterFar: 500, fireLights: 1, env: false, treeCap0: 500, treeCap1: 2400, rainDrops: 1200, aa: false, animalDraw: 120, inkDraw: 24, animalShadow: 22, aiNear: 20, aiMid: 90, actorR: 20, animStep: 0.05, physStep: 1 / 30, poseStep: 1 / 30, ropeMax: 12, looseR: 14, nearMax: 1, nearR: 0, bodyDetail: 3, npcDetail: 3.2 },
+  medium: { name: 'Medium', farPics: true, pr: 1.0, shadow: 2048, shadowDist: 55, treeNear: 75, treeFar: 520, grassR: 38, grassDensity: 0.75, grassCap: 7000, bloom: true, chunkR: 4, waterFine: 220, env: true, treeCap0: 1300, treeCap1: 6500, rainDrops: 4000, aa: false, animalDraw: 240, inkDraw: 45, animalShadow: 55, aiNear: 60, aiMid: 120, actorR: 45, animStep: 0.033, nearMax: 5, nearR: 22 },
+  high: { name: 'High', pr: 1.25, shadow: 2048, shadowDist: 70, treeNear: 125, treeFar: 700, grassR: 52, grassDensity: 1.0, grassCap: 10000, bloom: true, chunkR: 5, waterFine: 300, env: true, treeCap0: 1800, treeCap1: 9000, rainDrops: 5000, aa: true, animalDraw: 340, inkDraw: 70, animalShadow: 55, aiNear: 90, aiMid: 150, actorR: 45, animStep: 0.016, nearMax: 7, nearR: 26 },
+  ultra: { name: 'Ultra', pr: 2.0, shadow: 4096, shadowDist: 90, treeNear: 170, treeFar: 900, grassR: 68, grassDensity: 1.3, grassCap: 16000, bloom: true, chunkR: 6, waterFine: 400, env: true, treeCap0: 2600, treeCap1: 13000, rainDrops: 6000, aa: true, animalDraw: 420, inkDraw: 110, animalShadow: 70, aiNear: 90, aiMid: 200, actorR: 45, animStep: 0, nearMax: 8, nearR: 30 },
 };
+// what the levels above don't set: everything at full
+const LEVEL_DEFAULTS = { farPics: false, lean: false, shadowEvery: 1, softShadow: true, treeVariants: 99, farOneShape: false, treeThin: 1, chunkSegs: [128, 32, 16], physStep: 0, poseStep: 0, ropeMax: 44, looseR: 26, farSegs: 256, fireLights: 3, bodyDetail: 1, npcDetail: 1.7 };
+for (const k in QUALITY) QUALITY[k] = { ...LEVEL_DEFAULTS, ...QUALITY[k] };
+// Medium on a phone, for 30 FPS: twice Low's time to spend a frame, so about twice Low's work, not the 4.8 million triangles, bloom and
+// edge smoothing of Medium on a computer. It has the further view, more shapes of tree, more grass and longer shadows.
+const PHONE_LEVEL = {
+  medium: { lean: true, shadow: 1536, shadowDist: 32, softShadow: false, treeNear: 44, treeFar: 330, treeVariants: 1, farOneShape: true, treeThin: 0.85, grassR: 30, grassDensity: 0.55, grassCap: 4000, bloom: false, chunkR: 2, chunkSegs: [64, 32, 16], farSegs: 160, waterFine: 120, waterFar: 900, fireLights: 1, treeCap0: 800, treeCap1: 3600, rainDrops: 2000, animalDraw: 170, inkDraw: 35, animalShadow: 22, aiNear: 24, aiMid: 100, actorR: 24, animStep: 0.05, physStep: 1 / 30, poseStep: 1 / 30, ropeMax: 14, looseR: 18, nearMax: 1, nearR: 0, bodyDetail: 2, npcDetail: 2.6 },
+};
+const levelOf = (name) => (QUALITY[name] && isTouchDevice() ? { ...QUALITY[name], ...PHONE_LEVEL[name] } : QUALITY[name]);
+// Low's shadow filter: four samples in a small rotated square in place of three.js's one (a hard, stepped edge) on the "basic"
+// shadow type. It costs about a quarter of the soft filter's seventeen, on every pixel of ground and bark.
+THREE.ShaderChunk.shadowmap_pars_fragment = THREE.ShaderChunk.shadowmap_pars_fragment.replace('shadow = texture2DCompare( shadowMap, shadowCoord.xy, shadowCoord.z );', `vec2 st = 0.75 / shadowMapSize;
+      shadow = 0.25 * ( texture2DCompare( shadowMap, shadowCoord.xy + st * vec2( -0.4, -1.0 ), shadowCoord.z ) + texture2DCompare( shadowMap, shadowCoord.xy + st * vec2( 1.0, -0.4 ), shadowCoord.z )
+        + texture2DCompare( shadowMap, shadowCoord.xy + st * vec2( 0.4, 1.0 ), shadowCoord.z ) + texture2DCompare( shadowMap, shadowCoord.xy + st * vec2( -1.0, 0.4 ), shadowCoord.z ) );`);
 const $ = (id) => document.getElementById(id);
 // one painted frame (a timer stands in when the tab is hidden and gets no animation frames)
 const nextFrame = () => new Promise((r) => { requestAnimationFrame(() => r()); setTimeout(r, 100); });
@@ -76,15 +106,50 @@ class Input {
 }
 
 const GradeShader = {
-  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uVig: { value: 0.9 }, uGrain: { value: 0.012 }, uHurt: { value: 0 }, uLow: { value: 0 }, uFlash: { value: 0 }, uUnder: { value: 0 }, uNight: { value: 0 }, uTint: { value: new THREE.Vector3(1, 1, 1) }, uSat: { value: 1.05 }, uHeat: { value: 0 }, uBlur: { value: 0 } },
+  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uVig: { value: 0.9 }, uGrain: { value: 0.012 }, uHurt: { value: 0 }, uLow: { value: 0 }, uFlash: { value: 0 }, uUnder: { value: 0 }, uNight: { value: 0 }, uTint: { value: new THREE.Vector3(1, 1, 1) }, uSat: { value: 1.05 }, uHeat: { value: 0 }, uBlur: { value: 0 }, uExposure: { value: 1 } },
   vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-  fragmentShader: `uniform sampler2D tDiffuse; uniform float uTime, uVig, uGrain, uHurt, uLow, uFlash, uUnder, uNight, uSat, uHeat, uBlur; uniform vec3 uTint; varying vec2 vUv;
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float uTime, uVig, uGrain, uHurt, uLow, uFlash, uUnder, uNight, uSat, uHeat, uBlur, uExposure; uniform vec3 uTint; varying vec2 vUv;
     float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    #ifdef FINAL
+    // three.js's neutral tone mapping and sRGB encoding, as its output pass would do them in a pass of their own
+    vec3 neutral(vec3 color){
+      float x = min(color.r, min(color.g, color.b)), offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+      color -= offset;
+      float peak = max(color.r, max(color.g, color.b));
+      if (peak < 0.76) return color;
+      float d = 0.24, newPeak = 1.0 - d * d / (peak + d - 0.76);
+      color *= newPeak / peak;
+      float g = 1.0 - 1.0 / (0.15 * (peak - newPeak) + 1.0);
+      return mix(color, vec3(newPeak), g);
+    }
+    vec3 encode(vec3 v){ return mix(pow(v, vec3(0.41666)) * 1.055 - 0.055, v * 12.92, vec3(lessThanEqual(v, vec3(0.0031308)))); }
+    // FXAA, the small form: the jagged edges of the cut-out leaves and of a picture drawn at a phone's lower size, smoothed in this same pass. Looks at the four
+    // corners, and only an edge pays for more. (4x MSAA was measured on a Mali-G57: 58 to 37 FPS. In WebGL it has to be resolved from a target of its own.)
+    float lm(vec3 c){ return sqrt(dot(c, vec3(0.299, 0.587, 0.114))); }
+    vec3 fxaa(vec2 uv){
+      vec2 px = 1.0 / vec2(textureSize(tDiffuse, 0));
+      vec3 M = texture2D(tDiffuse, uv).rgb;
+      float m = lm(M), nw = lm(texture2D(tDiffuse, uv + px * vec2(-0.5, -0.5)).rgb), ne = lm(texture2D(tDiffuse, uv + px * vec2(0.5, -0.5)).rgb), sw = lm(texture2D(tDiffuse, uv + px * vec2(-0.5, 0.5)).rgb), se = lm(texture2D(tDiffuse, uv + px * vec2(0.5, 0.5)).rgb);
+      float lo = min(m, min(min(nw, ne), min(sw, se))), hi = max(m, max(max(nw, ne), max(sw, se)));
+      if (hi - lo < max(0.03, hi * 0.1)) return M;
+      vec2 dir = vec2(-((nw + ne) - (sw + se)), (nw + sw) - (ne + se));
+      float k = 1.0 / (min(abs(dir.x), abs(dir.y)) + max((nw + ne + sw + se) * 0.03125, 0.0078125));
+      dir = clamp(dir * k, -6.0, 6.0) * px;
+      vec3 A = 0.5 * (texture2D(tDiffuse, uv - dir * 0.1667).rgb + texture2D(tDiffuse, uv + dir * 0.1667).rgb);
+      vec3 B = A * 0.5 + 0.25 * (texture2D(tDiffuse, uv - dir * 0.5).rgb + texture2D(tDiffuse, uv + dir * 0.5).rgb);
+      float b = lm(B);
+      return b < lo || b > hi ? A : B;
+    }
+    #endif
     void main(){
       vec2 uv = vUv;
       if (uHeat > 0.0) uv += vec2(sin(uv.y * 90.0 + uTime * 3.1), cos(uv.x * 70.0 + uTime * 2.3)) * 0.0011 * uHeat * smoothstep(0.65, 0.2, uv.y);
       if (uUnder > 0.0) uv += vec2(sin(uv.y * 30.0 + uTime * 2.0), cos(uv.x * 25.0 + uTime * 1.7)) * 0.003 * uUnder;
+      #ifdef FINAL
+      vec3 c = fxaa(uv);
+      #else
       vec3 c = texture2D(tDiffuse, uv).rgb;
+      #endif
       if (uBlur > 0.0) { vec3 b = vec3(0.0); for (int i = 0; i < 6; i++) { float a = float(i) * 1.047; b += texture2D(tDiffuse, uv + vec2(cos(a), sin(a)) * 0.004 * uBlur).rgb; } c = mix(c, b / 6.0, 0.7); }
       float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
       c = mix(vec3(l), c, uSat);
@@ -96,10 +161,22 @@ const GradeShader = {
       c = mix(c, c * vec3(1.35, 0.35, 0.3), uHurt * smoothstep(0.05, 0.35, v));
       c = mix(c, vec3(l) * 0.9, uLow * 0.75);
       c += vec3(0.75, 0.82, 1.0) * uFlash * 0.5;
+      #ifdef FINAL
+      gl_FragColor = vec4(encode(clamp(neutral(max(c, 0.0) * uExposure), 0.0, 1.0)), 1.0);
+      #else
       c += (h(vUv * 1024.0 + fract(uTime) * 37.0) - 0.5) * uGrain * (0.4 + l);
       gl_FragColor = vec4(max(c, 0.0), 1.0);
+      #endif
     }`,
 };
+// The grade and the output in one pass, for Low: one full-screen pass and one render target fewer
+const FinalGradeShader = { ...GradeShader, defines: { FINAL: 1 } };
+// A phone's tile-based GPU writes every buffer it has drawn out to memory when a pass ends, unless it is told a buffer is finished
+// with. Nothing reads the scene's depth again, and writing it out is a real share of what drawing a frame costs in memory traffic.
+class DropDepth extends Pass {
+  constructor() { super(); this.needsSwap = false; }
+  render(r, w, read) { r.setRenderTarget(read); const gl = r.getContext(); gl.invalidateFramebuffer(gl.FRAMEBUFFER, [gl.DEPTH_ATTACHMENT]); }
+}
 
 class Game {
   constructor() {
@@ -109,14 +186,25 @@ class Game {
     this.season = 'winter'; this.seasonCfg = SEASONS.winter;
     this.camps = []; this.flags = {}; this.npcs = [];
     this.settings = Object.assign({ quality: 'medium', sens: 1, invert: false, fov: 72, view: 'tpp', master: 0.9, music: 0.7, density: 1, perf: 'off' }, store.get('vanaj-settings') || {});
+    // (a phone held sideways is about twice as wide as it is high: 72 degrees up and down is 116 across, far more than the eye wants on a small screen and
+    // far more to draw. 72 was the old default for everyone, so a saved 72 counts as not chosen.)
+    if (isTouchDevice() && this.settings.fov === 72) this.settings.fov = 58;
     const qp = new URLSearchParams(location.search);
-    // phones and tablets start on Low (unless a quality was chosen) and draw at CSS-pixel resolution
+    // phones and tablets start on Medium (unless a quality was chosen) and draw at CSS-pixel resolution
     const touch = isTouchDevice(), chosen = (store.get('vanaj-settings') || {}).qualityChosen;
-    this.q = { ...(QUALITY[qp.get('q') || (touch && !chosen ? 'low' : this.settings.quality)] || QUALITY.medium) };
+    this.q = { ...(levelOf(qp.get('q') || (touch && !chosen ? 'medium' : this.settings.quality)) || levelOf('medium')) };
     this.prFixed = qp.get('pr') ? +qp.get('pr') : touch ? 1 : 0;   // a render scale that no quality level may change
     if (this.prFixed) this.q.pr = this.prFixed;
+    this.fpsParam = qp.has('fps') ? +qp.get('fps') : undefined;
+    this.pickFrameLimit();
     this.noRender = qp.has('norender'); if (this.noRender) { this.q.env = false; }
     this.cooldowns = new Map();
+  }
+  // The frame rate to hold. On a phone: 60 on Low and Medium, 30 above that, unless Settings says otherwise. A steady 30 is kinder to a
+  // phone than an uneven 45, which heats it up until it slows down. On a computer: as fast as the screen goes (0).
+  pickFrameLimit() {
+    this.fpsCap = this.fpsParam ?? this.settings.fps ?? (isTouchDevice() ? (this.q.lean ? 60 : 30) : 0);
+    this.nextFrameT = 0;
   }
   // -------------------------------------------------------------------------------- events
   on(ev, fn) { (this.listeners[ev] = this.listeners[ev] || []).push(fn); return () => { const a = this.listeners[ev]; const i = a.indexOf(fn); if (i >= 0) a.splice(i, 1); }; }
@@ -131,20 +219,21 @@ class Game {
     await prog(0.02, 'Waking the renderer');
     const physReady = initPhysics();   // Rapier's WASM compiles while the world builds
     const q = this.q;
-    const renderer = this.renderer = new THREE.WebGLRenderer({ antialias: q.aa, powerPreference: 'high-performance', stencil: false });
+    // (no depth buffer on the page's own canvas: the scene draws into the composer's target, and only full-screen passes reach this one)
+    const renderer = this.renderer = new THREE.WebGLRenderer({ antialias: q.aa, powerPreference: 'high-performance', stencil: false, depth: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, q.pr));
-    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setSize(window.innerWidth, window.innerHeight, false);   // (the page's style sheet makes it fill the screen: see resize())
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     // the painted look keeps its palette's colours as painted: neutral tone mapping, not filmic
     renderer.toneMapping = PAINTED ? THREE.NeutralToneMapping : THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = PAINTED ? 1 : 0.9;
-    renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.enabled = true; renderer.shadowMap.type = q.softShadow ? THREE.PCFSoftShadowMap : THREE.BasicShadowMap;
     $('app').prepend(renderer.domElement); renderer.domElement.id = 'gl';
     this.perf = new PerfOverlay(renderer, { mode: new URLSearchParams(location.search).get('perf') || this.settings.perf, onChange: (m) => { this.settings.perf = m; store.set('vanaj-settings', this.settings); const sel = $('set-perf'); if (sel) sel.value = m; } });
     this.scene = new THREE.Scene();
     this.scene.fog = new THREE.FogExp2(0x888888, 0.0001);
     this.camera = new THREE.PerspectiveCamera(this.settings.fov, window.innerWidth / window.innerHeight, 0.1, 4200);
     this.input = new Input(renderer.domElement);
-    this.audio = new AudioEngine();
+    this.audio = new AudioEngine({ lite: isTouchDevice() });
     this.ui = new UI(this); this.ui.init();
     if (isTouchDevice()) this.touchUI = new TouchControls(this);
     await prog(0.06, 'Painting bark, leaves and leaf litter');
@@ -160,19 +249,21 @@ class Game {
     await prog(0.44, 'Shaping the trees close at hand');
     this.near = new NearTrees(this); this.near.prebuild(); this.ropes = new Ropes(this);
     await prog(0.5, 'Placing rocks, termite mounds, the den, the shrine and the village');
-    this.props = new Props(this.scene, this.T, this.veg); this.props.build();
-    this.groundAO = new GroundAO(256);
+    this.props = new Props(this.scene, this.T, this.veg, q); this.props.build();
+    // the props stand still, so the matrix of each need not be worked out again every frame
+    this.props.group.updateMatrixWorld(true); this.props.group.traverse((o) => { o.matrixAutoUpdate = false; });
+    this.groundAO = new GroundAO(q.lean ? 128 : 256);
     this.veg.onRebuild = (rect, trees) => this.groundAO.update(rect, trees, this.props.colliders || []);
     await prog(0.62, 'Filling the Pench river and Totladoh');
-    this.water = new Water(this.scene);
+    this.water = new Water(this.scene, q);
     this.sky = new SkySystem(this.scene, renderer, q); if (this.noRender) this.sky.sampleOk = false;
     this.weather = new Weather(this.scene, q, this.audio);
-    this.fx = new FX(this.scene, this.T);
+    this.fx = new FX(this.scene, this.T, q);
     this.pickups = new Pickups(this.scene, this.T);
     await prog(0.66, 'Bringing in the chital, sambar, gaur and dholes');
     await Promise.all([loadRigs(), loadHumanRig()]);
-    prebuildBodies(q.name === 'Low' ? 2.2 : 1.7);   // the villagers' bodies, once each (about 1.5 s)
-    this.eco = new Ecosystem(this.scene);
+    prebuildBodies(q.npcDetail);   // the villagers' bodies, once each (about 1.5 s)
+    this.eco = new Ecosystem(this.scene, q);
     this.birds = new Birds(this.scene, this);
     this.tracks = new Tracks(this.scene, this);
     this.places = new PlaceTracker(document.getElementById('place'));
@@ -189,25 +280,42 @@ class Game {
     this.terrain.update(this.player.pos.x, this.player.pos.z, 1e9, true);
     this.veg.update(this.player.pos, true); this.grass.update(this.player.pos, true); this.cover.update(this.player.pos, true); this.pickups.update(this.player.pos, true);
     await prog(0.82, 'Waking the physics');
-    await physReady; this.phys = new Physics(this); this.phys.buildProps(this.props); this.phys.sync(this.player.pos, true);
-    this.loose = new LooseThings(this.scene, this.phys);
+    await physReady; this.phys = new Physics(this); this.phys.buildProps(this.props); this.props.mergeStatic(); this.phys.sync(this.player.pos, true);
+    this.loose = new LooseThings(this.scene, this.phys, q);
+    this.applySmallShadows();
     await prog(0.86, 'Post-processing');
     this.buildComposer();
     this.setSeason('winter', 'mist'); this.setTime(6.5);
     await prog(0.92, 'Compiling shaders');
     this.near.update(this.player.pos, 0.016); this.near.t = 0;   // so the near trees' shaders compile with the rest
     try { this.sky.update(0.016, this.time.hour, this.seasonCfg.decl, this.weather.env, this.camera, this.player.pos, this.season); if (!this.noRender) this.warmShaders(); } catch (e) { console.warn(e); }
+    this.veg.warmed = true;   // (tree meshes with nothing to draw can now leave the scene: their shaders are compiled)
     this.titleShot(4); { const c = this.camera.position; this.terrain.update(c.x, c.z, 1e9, true); this.veg.update(c, true); this.grass.update(c, true); }
+    await prog(0.95, 'Grinding the colours');
+    // the opening's paintings, finished now so that Begin shows them at once (js/game/sketch.js)
+    if (!this.noRender) { this.plates = new Plates(); for (let i = 0; i < PLATE_COUNT; i++) { this.plates.paint(i); await new Promise((r) => setTimeout(r, 0)); } }
     await prog(0.97, 'Tuning the bansuri');
     this.inMenu = true; this.startAudio(); this.audio.setWorld(false, 0); if (this.music) this.music.titleStart();
     await prog(1, 'Ready');
     window.addEventListener('resize', () => this.resize());
     this.setupMenus();
+    await this.offerFullscreen();
     $('loading').classList.add('hide');
     $('title').classList.add('show');
+    this.started = true; if (this.touchUI) this.touchUI.noteTurn();
     this.titleCam = 4;   // past the reach's opening dip to black
     this.last = performance.now();
     requestAnimationFrame((t) => this.frame(t));
+  }
+  // Loading is done. A phone needs a first tap in any case (a browser allows sound and full screen only from one), so this is where full
+  // screen is offered, in the loading screen itself as its bar finishes. Staying in the browser is remembered, and Settings has it after that.
+  offerFullscreen() {
+    if (!this.touch || !canFullscreen() || isFullscreen() || this.settings.stayInBrowser) return null;
+    return new Promise((done) => {
+      $('loading').classList.add('ready');
+      $('go-full').onclick = () => { goFullscreen(); done(); };
+      $('go-stay').onclick = () => { this.settings.stayInBrowser = true; store.set('vanaj-settings', this.settings); done(); };
+    });
   }
   // The title drifts down the Pench along its edges: over the water a few metres out from one bank, sweeping
   // slowly across to the other, always looking downstream (south). The reach runs 1.5-2.9 km from the village at
@@ -242,15 +350,19 @@ class Game {
       const h = buildHumanoid({ skinColor: 0x9a6a4a, hair: 'short', skinKey: 'skin-npc' + k, ...o });
       h.root.position.set(P.x + 4 + k, P.y, P.z); this.scene.add(h.root); h.root.updateMatrixWorld(true); return h;
     });
+    if (this.veg.far) this.veg.far.tick(r, this.sky, 0);
     r.setRenderTarget(this.composer.renderTarget1); r.compile(this.scene, cam); r.setRenderTarget(null);
     this.composer.render(0.016);
     for (const a of extra) this.eco.remove(a);
     this.scene.remove(npc.root); for (const h of others) this.scene.remove(h.root);
   }
   buildComposer() {
-    const r = this.renderer, w = window.innerWidth, h = window.innerHeight;
+    const r = this.renderer, [w, h] = this.viewSize();
     this.godrays = this.bloom = this.smaa = null;
-    const rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: this.q.aa ? 4 : 0 });
+    // Lean: 8-bit sRGB (half the memory traffic of half-float, and no banding, for a picture with no bloom to need the extra range),
+    // and the grade and output as one pass
+    const lean = PAINTED && this.q.lean;
+    const rt = new THREE.WebGLRenderTarget(w, h, lean ? { type: THREE.UnsignedByteType, colorSpace: THREE.SRGBColorSpace, samples: 0 } : { type: THREE.HalfFloatType, samples: this.q.aa ? 4 : 0 });
     this.composer = new EffectComposer(r, rt);
     // (given its own target, the composer assumes a render scale of 1: Low drew the whole scene at full size, then squeezed
     // it into its smaller canvas, paying full price for a blurrier picture)
@@ -261,49 +373,91 @@ class Game {
       this.godrays.material.defines.GR_SAMPLES = this.q.name === 'Medium' ? 20 : 30;
       this.composer.addPass(this.godrays);
     }
-    const vm = new RenderPass(this.player.vmScene, this.player.vmCam); vm.clear = false; vm.clearDepth = true; this.composer.addPass(vm);
+    const vm = this.vmPass = new RenderPass(this.player.vmScene, this.player.vmCam); vm.clear = false; vm.clearDepth = true; this.composer.addPass(vm);
+    if (lean) this.composer.addPass(new DropDepth());
     if (this.q.bloom) { this.bloom = new UnrealBloomPass(new THREE.Vector2(w / 2, h / 2), 0.32, 0.55, 0.92); this.composer.addPass(this.bloom); }
-    this.grade = new ShaderPass(GradeShader); this.composer.addPass(this.grade);
+    this.grade = new ShaderPass(lean ? FinalGradeShader : GradeShader); this.composer.addPass(this.grade);
     if (PAINTED) { this.grade.uniforms.uGrain.value = 0; this.grade.uniforms.uVig.value = 0.45; }
-    this.composer.addPass(new OutputPass());
-    if (!this.q.aa && this.q.name !== 'Low') { this.smaa = new SMAAPass(w * r.getPixelRatio(), h * r.getPixelRatio()); this.composer.addPass(this.smaa); }
+    if (!lean) this.composer.addPass(new OutputPass());
+    if (!this.q.aa && !this.q.lean) { this.smaa = new SMAAPass(w * r.getPixelRatio(), h * r.getPixelRatio()); this.composer.addPass(this.smaa); }
   }
-  // On a phone, trade sharpness for smoothness: phones vary too much to guess, and they slow down as they heat up. Every few
-  // seconds the render scale steps down if frames are running slow, and back up if there is plenty to spare.
-  keepFrameRate(rdt, t) {
-    const F = this.fps || (this.fps = { n: 0, ms: 0, last: t, scale: 1 }), gap = t - F.last; F.last = t;
+  // Holding the frame rate on a phone. Phones vary too much to guess, and they slow down as they heat up, so once a second this looks at
+  // how the last second went. Late, with the game's own code taking most of the frame, the CPU is the limit, and less is drawn and
+  // worked out (setDetail); late with time to spare in the code, the GPU is, and the picture is drawn smaller (and then less again, if
+  // it is already as small as it should go). Back up, a step at a time, after a good run, and only after a longer one each time going
+  // back up turned out to be too much.
+  holdFrameRate(t, busy) {
+    const A = this.auto || (this.auto = { n: 0, ms: 0, busy: 0, last: t, scale: 1, detail: 0, ok: 0, wait: 4, raised: false, settle: 0 }), gap = t - A.last; A.last = t;
     if (gap > 250) return;   // (a stall or a return from the background is not a slow frame)
-    F.n++; F.ms += gap;
-    if (F.n < 90) return;
-    const avg = F.ms / F.n; F.n = 0; F.ms = 0;
-    const next = avg > 38 ? Math.max(0.55, F.scale - 0.15) : avg < 22 ? Math.min(1, F.scale + 0.1) : F.scale;
-    if (Math.abs(next - F.scale) < 0.01) return;
-    F.scale = next;
-    const pr = Math.min(window.devicePixelRatio || 1, this.q.pr) * next;
-    this.renderer.setPixelRatio(pr); this.renderer.setSize(window.innerWidth, window.innerHeight); this.composer.setPixelRatio(pr);
+    A.n++; A.ms += gap; A.busy += busy;
+    if (A.ms < 1000) return;
+    const avg = A.ms / A.n, job = A.busy / A.n, goal = 1000 / (this.fpsCap || 60); A.n = 0; A.ms = 0; A.busy = 0;
+    A.frame = avg; A.job = job; A.goal = goal;
+    if (A.settle > 0) { A.settle--; return; }   // (a change just made shows up in the next full second)
+    // (One bad second is a stone in the road, not a sign the phone cannot cope. Only a run of them, or a really bad one, changes anything. And below 75%
+    // the picture only gets softer: measured on a Mali-G57, 70% ran no faster than 85%.)
+    const over = avg > goal * 1.15; A.bad = over ? (A.bad || 0) + 1 : 0;
+    const late = A.bad >= 3 || avg > goal * 1.6, roomy = avg < goal * 1.04, floor = 0.75;
+    A.ok = roomy ? A.ok + 1 : 0;
+    if (late) {
+      if (A.raised) A.wait = Math.min(60, A.wait * 2);
+      A.raised = false; A.ok = 0; A.settle = 1; A.bad = 0;
+      A.limit = job > goal * 0.7 ? 'CPU' : 'GPU';
+      if (A.limit === 'GPU' && A.scale > floor) this.setRenderScale(Math.max(floor, A.scale - 0.1));
+      else if (A.detail < 3) this.setDetail(A.detail + 1);
+      else if (A.scale > floor) this.setRenderScale(Math.max(floor, A.scale - 0.1));
+    } else if (A.ok >= A.wait) {
+      A.ok = 0; A.settle = 1;
+      if (A.detail > 0) { this.setDetail(A.detail - 1); A.raised = true; }
+      else if (A.scale < 1) { this.setRenderScale(Math.min(1, A.scale + 0.1)); A.raised = true; }
+    }
+  }
+  setRenderScale(s) {
+    this.auto.scale = s;
+    const pr = Math.min(window.devicePixelRatio || 1, this.q.pr) * s;
+    this.renderer.setPixelRatio(pr); this.composer.setPixelRatio(pr);
+  }
+  // How much of the level's draw distance and business the phone can take: 0 all of it, 3 the least. Nothing here needs a shader rebuilt,
+  // so it costs no more than a short hitch. At 3 the shadows stop being drawn altogether.
+  setDetail(d) {
+    const A = this.auto, B = levelOf(this.q.name.toLowerCase()), k = [1, 0.82, 0.68, 0.55][d];
+    A.detail = d;
+    Object.assign(this.q, { treeFar: B.treeFar * k, treeNear: B.treeNear * (d ? 0.85 : 1), treeThin: B.treeThin * (1 - d * 0.1), grassR: B.grassR * (1 - d * 0.12), animalDraw: B.animalDraw * k, inkDraw: B.inkDraw * k, aiNear: B.aiNear * (1 - d * 0.15), waterFar: (B.waterFar || 900) * k, physStep: d ? 1 / 20 : B.physStep, poseStep: d ? Math.max(B.poseStep, 1 / 24) : B.poseStep, animStep: B.animStep * (1 + d * 0.5) });
+    this.veg.lastPos.set(1e9, 0, 1e9); this.grass.applyQuality(); this.props.lastCull = null; this.terrain.applyQuality();
+    this.shadowsOff = d >= 3;
+    if (this.shadowsOff) { this.sky.sun.shadow.map && this.clearShadow(); }
+  }
+  // empty the shadow map, so that nothing stays in shadow from when it was last drawn
+  clearShadow() {
+    const r = this.renderer, rt = r.getRenderTarget(), c = new THREE.Color(), a = r.getClearAlpha(); r.getClearColor(c);
+    r.setRenderTarget(this.sky.sun.shadow.map); r.setClearColor(0xffffff, 1); r.clear(); r.setRenderTarget(rt); r.setClearColor(c, a);
   }
   // Change the graphics level in the running game. All the systems read the same quality object, so it is updated in
   // place; each then adjusts what it built from it: buffers sized for the old level, the shadow map, the post-processing.
   // The settings panel is only open at the title or paused, so the short stall of rebuilding interrupts no play.
   async applyQuality(name) {
-    const Q = QUALITY[name]; if (!Q) return;
+    const Q = levelOf(name); if (!Q) return;
     const me = this._qApply = (this._qApply || 0) + 1, note = $('set-quality-note'), sel = $('set-quality');
     if (this.q.name === Q.name) { note.textContent = ''; return; }
     note.textContent = 'Applying...'; sel.disabled = true;
     try {
       await nextFrame(); if (me !== this._qApply) return;
-      const lowBefore = this.q.name === 'Low';
+      const leanBefore = this.q.lean;
       Object.assign(this.q, Q); if (this.prFixed) this.q.pr = this.prFixed;
+      this.pickFrameLimit(); this.syncFrameLimitUI && this.syncFrameLimitUI();
       const r = this.renderer, P = this.player;
       r.setPixelRatio(Math.min(window.devicePixelRatio || 1, this.q.pr));
-      r.setSize(window.innerWidth, window.innerHeight);
-      if (this.fps) this.fps.scale = 1;
+      if (this.auto) { this.auto.scale = 1; this.auto.detail = 0; this.auto.ok = 0; this.auto.wait = 4; this.shadowsOff = false; }
       for (const p of this.composer.passes) if (p.dispose) p.dispose();
       this.composer.dispose();
       this.buildComposer();
-      this.sky.applyQuality(); this.weather.applyQuality(); this.veg.applyQuality(); this.grass.applyQuality(); this.cover.applyQuality(); this.terrain.applyQuality(); this.near.applyQuality();
+      this.sky.applyQuality(); this.weather.applyQuality(); this.veg.applyQuality(); this.grass.applyQuality(); this.cover.applyQuality(); this.terrain.applyQuality(); this.near.applyQuality(); this.water.applyQuality(); this.player.applyQuality(); this.props.applyQuality(); this.fx.applyQuality(); this.applySmallShadows();
+      // the shadow filter is part of every lit material's shader
+      const st = this.q.softShadow ? THREE.PCFSoftShadowMap : THREE.BasicShadowMap;
+      if (r.shadowMap.type !== st) { r.shadowMap.type = st; this.scene.traverse((o) => { const m = o.material; if (m) for (const x of Array.isArray(m) ? m : [m]) x.needsUpdate = true; }); }
+      this.ropes.applyQuality();
       await tick();
-      if (lowBefore) { this.near.prebuild(); await tick(); }
+      if (leanBefore !== this.q.lean || !this.q.lean) { this.near.prebuild(); await tick(); }
       const focus = this.playing ? P.pos : this.camera.position, see = this.playing && !this.arrival ? this.camera.position : focus;
       this.terrain.update(focus.x, focus.z, 1e9, true); await tick();
       this.veg.update(see, true); this.grass.update(see, true); this.cover.update(see, true);
@@ -329,16 +483,30 @@ class Game {
     u.uAspect.value = cam.aspect;
     u.uTint.value.copy(G.uSunCol.value).lerp(_grc.setRGB(1, 0.85, 0.6), 0.4);
   }
+  // On a lean level the little things on the ground cast no shadow: each one is a draw call more in the shadow pass, for a shadow that can
+  // hardly be seen on a phone. (The ground's contact shading still sits under them.)
+  applySmallShadows() {
+    const lean = this.q.lean, stones = [...(this.cover.stones || []), this.loose.stones, this.loose.sticks, this.vines.stems, this.ropes.mesh, ...Object.values(this.pickups.meshes)];
+    for (const m of stones) { if (m.userData.casts === undefined) m.userData.casts = m.castShadow; m.castShadow = m.userData.casts && !lean; }
+    this.pickups.R = lean ? 2 : 3; this.pickups.last.set(1e9, 0, 1e9);
+  }
+  // How big the canvas really is on the page. While a phone is turning, window.innerWidth can still be the old width when the resize event
+  // comes, and sometimes no event comes after it. Writing that into the canvas's own style left it stuck at its upright width, filling
+  // only the left of the turned screen. So its style is left alone (the style sheet makes it fill the screen, whatever happens), what it
+  // has actually been given is what gets measured, and each frame checks that again.
+  viewSize() { const c = this.renderer.domElement; return [c.clientWidth || window.innerWidth, c.clientHeight || window.innerHeight]; }
   resize() {
-    const w = window.innerWidth, h = window.innerHeight;
-    if (this.book) this.book.resize();
-    this.renderer.setSize(w, h); this.composer.setSize(w, h);
+    const [w, h] = this.viewSize();
+    if (w === this.viewW && h === this.viewH) return;
+    this.viewW = w; this.viewH = h;
+    this.renderer.setSize(w, h, false); this.composer.setSize(w, h);
     this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
   }
   makeWorldInterface() {
     const g = this;
     return {
       get player() { return g.player; }, get phys() { return g.phys; }, get night() { return g.sky.night; }, get isDay() { return g.sky.day > 0.5; }, get season() { return g.season; },
+      get camera() { return g.camera; }, get actorR2() { return g.q.actorR * g.q.actorR; },
       fx: this.fx, audio: this.audio, veg: this.veg,
       nearestPredator: (a, r) => g.eco.nearestPredator(a, r), nearestPrey: (a, r) => g.eco.nearestPrey(a, r),
       damagePlayer: (d, from, o) => g.player.hurt(d, from, o),
@@ -374,7 +542,7 @@ class Game {
   setSeason(s, weatherState) {
     this.season = s; this.seasonCfg = SEASONS[s];
     if (PAINTED) setPaintedSeason(s);
-    this.weather.setSeason(s, weatherState); this.veg.setSeason(s); this.grass.setSeason(s); this.cover.setSeason(s); this.pickups.setSeason(s); this.props.setSeason(s); this.water.setSeason(s);
+    this.weather.setSeason(s, weatherState); this.veg.setSeason(s); if (this.veg.far) this.veg.far.dirty = true; this.grass.setSeason(s); this.cover.setSeason(s); this.pickups.setSeason(s); this.props.setSeason(s); this.water.setSeason(s);
     this.pickups.update(this.player.pos, true);
   }
   setTime(h) { this.time.hour = ((h % 24) + 24) % 24; }
@@ -503,6 +671,14 @@ class Game {
     const bindRange = (id, key, fmt) => { const e = $(id); e.value = S[key]; const lab = $(id + '-v'); const upd = () => { S[key] = +e.value; if (lab) lab.textContent = fmt ? fmt(S[key]) : S[key]; g.applySettings(); }; e.oninput = upd; upd(); };
     bindRange('set-sens', 'sens', (v) => v.toFixed(2)); bindRange('set-fov', 'fov'); bindRange('set-master', 'master', (v) => Math.round(v * 100) + '%'); bindRange('set-music', 'music', (v) => Math.round(v * 100) + '%');
     $('set-perf').value = g.perf.mode; $('set-perf').onchange = (e) => g.perf.setMode(e.target.value);
+    g.syncFrameLimitUI = () => { $('set-fps').value = S.fps === undefined ? 'auto' : String(S.fps); };
+    g.syncFrameLimitUI();
+    $('set-fps').onchange = (e) => { if (e.target.value === 'auto') delete S.fps; else S.fps = +e.target.value; g.pickFrameLimit(); if (g.auto) { g.auto.ok = 0; g.auto.n = 0; g.auto.ms = 0; g.auto.busy = 0; } g.applySettings(); };
+    if (canFullscreen()) {
+      const box = $('set-full'), sync = () => { box.checked = !!document.fullscreenElement; };
+      box.onchange = () => { if (box.checked) goFullscreen(); else if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); };
+      document.addEventListener('fullscreenchange', sync); document.addEventListener('fullscreenerror', sync); sync();
+    } else $('set-full').closest('.row').style.display = 'none';
     $('set-invert').checked = S.invert; $('set-invert').onchange = (e) => { S.invert = e.target.checked; g.applySettings(); };
     // (it shows the level really running: a phone starts on Low, whatever was saved)
     $('set-quality').value = g.q.name.toLowerCase(); $('set-quality').onchange = (e) => { S.quality = e.target.value; S.qualityChosen = true; g.applySettings(); g.applyQuality(e.target.value); };
@@ -533,64 +709,62 @@ class Game {
     await this.prologue();
     this.startGame(0);
   }
-  // The opening, drawn in a sketchbook (js/game/sketch.js): one panel to each line. While it is up the 3D world neither
-  // updates nor renders, so the drawings run smoothly; it ends on black, with the world's first frame still to come.
+  // The opening: a set of paintings, one to each line (js/game/sketch.js). They were finished while the game loaded, so they
+  // are on screen at once and nothing is drawn while they show: each fades in over the last and drifts slowly, which the
+  // browser does by itself. The 3D world neither updates nor renders behind them. It ends on black.
   prologue() {
     return new Promise((resolve) => {
-      const P = $('prologue'), L = $('prologue-line'), Tt = $('prologue-title'), cv = $('prologue-cv');
+      const P = $('prologue'), L = $('prologue-line'), Tt = $('prologue-title'), Fr = $('pro-frame');
       const lines = [
-        'I was three the year the Pench flooded. This part I only know because people told me later.',
-        'My father was driving the cart home from the market. My mother had me on her lap, drinking milk out of a little steel lota.',
-        'They were halfway across the ford when the water came. It had been raining up in the hills for two days.',
-        'She tied me to a teak log with her sari, and looped it through the handle of the lota.',
-        'She hummed to me, the same four notes she always hummed. Then the river took her.',
-        'I don\'t remember any of that. I only remember being carried.',
-        'A wolf found me on a sandbank. She\'d lost her own pups in the same flood. She picked me up by the cloth at my waist, like I was one of them.',
-        'I called her Kaali. Well, I called her a noise. Kaali is the closest word I have for it.',
-      ], durs = [7.5, 9, 8, 8.5, 11.5, 6.5, 12.5, 9];
-      const book = this.book || (this.book = new SketchBook(cv));
-      cv.classList.remove('out'); Tt.classList.remove('show'); L.classList.remove('show'); book.blank();
-      P.style.setProperty('--capH', book.frameRect().cap + 'px');
+        'I was three the year the Pench flooded.',
+        'My father was driving us home from the market. My mother had me on her lap, with my little steel lota.',
+        'The water came while we were crossing.',
+        'She tied me to a log with her sari. The lota too.',
+        'She hummed to me. Then the river took her.',
+        'I don\'t remember any of it. People told me later.',
+        'A wolf found me on a sandbank. She had lost her pups in the same flood.',
+        'She carried me home. I called her Kaali.',
+      ], durs = [5.5, 7, 5.5, 6, 7.5, 6, 7, 7];
+      // each plate's drift: scale and shift (percent) at its start and end
+      const cams = [[1.03, 0, 1, 1.12, -2, 2], [1.1, 3, 0, 1.1, -3, 0], [1.03, 2, 1, 1.14, 3, 0], [1.04, 0, 0, 1.13, 0, -2], [1.13, -1, -2, 1.03, 0, 0], [1.14, 2, -1, 1.02, 0, 0], [1.03, 0, 1, 1.12, -2, -2], [1.04, 2, 0, 1.12, -2, -1]];
+      const book = this.plates || (this.plates = new Plates());
+      Fr.textContent = '';
+      for (let k = 0; k < PLATE_COUNT; k++) { const c = book.paint(k); c.style.opacity = 0; c.style.transition = 'none'; Fr.appendChild(c); }
+      Fr.classList.remove('out'); Tt.classList.remove('show'); L.classList.remove('show'); L.textContent = '';
       P.classList.add('on'); void P.offsetWidth; P.classList.add('show');
-      setTimeout(() => { $('title').classList.remove('show'); this.holdFrames = true; }, 720);
-      // the opening's score and thunder are scheduled seconds ahead; keep hold of them so they can be cut
-      const cue = this.music ? this.music.cue() : null, rolls = [], ac = this.audio.ctx;
-      const silence = (f) => { if (cue) cue.stop(f); for (const r of rolls) r(f); rolls.length = 0; };
-      const stormSound = { rain: 1, wind: 1.4, water: 1, night: 1, hour: 22, season: 'monsoon' };
-      this.audio.update(0.1, stormSound);
-      const rainTimer = setInterval(() => { this.audio.update(0.5, stormSound); }, 500);
-      if (this.music) this.music.banaPhrase([{ semi: 0, dur: 2 }, { semi: 1, dur: 1.5, meend: true }, { semi: 0, dur: 1 }, { semi: -1, dur: 2.5, meend: true }, { semi: -5, dur: 4 }], ac.currentTime + 1, { gain: 0.08, dest: cue.dest });
-      let i = -1, t0 = 0, done = false, lastDraw = 0;
+      setTimeout(() => { $('title').classList.remove('show'); this.holdFrames = true; }, 380);
+      // its own score, plate by plate (js/audio/intro.js). The forest's sound stays off: no rain and river beds at full level
+      // under everything, no random thunder and frogs.
+      this.audio.setWorld(false, 0.25);
+      const score = this.audio.ready ? new IntroSound(this.audio, this.music) : null;
+      let i = -1, done = false, timer = 0;
+      const next = () => { if (done) return; if (i + 1 >= PLATE_COUNT) finish(); else show(i + 1); };
       const show = (n) => {
-        i = n; t0 = performance.now(); L.classList.remove('show');
-        setTimeout(() => { if (done || i !== n) return; L.textContent = lines[n]; L.classList.add('show'); }, 450);
-        if (n === 2 && this.audio.ready) rolls.push(this.audio.thunder(200, 2.5), this.audio.thunder(700, 4.5));
-        if (n === 0 && this.audio.ready) rolls.push(this.audio.thunder(1500, 3));
-        if (n === 4 && this.music) this.music.flutePhrase([4, 2, 0, -3].map((s, k) => ({ semi: s, dur: k === 3 ? 2.5 : 0.8 })), ac.currentTime + 0.5, { gain: 0.12, dest: cue.dest });
-      };
-      const draw = (now) => {
-        if (done) return;
-        requestAnimationFrame(draw);
-        if (i < 0 || now - lastDraw < 76) return;   // drawn on twelves, like the animation it imitates
-        lastDraw = now;
-        const t = (now - t0) / 1000;
-        if (t >= durs[i]) { if (i + 1 >= PANELS.length) finish(); else show(i + 1); return; }
-        book.render(i, t, durs[i]);
+        clearTimeout(timer);
+        const c = book.c[n], [s0, x0, y0, s1, x1, y1] = cams[n], prev = i >= 0 ? book.c[i] : null;
+        c.style.zIndex = n + 1; c.style.transition = 'none'; c.style.transform = `translate(${x0}%,${y0}%) scale(${s0})`; c.style.opacity = prev ? 0 : 1;
+        void c.offsetWidth;
+        c.style.transition = `transform ${durs[n] + 1.6}s linear, opacity 0.9s ease`; c.style.transform = `translate(${x1}%,${y1}%) scale(${s1})`; c.style.opacity = 1;
+        i = n;
+        L.classList.remove('show');
+        setTimeout(() => { if (done || i !== n) return; L.textContent = lines[n]; L.classList.add('show'); }, prev ? 320 : 60);
+        if (score) score.plate(n);
+        timer = setTimeout(next, durs[n] * 1000);
       };
       const end = () => {
-        window.removeEventListener('keydown', onKey); P.onclick = null; clearInterval(rainTimer); this.weather.forced = null;
-        cv.classList.add('out'); Tt.classList.remove('show'); L.classList.remove('show'); silence(0.8);
-        setTimeout(() => { $('fade').style.transition = 'none'; $('fade').style.opacity = 1; P.classList.remove('on', 'show'); resolve(); }, 950);
+        clearTimeout(timer); window.removeEventListener('keydown', onKey); P.onclick = null;
+        $('fade').style.transition = 'none'; $('fade').style.opacity = 1;
+        Tt.classList.remove('show'); L.classList.remove('show'); if (score) score.stop(0.8);
+        P.classList.remove('show');
+        setTimeout(() => { P.classList.remove('on'); book.free(); this.plates = null; resolve(); }, 620);
       };
-      const finish = () => { if (done) return; done = true; L.classList.remove('show'); book.blank(); Tt.classList.add('show'); setTimeout(end, 3400); };
+      const finish = () => { if (done) return; done = true; if (score) score.title(); L.classList.remove('show'); Fr.classList.add('out'); Tt.classList.add('show'); setTimeout(end, 3000); };
       const skip = this.skipPrologue = () => { if (!done) { done = true; end(); } };
       // a click or Space turns the page; Skip leaves the book
-      const onKey = (e) => { if (e.code === 'Escape') skip(); else if ((e.code === 'Space' || e.code === 'Enter') && !done && i >= 0) { if (i + 1 >= PANELS.length) finish(); else show(i + 1); } };
+      const onKey = (e) => { if (e.code === 'Escape') skip(); else if ((e.code === 'Space' || e.code === 'Enter') && !done && i >= 0) next(); };
       window.addEventListener('keydown', onKey);
-      P.onclick = (e) => { if (e.target.id !== 'prologue-skip' && !done && i >= 0) { if (i + 1 >= PANELS.length) finish(); else show(i + 1); } };
-      this.weather.force('storm');
-      setTimeout(() => { if (!done) show(0); }, 800);
-      requestAnimationFrame(draw);
+      P.onclick = (e) => { if (e.target.id !== 'prologue-skip' && !done && i >= 0) next(); };
+      show(0);
     });
   }
   // The click is answered at once with a fade to black; the teleport and streaming happen behind it (js enterScene)
@@ -632,7 +806,7 @@ class Game {
       await this.teleportScene(new THREE.Vector3(SITES.den.x, 0, SITES.den.z + 10));
       this.story.ensureChingari();
     }, { dur: 5.5 });
-    this.ui.setObjective('Free roam', 'Press <b>N</b> to change season. Explore Pench.');
+    this.ui.setObjective('Free roam', this.touch ? 'Explore Pench.' : 'Press <b>N</b> to change season. Explore Pench.');
   }
   // back to the title without reloading: the world stays built, so the next start is instant
   async toTitle() {
@@ -643,7 +817,7 @@ class Game {
     this.playing = false; this.paused = false; this.uiBlocking = true;
     for (const id of ['pause', 'settings', 'hud', 'death']) { const e = $(id); if (e) e.classList.remove('show'); }
     if (document.pointerLockElement) document.exitPointerLock();
-    this.ui.close(); this.ui.setObjective('', ''); this.ui.setPrompt('');
+    this.ui.close(); this.ui.setObjective('', ''); this.ui.setPrompt(''); this.ui.setPin(null);
     if (this.music) this.music.setCombat(0);
     $('btn-continue').style.display = store.get('vanaj-save-v1') ? '' : 'none';
     this.inMenu = true; this.audio.setWorld(false); if (this.music) this.music.titleStart();
@@ -757,7 +931,8 @@ class Game {
   }
   onCooldown(k) { const t = this.cooldowns.get(k); return t !== undefined && this.time.day * 24 + this.time.hour - t < 36; }
   setCooldown(k) { this.cooldowns.set(k, this.time.day * 24 + this.time.hour); }
-  interact() { const it = this.currentInteraction; if (it && !this.player.action) it.act(); }
+  // (looked for a few times a second, so look again right after acting: what was just taken must not be taken twice)
+  interact() { const it = this.currentInteraction; if (it && !this.player.action) { it.act(); this.currentInteraction = null; this._lookT = 0; } }
   pickup(pk) {
     this.player.startPick({ type: pk.type, pos: new THREE.Vector3(pk.x, pk.y, pk.z), grab: () => this.pickups.take(pk), stow: () => this.gained(pk.type) });
   }
@@ -889,14 +1064,14 @@ class Game {
   save() {
     if (this.story.chIndex < 0 && !this.story.done) return;
     const P = this.player;
-    store.set('vanaj-save-v1', { ch: this.story.chIndex, done: this.story.done, inv: this.inv.toJSON(), hour: this.time.hour, day: this.time.day, season: this.season, flags: this.flags, hp: P.hp, hunger: P.hunger, thirst: P.thirst, journal: this.ui.journal, skills: [...this.lessons.done], lore: [...this.ui.loreSeen], explored: Array.from(this.ui.explored), discovered: [...this.ui.discovered] });
+    store.set('vanaj-save-v1', { pin: this.ui.pin || null, ch: this.story.chIndex, done: this.story.done, inv: this.inv.toJSON(), hour: this.time.hour, day: this.time.day, season: this.season, flags: this.flags, hp: P.hp, hunger: P.hunger, thirst: P.thirst, journal: this.ui.journal, skills: [...this.lessons.done], lore: [...this.ui.loreSeen], explored: Array.from(this.ui.explored), discovered: [...this.ui.discovered] });
   }
   loadSave() {
     const s = store.get('vanaj-save-v1'); if (!s) return this.beginNew();
     this.inv.load(s.inv || {}); this.flags = s.flags || {}; this.time.day = s.day || 0;
     this.lessons.reset(); for (const k of s.skills || []) this.lessons.done.add(k);
     this.ui.journal = s.journal || []; this.ui.loreSeen = new Set(s.lore || []); this.ui.discovered = new Set(s.discovered || []);
-    if (s.explored) this.ui.explored.set(s.explored);
+    if (s.explored) this.ui.explored.set(s.explored); this.ui.setPin(s.pin || null);
     if (s.done) { this.freeSeason = s.season; this.freeRoam(); return; }
     this.startGame(Math.max(0, s.ch));
     this.player.equip(this.inv.equipped);
@@ -904,22 +1079,31 @@ class Game {
   // -------------------------------------------------------------------------------- frame
   frame(t) {
     requestAnimationFrame((tt) => this.frame(tt));
+    // Frames fall due on a schedule, so the limit holds whatever the screen's rate: 30 on a 60 Hz screen is every second frame, 60 on 120 Hz
+    // likewise, and 60 on 90 Hz is two frames out of three. (3 ms of grace for the screen's own timing.) A frame that is late moves the
+    // schedule, rather than a run of frames rushing to catch up.
+    if (this.fpsCap) {
+      const step = 1000 / this.fpsCap;
+      if (t < this.nextFrameT - 3) return;
+      this.nextFrameT = Math.max(this.nextFrameT + step, t + step - 4);
+    }
+    { const c = this.renderer.domElement; if (c.clientWidth !== this.viewW || c.clientHeight !== this.viewH) this.resize(); }
     this.perf.frameStart(t - this.last);
     let rdt = Math.min(0.05, (t - this.last) / 1000); this.last = t;
     if (this.hitstopT > 0) { this.hitstopT -= rdt; rdt *= 0.08; }
     if (this.slowT > 0) { this.slowT -= rdt; rdt *= this.slowK; }
     if (this.holdFrames) { this.input.endFrame(); this.perf.frameEnd({ scene: this.scene, composer: this.composer, quality: '', animals: 0 }); return; }   // nothing to show: the sketchbook or black is up
-    const dt = this.paused || this.rotateHold ? 0 : rdt;
-    if (this.touch && this.playing && dt > 0) this.keepFrameRate(rdt, t);
+    const dt = this.paused ? 0 : rdt, t0 = performance.now();
     try { this.update(dt, rdt); } catch (e) { console.error(e); }
     this.render(rdt);
+    if (this.touch && this.playing && dt > 0 && !this.cinematic) { try { this.holdFrameRate(t, performance.now() - t0); } catch (e) { console.error(e); } }
     this.input.endFrame();
-    this.perf.frameEnd({ scene: this.scene, composer: this.composer, quality: this.q.name, animals: this.eco ? this.eco.animals.length : undefined });
+    this.perf.frameEnd({ scene: this.scene, composer: this.composer, quality: this.q.name, animals: this.eco ? this.eco.animals.length : undefined, auto: this.auto });
   }
   update(dt, rdt) {
     const P = this.player;
     this.clock += dt;
-    if (this.touchUI) this.touchUI.show(this.playing && !this.paused && !this.player.dead);
+    if (this.touchUI) this.touchUI.show(this.playing && !this.paused && !this.player.dead && !this.cinematic && !this.uiBlocking && !this.wheelOpen);   // (not on the way down from the sky: they come with the HUD, once the camera is behind him)
     // timers
     if (dt > 0) for (let i = this.timers.length - 1; i >= 0; i--) { const tm = this.timers[i]; tm.t -= dt; if (tm.t <= 0) { this.timers.splice(i, 1); tm.res(); } }
     // time of day
@@ -941,9 +1125,11 @@ class Game {
       if (this.input.wheel && !this.uiBlocking) { const ws = this.inv.weapons(); const i = ws.indexOf(this.inv.equipped); P.equip(ws[(i + this.input.wheel + ws.length) % ws.length]); }
       if (this.wheelOpen || this.cinematic) { this.input.mdx = 0; this.input.mdy = 0; }
       P.update(dt, this.input);
-      // interaction prompt
-      this.currentInteraction = this.uiBlocking ? null : this.findInteraction();
-      this.ui.setPrompt(P.canopy.prompt && !this.uiBlocking ? `<kbd>E</kbd> ${P.canopy.prompt}` : this.currentInteraction ? `<kbd>E</kbd> ${this.currentInteraction.prompt}` : (this.finishPromptFor() || ''));
+      // interaction prompt: nothing it depends on changes faster than a few times a second, and each look allocates a good deal
+      this._lookT = (this._lookT || 0) - dt;
+      if (this.uiBlocking) { this.currentInteraction = null; this._finishP = ''; this._lookT = 0; }
+      else if (this._lookT <= 0) { this._lookT = 0.12; this.currentInteraction = this.findInteraction(); this._finishP = this.currentInteraction ? '' : this.finishPromptFor() || ''; }
+      this.ui.setPrompt(P.canopy.prompt && !this.uiBlocking ? `<kbd>E</kbd> ${P.canopy.prompt}` : this.currentInteraction ? `<kbd>E</kbd> ${this.currentInteraction.prompt}` : this._finishP);
       this.story.update(dt);
       this.lessons.update(dt);
     }
@@ -952,7 +1138,7 @@ class Game {
     G.uPlayerPos.value.copy(P.pos);
     // world streaming
     this.terrain.update(focus.x, focus.z, 4);
-    { const see = this.arrival ? P.pos : this.camera.position; this.veg.update(see); this.grass.update(see); this.cover.update(see); } this.pickups.update(focus);
+    { const see = this.arrival ? P.pos : this.camera.position; this.veg.update(see); this.grass.update(see); this.cover.update(see); this.props.update(see); } this.pickups.update(focus);
     if (this.phys && this.playing) { this.phys.sync(P.pos); this.loose.update(P.pos); }
     if (this.playing && dt > 0) { this.near.update(P.pos, dt, P.canopy.mode ? P.canopy.tree : null); this.ropes.update(dt, P.pos); }
     if (!this.paused) this.vines.update(dt || rdt * 0.2, this.camera.position);
@@ -961,12 +1147,18 @@ class Game {
     const env = this.weather.env;
     this.sky.update(this.paused ? 0 : dt || rdt * 0.2, this.time.hour, this.seasonCfg.decl, env, this.camera, focus, this.season);
     if (!this.paused) this.weather.update(rdt, dt * this.time.rate / 3600, this.time.hour, this.camera.position, this.sky);
-    this.water.update(this.sky, env.rain);
+    this.water.update(this.sky, env.rain, this.camera);
     pf.mark('sky');
     // animals
     if (this.playing && dt > 0) { this.eco.update(dt, this.W); try { this.birds.update(dt); this.tracks.update(dt); this.places.update(dt, this.player.pos.x, this.player.pos.z, this.time.day * 1440 + this.time.hour * 60); } catch (e) { if (!this._birdErr) { this._birdErr = 1; console.error('birds', e); } } }
-    if (this.phys && this.playing) this.phys.step(dt);
     pf.mark('animals');
+    if (this.phys && this.playing) {
+      // (on a lean level the physics world runs at 30 Hz or less: all that moves in it by itself is the odd stone, and everything else only
+      // asks it questions, which it answers between steps)
+      this._physDt = (this._physDt || 0) + dt;
+      if (this._physDt >= this.q.physStep - 0.002 && this._physDt > 0) { this.phys.step(this._physDt); this._physDt = 0; }
+    }
+    pf.mark('physics');
     // fires: campfires burn down
     this.nearFire = false;
     let fireLevel = 0;
@@ -976,8 +1168,11 @@ class Game {
     this.fx.update(dt, this.camera.position, Math.max(0.12, this.sky.day));
     this.fx.updateAmbient(dt, this.camera.position, this.sky.night, this.season, env.rain > 0.2);
     pf.mark('effects');
-    // audio
-    if (this.audio.ready) {
+    // audio: the sound runs on its own thread and the music is scheduled ahead, so all this has to do is steer it, about twelve times a
+    // second. (Every frame it queued some twenty parameter changes for that thread to work through, which on a phone is time it needs.)
+    this._audDt = (this._audDt || 0) + rdt;
+    if (this.audio.ready && this._audDt >= 0.08) {
+      const rdt = Math.min(0.5, this._audDt); this._audDt = 0;
       this.audio.setListener(this.camera);
       const dR = biomeAt(P.pos.x, P.pos.z).dRiver;
       const nearW = Math.max(clamp(1 - (dR - 14) / 90, 0, 1), waterAt(P.pos.x, P.pos.z) > -1e8 ? 0.4 : 0);
@@ -1032,7 +1227,15 @@ class Game {
     gr.uUnder.value = this.playing && waterAt(this.camera.position.x, this.camera.position.z) > this.camera.position.y ? 1 : 0;
     gr.uHeat.value = this.season === 'summer' ? smoothstep(10, 13, this.time.hour) * (1 - smoothstep(16, 18, this.time.hour)) : 0;
     gr.uBlur.value = this.uiBlocking && this.playing && !this.cinematic ? 1 : (P.drunk > 0.4 ? (P.drunk - 0.4) : 0);
+    if (gr.uExposure) gr.uExposure.value = this.renderer.toneMappingExposure;
     this.updateGodRays();
+    // the first-person arms are a scene of their own: nothing to draw in third person
+    this.vmPass.enabled = !!(this.player.vm && this.player.vm.root.visible);
+    // On Low the shadows are drawn every other frame while he stands still. They stay fixed to the world in between, because the matrix the
+    // ground reads them with only changes when they are redrawn. On the move they are drawn every frame: at a run he covers 20 cm in a frame,
+    // so his shadow would shake against his feet.
+    { const sm = this.renderer.shadowMap, every = P.speed > 0.2 || P.canopy.mode || !this.playing ? 1 : this.q.shadowEvery; sm.autoUpdate = false; if ((this._shadowN = (this._shadowN || 0) + 1) >= every) { this._shadowN = 0; sm.needsUpdate = !this.shadowsOff; } }
+    if (this.veg.far && this.q.farPics) this.veg.far.tick(this.renderer, this.sky, rdt);
     if (!this.noRender) { this.perf.gpuBegin(); this.composer.render(rdt); this.perf.gpuEnd(); }
     this.perf.mark('render');
   }

@@ -292,8 +292,9 @@ export class GroundCover {
       }
     }
     L.count = nl; L.instanceMatrix.needsUpdate = true; this.leafAttr.needsUpdate = true;
-    this.twigs.count = nt; this.twigs.instanceMatrix.needsUpdate = true;
-    this.stones.forEach((m, k) => { m.count = ns[k]; m.instanceMatrix.needsUpdate = true; m.instanceColor.needsUpdate = true; });
+    this.twigs.count = nt; this.twigs.visible = nt > 0;
+    { const A = this.twigs.instanceMatrix; A.clearUpdateRanges(); if (nt) { A.addUpdateRange(0, nt * 16); A.needsUpdate = true; } }
+    this.stones.forEach((m, k) => { const n = ns[k], A = m.instanceMatrix, C = m.instanceColor; m.count = n; m.visible = n > 0; A.clearUpdateRanges(); C.clearUpdateRanges(); if (n) { A.addUpdateRange(0, n * 16); C.addUpdateRange(0, n * 3); A.needsUpdate = true; C.needsUpdate = true; } });
     if (this.cells.size > 5000) for (const [k] of this.cells) { this.cells.delete(k); if (this.cells.size < 2500) break; }
   }
 }

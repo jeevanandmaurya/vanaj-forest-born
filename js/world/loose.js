@@ -9,13 +9,13 @@ import { mulberry32 } from '../core/noise.js';
 import { PAINTED } from '../core/palette.js';
 import { toon } from '../core/toon.js';
 
-const CELL = 32, LIVE = 26, DROP = 32, SHOW = 48;   // bodies within 26 m, dropped beyond 32, drawn to 48
+const CELL = 32;
 const MAX_STONE = 140, MAX_STICK = 80;
 const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _e = new THREE.Euler();
 
 export class LooseThings {
-  constructor(scene, phys) {
-    this.phys = phys; this.cells = new Map(); this.live = new Set(); this.t = 0;
+  constructor(scene, phys, q) {
+    this.phys = phys; this.q = q; this.cells = new Map(); this.live = new Set(); this.t = 0;
     // a stone: a squashed icosahedron, its own convex hull as the collider so it tumbles like a stone, not a ball
     const sg = new THREE.IcosahedronGeometry(1, 0); sg.scale(1, 0.62, 0.82);
     this.hull = new Float32Array(sg.attributes.position.array);
@@ -61,7 +61,7 @@ export class LooseThings {
   }
   // taken off the ground for good
   take(it) {
-    it.gone = true;
+    it.gone = true; this.taken = true;
     if (it.body) { this.phys.world.removeRigidBody(it.body); it.body = null; }
     if (this.near) { const i = this.near.indexOf(it); if (i >= 0) this.near.splice(i, 1); }
   }
@@ -82,9 +82,12 @@ export class LooseThings {
   }
   update(focus) {
     const ph = this.phys;
+    // bodies within LIVE metres (26 on most levels), dropped 6 m beyond that, drawn out to SHOW
+    const LIVE = this.q.looseR, DROP = LIVE + 6, SHOW = LIVE * 1.85;
     // every few frames: which cells are about, which items get a body and which lose theirs
+    let moved = false;
     if (--this.t <= 0) {
-      this.t = 15;
+      this.t = 15; moved = true;
       const R = Math.ceil(SHOW / CELL), cx0 = Math.floor(focus.x / CELL), cz0 = Math.floor(focus.z / CELL);
       this.near = [];
       for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) for (const it of this.cell(cx0 + dx, cz0 + dz)) {
@@ -97,16 +100,20 @@ export class LooseThings {
       // bodies of cells now far off
       for (const c of this.cells.values()) for (const it of c) if (it.body && Math.hypot(it.pos.x - focus.x, it.pos.z - focus.z) > DROP + CELL) this.dropBody(it);
     }
-    // draw them where the physics has them
+    // draw them where the physics has them (nearly all of them are lying still, nearly all of the time, and need no work or upload)
+    for (const it of this.near || []) {
+      if (!it.body || it.body.isSleeping()) continue;
+      moved = true;
+      const t = it.body.translation(), r = it.body.rotation();
+      it.pos.set(t.x, t.y, t.z); it.q.set(r.x, r.y, r.z, r.w);
+      // fell out of the world (a ground chunk went missing under it): back on the ground
+      const gy = groundHeight(t.x, t.z);
+      if (t.y < gy - 1.5) { it.body.setTranslation({ x: t.x, y: gy + 0.5, z: t.z }, true); it.body.setLinvel({ x: 0, y: 0, z: 0 }, true); }
+    }
+    if (!moved && !this.taken) return;
+    this.taken = false;
     let ns = 0, nk = 0;
     for (const it of this.near || []) {
-      if (it.body) {
-        const t = it.body.translation(), r = it.body.rotation();
-        it.pos.set(t.x, t.y, t.z); it.q.set(r.x, r.y, r.z, r.w);
-        // fell out of the world (a ground chunk went missing under it): back on the ground
-        const gy = groundHeight(t.x, t.z);
-        if (t.y < gy - 1.5) { it.body.setTranslation({ x: t.x, y: gy + 0.5, z: t.z }, true); it.body.setLinvel({ x: 0, y: 0, z: 0 }, true); }
-      }
       if (it.stick) { if (nk >= MAX_STICK) continue; _s.set(it.r, it.size + it.r * 2, it.r); _m.compose(it.pos, it.q, _s); this.sticks.setMatrixAt(nk++, _m); }
       else {
         if (ns >= MAX_STONE) continue;
@@ -115,7 +122,8 @@ export class LooseThings {
       }
     }
     this.stones.count = ns; this.sticks.count = nk;
-    this.stones.instanceMatrix.needsUpdate = this.sticks.instanceMatrix.needsUpdate = true;
-    this.stones.instanceColor.needsUpdate = true;
+    this.stones.visible = ns > 0; this.sticks.visible = nk > 0;
+    const send = (A, n) => { A.clearUpdateRanges(); if (n) { A.addUpdateRange(0, n); A.needsUpdate = true; } };
+    send(this.stones.instanceMatrix, ns * 16); send(this.sticks.instanceMatrix, nk * 16); send(this.stones.instanceColor, ns * 3);
   }
 }

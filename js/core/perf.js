@@ -2,8 +2,8 @@
 // draw calls / triangles, JS heap, device memory and an estimate of GPU memory in use.
 // F3 cycles Off -> Compact -> Full. Nothing is measured while it is off, apart from one timestamp per frame.
 
-const SECTIONS = ['player', 'streaming', 'sky', 'animals', 'effects', 'audio', 'ui', 'render'];
-const LABEL = { player: 'player', streaming: 'streaming', sky: 'sky/weather', animals: 'animals/AI', effects: 'effects', audio: 'audio', ui: 'HUD', render: 'render' };
+const SECTIONS = ['player', 'streaming', 'sky', 'animals', 'physics', 'effects', 'audio', 'ui', 'render'];
+const LABEL = { player: 'player', streaming: 'streaming', sky: 'sky/weather', animals: 'animals/AI', physics: 'physics', effects: 'effects', audio: 'audio', ui: 'HUD', render: 'render' };
 const MODES = ['off', 'compact', 'full'];
 const MB = 1024 * 1024;
 
@@ -138,9 +138,12 @@ export class PerfOverlay {
     const st = this.frameStats(); if (!st) return;
     const cls = (fps) => fps >= 55 ? 'pf-good' : fps >= 30 ? 'pf-ok' : 'pf-bad';
     const gpu = this.view.gpu, cpu = this.view.cpu;
+    // What is holding the frame rate down, where a phone won't time its GPU: a frame much longer than the code that made it is the GPU's doing
+    const A = extra.auto, goal = A && A.goal, verdict = !goal ? '' : st.ms <= goal * 1.1 ? 'on target' : cpu > st.ms * 0.7 ? 'CPU-bound' : 'GPU-bound';
+    const autoLine = A ? `size ${Math.round(A.scale * 100)}% · detail -${A.detail}` : '';
     if (this.mode === 'compact') {
       this.$.cfps.textContent = st.fps.toFixed(0); this.$.cfps.className = cls(st.fps);
-      this.$.crest.textContent = `· ${st.ms.toFixed(1)} ms · CPU ${cpu.toFixed(1)}${gpu >= 0 ? ' · GPU ' + gpu.toFixed(1) : ''} ms`;
+      this.$.crest.textContent = `· ${st.ms.toFixed(1)} ms · CPU ${cpu.toFixed(1)}${gpu >= 0 ? ' · GPU ' + gpu.toFixed(1) : ''} ms${verdict ? ' · ' + verdict : ''}${autoLine ? ' · ' + autoLine : ''}`;
       return;
     }
     this.$.fps.textContent = st.fps.toFixed(0); this.$.fps.className = cls(st.fps);
@@ -151,7 +154,7 @@ export class PerfOverlay {
     this.$.cpu2.textContent = `${busy.toFixed(0)}% of frame · ${navigator.hardwareConcurrency || '?'} threads`;
     const maxSec = Math.max(0.5, ...SECTIONS.map((s) => this.view.sec[s] || 0));
     for (const s of SECTIONS) { const v = this.view.sec[s] || 0; const r = this.secRows[s]; r.v.textContent = v.toFixed(2); r.bar.style.width = (v / maxSec * 100).toFixed(0) + '%'; }
-    if (!this.ext) { this.$.gpu.innerHTML = '<span class="pf-dim">n/a (no GPU timer queries)</span>'; this.$.bound.textContent = ''; }
+    if (!this.ext) { this.$.gpu.innerHTML = '<span class="pf-dim">not timed here</span>'; this.$.bound.textContent = verdict; this.$.bound.className = 'pf-tag' + (verdict === 'on target' ? ' pf-good' : verdict ? ' pf-ok' : ''); }
     else if (gpu < 0) { this.$.gpu.textContent = 'measuring…'; this.$.bound.textContent = ''; }
     else {
       this.$.gpu.textContent = gpu.toFixed(1) + ' ms';
@@ -171,7 +174,7 @@ export class PerfOverlay {
       this.$.vram2.textContent = `mesh ${(v.geo / MB).toFixed(0)} · tex ${(v.tex / MB).toFixed(0)} · targets ${(v.rt / MB).toFixed(0)} MB`;
     } else this.$.vram.textContent = '…';
     const c = this.renderer.domElement;
-    this.$.res.textContent = `${c.width}×${c.height} ×${this.renderer.getPixelRatio().toFixed(2)}${extra.quality ? ' · ' + extra.quality : ''}${extra.animals !== undefined ? ' · ' + extra.animals + ' animals' : ''}`;
+    this.$.res.textContent = `${c.width}×${c.height} ×${this.renderer.getPixelRatio().toFixed(2)}${extra.quality ? ' · ' + extra.quality : ''}${extra.animals !== undefined ? ' · ' + extra.animals + ' animals' : ''}${autoLine ? ' · ' + autoLine : ''}`;
   }
   drawGraph() {
     const g = this.g2, W = this.graph.width, H = this.graph.height, n = this.fcount, L = this.frames.length;

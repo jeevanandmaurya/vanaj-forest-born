@@ -20,7 +20,7 @@ export class NPC {
     // what they wear, as colours for the body paint (the old cloth textures are kept for the real-look renderer)
     const colOf = (t) => (t === g.T.clothWhite ? '#e6dfce' : t === g.T.clothKhaki ? '#a89468' : t === g.T.clothRed ? '#a33a30' : null);
     this.h = buildHumanoid({ age: o.age, clothCol: colOf(o.clothTex), topCol: colOf(o.topTex), turbanColor: new THREE.Color(colOf(o.turban) || '#d8d0bc'), scale: o.scale || 1, skinColor: o.skin || 0x9a6a4a, mud: 0.05, hair: o.hair || 'short', hairColor: o.hairColor, cloth: o.cloth || 'dhoti', clothTex: o.clothTex, topTex: o.topTex, turban: o.turban, lean: o.lean || 1, build: o.build, skinKey: 'skin-npc' + (o.skinKey || '') });
-    g.scene.add(this.h.root);
+    g.scene.add(this.h.root); this.shown = true;
     this.pos = this.h.root.position; this.pos.copy(o.pos); this.pos.y = groundHeight(this.pos.x, this.pos.z);
     this.yaw = o.yaw || 0; this.speed = 0; this.path = []; this.state = 'idle'; this.look = null; this.up = 0; this.action = null; this.t = Math.random() * 10;
     this.radius = 0.4; this.d = { H: 1.6 * (o.scale || 1) };   // the physics capsule (solid to Vanaj, slides round trunks)
@@ -49,8 +49,21 @@ export class NPC {
       if (this.stuckT > 2.5) { this.ghost = 3; this.stuckT = 0; }
     }
     this.h.root.rotation.y = this.yaw;
+    // as for the animals: out of sight it is out of the scene and not posed, and further off it is posed less often, without its outline
+    // or its shadow (a villager is a dozen draw calls and a skeleton)
+    const q = G.q, d2 = G.camera.position.distanceToSquared(this.pos), show = d2 < q.animalDraw * q.animalDraw && (d2 < 144 || G.eco.inView(this.pos, 2));
+    if (show !== this.shown) { this.shown = show; if (show) G.scene.add(this.h.root); else G.scene.remove(this.h.root); this.animAcc = 1; }
+    this.animAcc = (this.animAcc || 0) + dt;
+    if (!show) return;
+    const ink = d2 < q.inkDraw * q.inkDraw, sh = d2 < q.animalShadow * q.animalShadow;
+    if (ink !== this.inkOn || sh !== this.shadowOn) {
+      this.inkOn = ink; this.shadowOn = sh;
+      this.h.root.traverse((o) => { if (o.userData.ink) o.visible = ink; else if (o.isMesh) o.castShadow = sh; });
+    }
+    if (this.animAcc < (d2 < 400 ? 0 : d2 < 2500 ? q.animStep : q.animStep * 2)) return;
+    const pdt = Math.min(0.5, this.animAcc); this.animAcc = 0;
     const act = this.action ? { type: this.action, t: (this.t % 2) / 2 } : null;
-    animateHumanoid(this.h, dt, { speed: this.speed, weapon: 'none', action: act, crouch: this.up > 0 ? 1 : 0, ground: this.up > 0 ? undefined : FLAT, lookAt: this.look && !this.path.length ? this.look : undefined });
+    animateHumanoid(this.h, pdt, { speed: this.speed, weapon: 'none', action: act, crouch: this.up > 0 ? 1 : 0, ground: this.up > 0 ? undefined : FLAT, lookAt: this.look && !this.path.length ? this.look : undefined });
   }
   remove() { this.g.scene.remove(this.h.root); }
 }

@@ -4,6 +4,7 @@ import { ITEMS, RECIPES } from './items.js';
 import { SITES } from '../world/props.js';
 import { LORE } from './lore.js';
 import { groundHeight } from '../world/terrain.js';
+import { icon } from './icons.js';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html !== undefined) e.innerHTML = html; return e; };
@@ -67,13 +68,28 @@ export class UI {
   }
   init() {
     this.hud = $('hud');
+    // health, stamina, hunger and thirst, each with its picture and no words
+    $('stats').innerHTML = `<div id="status"></div>
+      <div class="srow"><span class="si hp">${icon('heart')}</span><div class="bar big"><div id="bar-hp" style="width:100%"></div></div></div>
+      <div class="srow two"><span class="pair" id="bar-st-wrap"><span class="si sta">${icon('bolt')}</span><div class="bar"><div id="bar-st" style="width:100%"></div></div></span><span class="pair"><span class="si hu">${icon('food')}</span><div class="bar"><div id="bar-hu"></div></div></span><span class="pair"><span class="si th">${icon('water')}</span><div class="bar"><div id="bar-th"></div></div></span></div>`;
     this.bars = { hp: $('bar-hp'), st: $('bar-st'), hu: $('bar-hu'), th: $('bar-th') };
     this.status = $('status'); this.prompt = $('prompt'); this.sub = $('subtitle'); this.obj = $('objective'); this.chap = $('chapter');
     this.compass = $('compass-strip'); this.clock = $('clock'); this.toastBox = $('toasts'); this.cross = $('crosshair');
     this.vignette = $('vignette'); this.bloodOv = $('bloodov'); this.eye = $('eye'); this.hotbar = $('hotbar'); this.ammo = $('ammo');
     this.dmgInd = $('dmgind');
+    // the minimap: north up, Vanaj in the middle, his arrow turning with him
+    const mini = el('div', '', '<canvas width="192" height="192"></canvas><i>N</i><svg viewBox="-10 -10 20 20"><path d="M0-8 6 7 0 3-6 7Z"/></svg>'); mini.id = 'minimap'; this.hud.appendChild(mini);
+    this.miniCv = mini.querySelector('canvas'); this.miniArrow = mini.querySelector('svg');
+    // your own mark: tap the big map to set it, tap it again to take it away
+    const tg = $('target'), pt = tg.cloneNode(true); pt.id = 'ptarget'; pt.querySelectorAll('[id]').forEach((n) => { n.id = 'p' + n.id; }); tg.parentElement.appendChild(pt);
+    $('mapcv').addEventListener('click', (e) => {
+      const cv = e.currentTarget, r = cv.getBoundingClientRect(), wx = (e.clientX - r.left) / r.width * 4096 - 2048, wz = (e.clientY - r.top) / r.height * 4096 - 2048;
+      const near = this.pin && Math.hypot(this.pin.x - wx, this.pin.z - wz) < 4096 * 28 / r.width;   // (28 px on screen: about a fingertip)
+      this.setPin(near ? null : { x: wx, z: wz }); this.renderMap();
+    });
     // compass ticks
     const strip = this.compass; strip.innerHTML = '';
+    window.addEventListener('resize', () => { this.compassW = 0; });   // (its width depends on the window: measured again when next drawn)
     this.compassItems = [];
     const dirs = { 0: 'N', 45: 'NE', 90: 'E', 135: 'SE', 180: 'S', 225: 'SW', 270: 'W', 315: 'NW' };
     for (let d = 0; d < 360; d += 15) { const t = el('div', 'ctick' + (dirs[d] ? ' major' : ''), dirs[d] || ''); t.dataset.deg = d; strip.appendChild(t); this.compassItems.push(t); }
@@ -83,41 +99,30 @@ export class UI {
     window.addEventListener('mousemove', (e) => { if (this.wheelOpen) this.wheelMove(e); });
   }
   // ------------------------------------------------------------------ HUD update
+  // Every write to the page is work for the browser after this code has finished: working out styles and layout, then painting. None of
+  // that shows on the performance panel, and on a phone it adds up. So nothing is written unless it changed, and what changes slowly (the
+  // bars, status, clock, hotbar, the stealth eye) is looked at eight times a second.
   update(dt) {
     const g = this.g, P = g.player;
     if (!P) return;
-    this.bars.hp.style.width = Math.max(0, P.hp) + '%';
-    this.bars.st.style.width = P.stamina + '%';
-    this.bars.hu.style.width = P.hunger + '%';
-    this.bars.th.style.width = P.thirst + '%';
-    $('bar-st-wrap').classList.toggle('dim', P.stamina > 98);
-    const st = [];
-    if (P.bleed > 0.2) st.push('<span class="st bleed">Bleeding</span>');
-    if (P.sick > 0) st.push('<span class="st sick">Sick</span>');
-    if (P.drunk > 0.3) st.push('<span class="st drunk">Mahua-drunk</span>');
-    if (P.hunger < 20) st.push('<span class="st warn">Starving</span>');
-    if (P.thirst < 20) st.push('<span class="st warn">Parched</span>');
-    if (P.exhausted) st.push('<span class="st warn">Exhausted</span>');
-    if (P.crouch) st.push('<span class="st">Crouched</span>');
-    const cold = g.weather.temperature(g.time.hour) < 11 && !g.nearFire;
-    if (cold) st.push('<span class="st cold">Cold</span>');
-    this.status.innerHTML = st.join('');
     // vignette / blood
     P.hurtFlash = Math.max(0, P.hurtFlash - dt * 0.8);
     const low = P.hp < 35 ? (35 - P.hp) / 35 : 0;
-    this.vignette.style.opacity = Math.min(1, P.hurtFlash * 0.9 + low * 0.7 + (P.bleed > 0 ? 0.15 : 0));
-    this.bloodOv.style.opacity = Math.min(0.85, P.hurtFlash * 0.8 + low * 0.5);
-    // clock
-    const h = g.time.hour, hh = Math.floor(h), mm = Math.floor((h - hh) * 60);
-    const ampm = hh < 12 ? 'am' : 'pm', h12 = ((hh + 11) % 12) + 1;
-    this.clock.innerHTML = `<b>${h12}:${String(mm).padStart(2, '0')} ${ampm}</b><span>${g.seasonCfg.label} · ${Math.round(g.weather.temperature(h))}°C</span>`;
-    // compass
+    this.put(this.vignette, 'o', Math.min(1, P.hurtFlash * 0.9 + low * 0.7 + (P.bleed > 0 ? 0.15 : 0)).toFixed(2));
+    this.put(this.bloodOv, 'o', Math.min(0.85, P.hurtFlash * 0.8 + low * 0.5).toFixed(2));
+    // compass (only the marks in view, and only when he has turned)
     const yawDeg = ((-P.yaw * 180 / Math.PI) % 360 + 360) % 360; // 0 = north
-    const W = 440;
-    for (const t of this.compassItems) {
-      let d = +t.dataset.deg - yawDeg; while (d > 180) d -= 360; while (d < -180) d += 360;
-      const x = d / 90 * (W / 2);
-      t.style.transform = `translateX(${x}px)`; t.style.opacity = Math.abs(d) < 95 ? 1 - Math.abs(d) / 110 : 0;
+    if (!this.compassW) { this.compassW = this.compass.parentElement.clientWidth; this._yaw = 1e9; }
+    const W = this.compassW || 440;
+    if (Math.abs(yawDeg - (this._yaw ?? 1e9)) > 0.4) {
+      this._yaw = yawDeg;
+      this.miniArrow.style.transform = `rotate(${yawDeg.toFixed(1)}deg)`;
+      for (const t of this.compassItems) {
+        let d = +t.dataset.deg - yawDeg; while (d > 180) d -= 360; while (d < -180) d += 360;
+        const on = Math.abs(d) < 95;
+        if (on) t.style.transform = `translateX(${(d / 90 * (W / 2)).toFixed(1)}px)`;
+        this.put(t, 'o', on ? (1 - Math.abs(d) / 110).toFixed(2) : '0');
+      }
     }
     this.updateMarkers(yawDeg, W, dt);
     this.updatePointer(dt);
@@ -125,27 +130,85 @@ export class UI {
     if (this.subT > 0) { this.subT -= dt; if (this.subT <= 0) { this.sub.classList.remove('show'); } }
     if (this.subT <= 0 && this.subQ.length) { const s = this.subQ.shift(); this.sub.innerHTML = s.text; this.sub.classList.add('show'); this.subT = s.dur; }
     // toasts
-    for (const t of this.toasts) { t.ttl -= dt; if (t.ttl <= 0 && !t.gone) { t.gone = true; t.el.classList.add('out'); setTimeout(() => t.el.remove(), 500); } }
-    this.toasts = this.toasts.filter((t) => t.ttl > -1);
+    if (this.toasts.length) {
+      for (const t of this.toasts) { t.ttl -= dt; if (t.ttl <= 0 && !t.gone) { t.gone = true; t.el.classList.add('out'); setTimeout(() => t.el.remove(), 500); } }
+      this.toasts = this.toasts.filter((t) => t.ttl > -1);
+    }
+    // crosshair
+    this.hitT = Math.max(0, this.hitT - dt);
+    const cross = 'cross' + (P.aim > 0.3 ? ' aim' : '') + (this.hitT > 0 ? ' hit' : '') + (this.hitKill ? ' kill' : '');
+    if (cross !== this._cross) { this.cross.className = cross; this._cross = cross; }
+    if (this.hitT <= 0) this.hitKill = false;
+    this.put(this.cross, 'o', g.uiBlocking ? '0' : '1');
+    // ---- from here on, eight times a second
+    this._slowT = (this._slowT || 0) - dt;
+    if (this._slowT > 0) return;
+    this._slowT = 0.125;
+    this.put(this.bars.hp, 'w', Math.max(0, P.hp).toFixed(0)); this.put(this.bars.st, 'w', P.stamina.toFixed(0)); this.put(this.bars.hu, 'w', P.hunger.toFixed(0)); this.put(this.bars.th, 'w', P.thirst.toFixed(0));
+    const dim = P.stamina > 98; if (dim !== this._dim) { $('bar-st-wrap').classList.toggle('dim', dim); this._dim = dim; }
+    let st = '';
+    const chip = (cls, ic, what) => `<span class="st ${cls}" title="${what}" aria-label="${what}">${icon(ic)}</span>`;
+    if (P.bleed > 0.2) st += chip('bleed', 'bleed', 'Bleeding');
+    if (P.sick > 0) st += chip('sick', 'sick', 'Sick');
+    if (P.drunk > 0.3) st += chip('drunk', 'drunk', 'Mahua-drunk');
+    if (P.hunger < 20) st += chip('warn', 'food', 'Starving');
+    if (P.thirst < 20) st += chip('warn', 'water', 'Parched');
+    if (P.exhausted) st += chip('warn', 'tired', 'Exhausted');
+    if (P.crouch) st += chip('', 'crouch', 'Crouched');
+    const temp = g.weather.temperature(g.time.hour);
+    if (temp < 11 && !g.nearFire) st += chip('cold', 'cold', 'Cold');
+    if (st !== this._status) { this.status.innerHTML = st; this._status = st; }
+    // clock
+    const h = g.time.hour, hh = Math.floor(h), mm = Math.floor((h - hh) * 60);
+    const ampm = hh < 12 ? 'am' : 'pm', h12 = ((hh + 11) % 12) + 1;
+    const clock = `${icon(h >= 6 && h < 18.5 ? 'sun' : 'moon')}<b>${h12}:${String(mm).padStart(2, '0')} ${ampm}</b><span>${g.seasonCfg.label} · ${Math.round(temp)}°C</span>`;
+    if (clock !== this._clock) { this.clock.innerHTML = clock; this._clock = clock; }
     // hotbar
     const inv = g.inv; const ws = ['fists', 'knife', 'club', 'spear', 'bow', 'torch'];
     let hb = '';
-    ws.forEach((w, i) => { const has = w === 'fists' || inv.has(w); hb += `<div class="slot ${inv.equipped === w ? 'on' : ''} ${has ? '' : 'empty'}"><i>${i + 1}</i>${w === 'fists' ? '<span class="fist">✊</span>' : `<img src="${iconFor(w)}">`}</div>`; });
+    ws.forEach((w, i) => { const has = w === 'fists' || inv.has(w); hb += `<div class="slot ${inv.equipped === w ? 'on' : ''} ${has ? '' : 'empty'}"><i>${i + 1}</i>${w === 'fists' ? icon('fist') : `<img src="${iconFor(w)}">`}</div>`; });
     if (hb !== this._hb) { this.hotbar.innerHTML = hb; this._hb = hb; }
-    this.ammo.textContent = inv.equipped === 'bow' ? `Arrows ${inv.count('arrow')}` : inv.equipped === 'spear' ? `Spears ${inv.count('spear')} · RMB aim, LMB throw` : '';
-    // crosshair
-    this.hitT = Math.max(0, this.hitT - dt);
-    this.cross.className = 'cross' + (P.aim > 0.3 ? ' aim' : '') + (this.hitT > 0 ? ' hit' : '') + (this.hitKill ? ' kill' : '');
-    if (this.hitT <= 0) this.hitKill = false;
-    this.cross.style.opacity = g.uiBlocking ? 0 : 1;
+    const ammo = inv.equipped === 'bow' ? `Arrows ${inv.count('arrow')}` : inv.equipped === 'spear' ? `Spears ${inv.count('spear')} · RMB aim, LMB throw` : '';
+    if (ammo !== this._ammo) { this.ammo.textContent = ammo; this._ammo = ammo; }
+    if (g.touchUI) g.touchUI.sync();
+    this.drawMinimap(dt);
     // stealth eye: max awareness of animals that see you
     let aw = 0; for (const a of g.eco.animals) if (!a.dead && a.awareness > aw && a.dist2(P.pos) < 3600) aw = a.awareness;
-    this.eye.style.opacity = aw > 0.25 ? Math.min(1, aw) : 0;
-    this.eye.classList.toggle('alert', aw > 1);
+    this.put(this.eye, 'o', aw > 0.25 ? Math.min(1, aw).toFixed(2) : '0');
+    const alert = aw > 1; if (alert !== this._alert) { this.eye.classList.toggle('alert', alert); this._alert = alert; }
     // explored map
     const ex = Math.floor((P.pos.x + 2048) / 64), ez = Math.floor((P.pos.z + 2048) / 64);
     for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) { const x = ex + dx, z = ez + dz; if (x >= 0 && z >= 0 && x < 64 && z < 64) this.explored[z * 64 + x] = 1; }
     for (const k in SITES) { const s = SITES[k]; if (!this.discovered.has(k) && (s.x - P.pos.x) ** 2 + (s.z - P.pos.z) ** 2 < 70 * 70) this.discovered.add(k); }
+  }
+  // The land around him, from the same picture as the big map. Drawn again only when he has moved a few metres, or every couple of seconds for
+  // what moves on it: it is a small job, but there is no reason to do it eight times a second.
+  drawMinimap() {
+    const g = this.g, P = g.player, m = g.mapImage; if (!m) return;
+    const now = performance.now(), L = this._miniAt;
+    if (L && now - L.t < 2000 && (P.pos.x - L.x) ** 2 + (P.pos.z - L.z) ** 2 < 9) return;
+    this._miniAt = { t: now, x: P.pos.x, z: P.pos.z };
+    const cv = this.miniCv, x = cv.getContext('2d'), S = cv.width, R = 220, k = S / (2 * R), c = S / 2;
+    const px = m.width / 4096, sx = (P.pos.x + 2048) * px - R * px, sy = (P.pos.z + 2048) * px - R * px;
+    x.fillStyle = '#5c6a3e'; x.fillRect(0, 0, S, S); x.imageSmoothingEnabled = true;
+    x.drawImage(m, sx, sy, 2 * R * px, 2 * R * px, 0, 0, S, S);
+    x.fillStyle = 'rgba(14,12,8,.18)'; x.fillRect(0, 0, S, S);
+    // where a thing is on it; what is off it comes in to the rim if it matters (keep), or is left out
+    const at = (wx, wz, keep) => { let dx = (wx - P.pos.x) * k, dz = (wz - P.pos.z) * k; const d = Math.hypot(dx, dz), r = c - 14; if (d > r) { if (!keep) return null; dx *= r / d; dz *= r / d; } return [c + dx, c + dz]; };
+    const dot = (p, col, r) => { if (!p) return; x.fillStyle = col; x.strokeStyle = 'rgba(20,14,8,.85)'; x.lineWidth = 2; x.beginPath(); x.arc(p[0], p[1], r, 0, 6.2832); x.fill(); x.stroke(); };
+    for (const s of this.discovered) dot(at(SITES[s].x, SITES[s].z), '#f2e8d2', 5);
+    for (const f of g.camps) dot(at(f.pos.x, f.pos.z), '#e0702a', 6);
+    for (const a of this.compassMarks) dot(at(a.x, a.z, true), '#ff5a3a', 6);
+    if (g.companion && !g.companion.dead) dot(at(g.companion.pos.x, g.companion.pos.z, true), '#e8b080', 6);
+    if (this.pin) { const p = at(this.pin.x, this.pin.z, true); x.fillStyle = '#4fd0e0'; x.strokeStyle = 'rgba(20,14,8,.9)'; x.lineWidth = 2.5; x.beginPath(); x.moveTo(p[0], p[1] + 11); x.lineTo(p[0] + 9, p[1] - 6); x.lineTo(p[0] - 9, p[1] - 6); x.closePath(); x.fill(); x.stroke(); }
+    if (g.story && g.story.marker) { const p = at(g.story.marker.x, g.story.marker.z, true), r = 11; x.fillStyle = '#e8953a'; x.strokeStyle = 'rgba(20,14,8,.9)'; x.lineWidth = 2.5; x.beginPath(); x.moveTo(p[0], p[1] - r); x.lineTo(p[0] + r, p[1]); x.lineTo(p[0], p[1] + r); x.lineTo(p[0] - r, p[1]); x.closePath(); x.fill(); x.stroke(); }
+  }
+  // an element's opacity ('o') or width in % ('w'), written only if it differs from the last value written here
+  put(e, what, v) {
+    const k = what === 'o' ? '_o' : '_w';
+    if (e[k] === v) return;
+    e[k] = v;
+    if (what === 'o') e.style.opacity = v; else e.style.width = v + '%';
   }
   updateMarkers(yawDeg, W, dt) {
     const g = this.g, P = g.player;
@@ -154,6 +217,7 @@ export class UI {
     for (const m of this.compassMarks) { m.ttl -= dt; if (m.ttl > 0) marks.push(m); }
     this.compassMarks = this.compassMarks.filter((m) => m.ttl > 0);
     if (g.companion && !g.companion.dead) marks.push({ x: g.companion.pos.x, z: g.companion.pos.z, cls: 'comp', label: '' });
+    if (this.pin) marks.push({ ...this.pin, cls: 'pin', label: '' });
     while (this.markerEls.length < marks.length) { const e = el('div', 'cmark'); this.compass.parentElement.appendChild(e); this.markerEls.push(e); }
     this.markerEls.forEach((e, i) => {
       const m = marks[i];
@@ -162,21 +226,28 @@ export class UI {
       let d = ang - yawDeg; while (d > 180) d -= 360; while (d < -180) d += 360;
       const dist = Math.hypot(m.x - P.pos.x, m.z - P.pos.z);
       e.style.display = Math.abs(d) < 92 ? 'block' : 'none';
-      e.style.transform = `translateX(${d / 90 * (W / 2)}px)`;
-      e.className = 'cmark ' + (m.cls || '');
-      e.innerHTML = m.cls === 'obj' ? `<b>◆</b><span>${Math.round(dist)}m</span>` : m.cls === 'comp' ? '<b>●</b>' : `<b>!</b><span>${m.label}</span>`;
-      if (m.ttl !== undefined) e.style.opacity = Math.min(1, m.ttl / 4);
-      else e.style.opacity = 1;
+      e.style.transform = `translateX(${(d / 90 * (W / 2)).toFixed(1)}px)`;
+      const cls = 'cmark ' + (m.cls || ''), html = m.cls === 'obj' ? `<b>◆</b><span>${Math.round(dist)}m</span>` : m.cls === 'pin' ? `<b>▼</b><span>${Math.round(dist)}m</span>` : m.cls === 'comp' ? '<b>●</b>' : `<b>!</b><span>${m.label}</span>`;
+      if (cls !== e._cls) { e.className = cls; e._cls = cls; }
+      if (html !== e._html) { e.innerHTML = html; e._html = html; }
+      this.put(e, 'o', m.ttl !== undefined ? Math.min(1, m.ttl / 4).toFixed(2) : '1');
     });
   }
   // Where to go next, on the picture itself: over the target when it is in view, and otherwise an arrow at the edge of the
   // screen pointing the way to turn, with the distance. It leaves the screen once you are there.
   updatePointer(dt) {
-    const g = this.g, E = this.tgt || (this.tgt = { el: $('target'), label: $('target').querySelector('span'), arrow: $('target-arrow'), x: innerWidth / 2, y: innerHeight / 2, txt: '', cls: '' });
-    const M = g.story && g.story.marker, P = g.player, cam = g.camera;
+    const g = this.g, P = g.player, make = (id, arrow) => ({ el: $(id), label: $(id).querySelector('span'), arrow: $(arrow), x: innerWidth / 2, y: innerHeight / 2, txt: '', cls: '' });
+    this.pointTo(this.tgt || (this.tgt = make('target', 'target-arrow')), g.story && g.story.marker, dt);
+    // your own mark comes off when you get there
+    if (this.pin && (this.pin.x - P.pos.x) ** 2 + (this.pin.z - P.pos.z) ** 2 < 36) this.setPin(null);
+    this.pointTo(this.ptgt || (this.ptgt = make('ptarget', 'ptarget-arrow')), this.pin, dt);
+  }
+  setPin(p) { this.pin = p; this._miniAt = null; }
+  pointTo(E, M, dt) {
+    const g = this.g, P = g.player, cam = g.camera;
     const dist = M ? Math.hypot(M.x - P.pos.x, M.z - P.pos.z) : 0;
     const show = M && !g.uiBlocking && !g.cinematic && !P.dead && dist > 4 && !(P.aim > 0.3);
-    E.el.style.opacity = show ? 1 : 0;
+    this.put(E.el, 'o', show ? '1' : '0');
     if (!show) return;
     const wy = M.y !== undefined ? M.y : groundHeight(M.x, M.z) + 1.6;
     // in the camera's own frame: +x right, +y up, -z ahead
@@ -347,6 +418,7 @@ export class UI {
       x.strokeStyle = '#c0501e'; x.lineWidth = 3; x.beginPath(); x.moveTo(mx, my - 9); x.lineTo(mx + 9, my); x.lineTo(mx, my + 9); x.lineTo(mx - 9, my); x.closePath(); x.stroke();
       x.lineWidth = 1.5; x.globalAlpha = 0.6; x.beginPath(); x.arc(mx, my, pulse, 0, 6.28); x.stroke(); x.globalAlpha = 1;
     }
+    if (this.pin) { const [mx, my] = toMap(this.pin.x, this.pin.z); x.fillStyle = '#20a8bc'; x.strokeStyle = '#f4ead2'; x.lineWidth = 2.5; x.beginPath(); x.moveTo(mx, my); x.lineTo(mx + 10, my - 18); x.arc(mx, my - 22, 10.8, 0.38, Math.PI - 0.38, true); x.closePath(); x.stroke(); x.fill(); x.fillStyle = '#f4ead2'; x.beginPath(); x.arc(mx, my - 22, 4, 0, 6.2832); x.fill(); }
     const P = g.player; const [px, py] = toMap(P.pos.x, P.pos.z);
     x.save(); x.translate(px, py); x.rotate(-P.yaw); x.fillStyle = ink; x.strokeStyle = '#f4ead2'; x.lineWidth = 2;
     x.beginPath(); x.moveTo(0, -11); x.lineTo(7, 8); x.lineTo(0, 4); x.lineTo(-7, 8); x.closePath(); x.stroke(); x.fill(); x.restore();

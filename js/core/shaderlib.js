@@ -59,6 +59,19 @@ vec3 applyAtmos(vec3 col, vec3 wp) {
   vec3 fc = mix(uFogColor, uFogSun, s);
   return mix(col, fc, clamp(f, 0.0, 1.0));
 }`;
+// the same sum for a vertex shader: the fog's colour and strength, to mix in with one line in the fragment shader
+export const ATMOS_VARY = ATMOS_GLSL + /* glsl */`
+void atmosVary(vec3 wp, out vec3 fc, out float f) {
+  vec3 ray = wp - cameraPosition;
+  float dist = length(ray);
+  vec3 dir = ray / max(dist, 1e-3);
+  float y0 = cameraPosition.y - uFogBase;
+  float hd = uFogHeight * dir.y * dist;
+  float k = abs(hd) > 1e-4 ? (1.0 - exp(-hd)) / hd : 1.0;
+  float integ = uFogDensity * exp(clamp(-uFogHeight * y0, -20.0, 4.0)) * dist * k;
+  f = clamp(1.0 - exp(-max(integ, 0.0)), 0.0, 1.0);
+  fc = mix(uFogColor, uFogSun, pow(max(dot(dir, uSunDirF), 0.0), 6.0));
+}`;
 
 THREE.ShaderChunk.fog_pars_fragment = `
 #ifdef USE_FOG
@@ -85,6 +98,22 @@ export function patch(mat, key, fn) {
   mat.customProgramCacheKey = () => k;
   return mat;
 }
+
+// Noise from a small texture: on a lean level this replaces the vnoise function, after NOISE_GLSL. One texture read in place of four
+// hashes and a blend, on every pixel of ground and water, is the largest saving there is in a phone's fragment shaders.
+// (Rounding the lookup's position inside its texel gives the same soft blobs as the function: plain linear filtering shows the grid.)
+export const NOISE_LOOKUP = /* glsl */`
+uniform sampler2D tNoise;
+float vnoiseLookup(vec2 p) { vec2 q = p + 0.5, i = floor(q), f = q - i; f = f * f * (3.0 - 2.0 * f); return texture2D(tNoise, (i + f - 0.5) / 256.0).r; }
+#define vnoise vnoiseLookup
+`;
+G.tNoise = { value: (() => {
+  const N = 256, d = new Uint8Array(N * N); let s = 0x2f6e2b1;
+  for (let i = 0; i < d.length; i++) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; d[i] = s & 255; }
+  const t = new THREE.DataTexture(d, N, N, THREE.RedFormat);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.magFilter = THREE.LinearFilter; t.minFilter = THREE.LinearMipmapLinearFilter; t.generateMipmaps = true; t.needsUpdate = true;
+  return t;
+})() };
 
 export const NOISE_GLSL = /* glsl */`
 float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }

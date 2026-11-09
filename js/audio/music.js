@@ -31,6 +31,7 @@ export function ragaForTime(hour, season) {
   return 'malkauns';
 }
 
+const LEAD = 0.4;  // how far ahead (s) the drone and the drums are scheduled: a main-thread stall shorter than this is not heard
 const SA = 146.83; // D3 tanpura Sa; bansuri plays one octave up (D4)
 const hz = (semi, oct = 0) => SA * Math.pow(2, semi / 12 + oct);
 
@@ -46,7 +47,7 @@ export class Music {
     this.drG = this.ctx.createGain(); this.drG.gain.value = 0; this.drG.connect(this.out);
     const dsend = this.ctx.createGain(); dsend.gain.value = 0.3; this.drG.connect(dsend); dsend.connect(audio.verbSend);
     this.render();
-    this.tanT = 0; this.tanIdx = 0; this.beat = 0; this.beatT = 0; this.cycle = 0;
+    this.tanNext = 0; this.tanIdx = 0; this.beat = 0; this.beatT = 0; this.cycle = 0;
     this.queue = []; // scheduled phrase end times
     this.flBusyUntil = 0;
   }
@@ -59,7 +60,11 @@ export class Music {
       const L = sr / freq, size = Math.ceil(L) + 8, buf = new Float32Array(size);
       // pluck excitation: lowpassed noise, plucked near the bridge
       let lp = 0; for (let i = 0; i < size; i++) { lp += ((Math.random() * 2 - 1) - lp) * 0.5; buf[i] = lp; }
+      // (no standing offset in the pluck: the loop passes one undamped, and it fed the term below until the string blew up)
+      { let m = 0; for (let i = 0; i < size; i++) m += buf[i]; m /= size; for (let i = 0; i < size; i++) buf[i] -= m; }
       let w = 0, prev = 0;
+      // (the string's damping filter works per sample, so at a lower sample rate it is opened up by as much, or the strings go dull)
+      const rr = Math.min(1, sr / 44100), damp = (1 + Math.sqrt(1 - rr * rr)) / 2, bright = 0.02 * rr * rr;
       for (let n = 0; n < N; n++) {
         // jawari: the string grazes the curved bridge, effectively shortening it in proportion to displacement
         const y = buf[w];
@@ -67,8 +72,11 @@ export class Music {
         let rp = w - eff; while (rp < 0) rp += size;
         const i0 = Math.floor(rp), fr = rp - i0, i1 = (i0 + 1) % size;
         const s = buf[i0] * (1 - fr) + buf[i1] * fr;
-        const filt = 0.5 * (s + prev) * 0.9985; prev = s;
-        buf[w] = filt + 0.02 * filt * Math.abs(filt);
+        const filt = (damp * s + (1 - damp) * prev) * 0.9985; prev = s;
+        // A touch of brightness that grows with the swing. It adds energy, which the damping must take back out: at a low sample rate it could not, the
+        // string rang on or ran away, and one infinite sample made the whole normalised string NaN, which then filled the reverb and compressor and
+        // silenced everything for seconds. So it is scaled with the damping's reach, and the bound is the last resort.
+        buf[w] = Math.max(-1.2, Math.min(1.2, filt + bright * filt * Math.abs(filt)));
         out[n] = s;
         w = (w + 1) % size;
       }
@@ -76,7 +84,7 @@ export class Music {
       const res = (f, r, g) => { const c = 2 * r * Math.cos(2 * Math.PI * f / sr); let y1 = 0, y2 = 0; const o = new Float32Array(N); for (let n = 0; n < N; n++) { const y = out[n] + c * y1 - r * r * y2; y2 = y1; y1 = y; o[n] = y * g; } return o; };
       const r1 = res(190, 0.995, 0.004), r2 = res(520, 0.99, 0.006);
       let mx = 0; for (let n = 0; n < N; n++) { out[n] = out[n] * 0.8 + r1[n] + r2[n]; mx = Math.max(mx, Math.abs(out[n])); }
-      for (let n = 0; n < N; n++) out[n] = out[n] / mx * 0.8 * Math.min(1, n / 200);
+      const tail = sr * 0.3; for (let n = 0; n < N; n++) out[n] = out[n] / mx * 0.8 * Math.min(1, n / 200, (N - n) / tail);   // (ends on nothing, not a click)
       return mk(out);
     };
     this.buffers.tan = {
@@ -85,6 +93,7 @@ export class Music {
     };
     // drums
     const drum = (f, modes, decay, noiseAmt, noiseF, drop, dur) => {
+      modes = modes.filter(([ratio]) => f * ratio * (1 + drop) < sr * 0.48);   // (a partial above the top of the sample rate would fold back down as a wrong note)
       const N = Math.floor(sr * dur), out = new Float32Array(N);
       const ph = modes.map(() => Math.random() * 6.28);
       let nlp = 0;
@@ -116,6 +125,7 @@ export class Music {
   play(buf, t, gain, rate = 1, dest) {
     const s = this.ctx.createBufferSource(); s.buffer = buf; s.playbackRate.value = rate;
     const g = this.ctx.createGain(); g.gain.value = gain; s.connect(g); g.connect(dest || this.drG); s.start(t);
+    s.onended = () => g.disconnect();   // (out of the graph as soon as it is over, not when the garbage collector next comes by)
     return s;
   }
   // ------------------------------------------------------------------ bansuri voice
@@ -169,6 +179,8 @@ export class Music {
     }
     env.gain.linearRampToValueAtTime(0.0, t + 0.5);
     for (const s of [osc, h3, nz, vib]) { s.start(t0); s.stop(t + 0.7); }
+    osc.onended = () => out.disconnect();
+    if (opts.dest) this.a.played(opts.dest, t + 0.7);   // (it may be playing through a sound in the world: a flute heard from far off)
     return t + 0.5;
   }
   // ------------------------------------------------------------------ bana (bowed fiddle) voice
@@ -198,6 +210,7 @@ export class Music {
     }
     env.gain.linearRampToValueAtTime(0, t + 0.4);
     for (const s of [osc, nz, vib, dr]) { s.start(t0); s.stop(t + 0.6); }
+    osc.onended = () => out.disconnect();
     return t + 0.4;
   }
   // ------------------------------------------------------------------ alap generator
@@ -243,6 +256,13 @@ export class Music {
     this.play(b, t, 0.45 + Math.random() * 0.08, 1 + (Math.random() - 0.5) * 0.002, this.tanG);
     this.tanIdx++;
   }
+  // The drone keeps its time on the audio clock, plucks scheduled ahead. Timed by frames it slowed and stumbled with the frame rate: a frame's
+  // time is capped at 0.05 s, so at 15 frames a second the strings came a quarter late, each at whatever moment a frame happened to land.
+  // If the main thread stalls for longer than the lead, it picks up again from now rather than sounding the missed plucks in a burst.
+  tanpuraAhead(t, every, jitter = 0) {
+    if (this.tanNext < t) this.tanNext = t + 0.02;
+    while (this.tanNext < t + LEAD) { this.tanpuraTick(this.tanNext); this.tanNext += every + Math.random() * jitter; }
+  }
   // ------------------------------------------------------------------ public
   stinger(kind) {
     const t = this.ctx.currentTime + 0.1;
@@ -278,14 +298,13 @@ export class Music {
     if (this.titleBus) return;
     const t = this.ctx.currentTime;
     this.titleBus = this.cue(); this.titleBus.dest.gain.value = 1;
-    this.titleNext = t + 1.2; this.titleCount = 0; this.tanT = 0; this.raga = 'bilawal'; this.lastSemi = 0;
+    this.titleNext = t + 1.2; this.titleCount = 0; this.tanNext = 0; this.raga = 'bilawal'; this.lastSemi = 0;
     this.tanG.gain.cancelScheduledValues(t); this.tanG.gain.setTargetAtTime(0.3, t, 1.5);
   }
   titleUpdate(dt) {
     if (!this.titleBus || this.ctx.state !== 'running') return;
     const t = this.ctx.currentTime;
-    this.tanT -= dt;
-    if (this.tanT <= 0) { this.tanT = 1.25; this.tanpuraTick(t + 0.02); }
+    this.tanpuraAhead(t, 1.25);
     if (t < this.titleNext) return;
     const n = this.titleCount++, opts = { gain: 0.17, dest: this.titleBus.dest };
     let notes;
@@ -319,7 +338,8 @@ export class Music {
       const bpm = 128 + this.combat * 30, bp = 60 / bpm;
       // Keherwa: Dha Ge Na Ti | Na Ka Dhi Na  (mapped to mandar strokes)
       const pat = ['dhum', 'ta', 'ta', 'tin', 'ta', 'timki', 'dhum', 'ta'];
-      while (this.beatT < t + 0.25) {
+      if (this.beatT < t) this.beatT = t + 0.02;   // (a stall longer than the lead: on from here, not every missed stroke at once)
+      while (this.beatT < t + LEAD) {
         const b = this.beat % 8, k = pat[b];
         this.play(this.buffers[k], this.beatT, k === 'dhum' ? 0.9 : 0.55, 1);
         if (this.combat > 0.4) this.play(this.buffers.timki, this.beatT + bp / 2, 0.25 + Math.random() * 0.15);
@@ -331,8 +351,7 @@ export class Music {
         }
         this.beatT += bp; this.beat++;
       }
-      this.tanT -= dt;
-      if (this.tanT <= 0) { this.tanT = 1.25; this.raga = raga; this.tanpuraTick(t + 0.02); }
+      this.raga = raga; this.tanpuraAhead(t, 1.25);
       return;
     }
     // exploration sessions: long silences, then an alap over tanpura
@@ -348,8 +367,7 @@ export class Music {
       return;
     }
     const S = this.session;
-    this.tanT -= dt;
-    if (this.tanT <= 0) { this.tanT = 1.2 + Math.random() * 0.15; this.tanpuraTick(t + 0.02); }
+    this.tanpuraAhead(t, 1.2, 0.15);
     if (t > S.end) {
       if (t > S.nextPhrase) { // closing: descend to Sa
         this.tanG.gain.setTargetAtTime(0, t + 2, 3);

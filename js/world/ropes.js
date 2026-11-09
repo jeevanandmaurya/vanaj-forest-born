@@ -11,8 +11,8 @@ import { toon } from '../core/toon.js';
 import { PAINTED } from '../core/palette.js';
 import { BARK_COL, vineParts } from './flora.js';
 
-const MAX_ROPES = 44, MAX_NODES = 14, SUB = 2, RAD = 6, RINGS = (MAX_NODES - 1) * SUB + 1;
-const MAX_VERTS = MAX_ROPES * RINGS * (RAD + 1), ITER = 8;
+const MAX_ROPES = 44, MAX_NODES = 14, SUBS = 2, SIDES = 6, RINGS = (MAX_NODES - 1) * SUBS + 1;
+const MAX_VERTS = MAX_ROPES * RINGS * (SIDES + 1), ITERS = 8;
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _t = new THREE.Vector3(), _n = new THREE.Vector3(), _bn = new THREE.Vector3(), _p = new THREE.Vector3(), _m = new THREE.Matrix4(), _s = new THREE.Vector3(1, 1, 1), _q = new THREE.Quaternion();
 const ROOT_C = new THREE.Color(BARK_COL.banyan || '#8a8070').multiplyScalar(0.8), VINE_C = new THREE.Color('#5e6a36');
 
@@ -40,12 +40,14 @@ export class Ropes {
     g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
     g.setAttribute('normal', new THREE.BufferAttribute(this.nor, 3).setUsage(THREE.DynamicDrawUsage));
     g.setAttribute('color', new THREE.BufferAttribute(this.col, 3).setUsage(THREE.DynamicDrawUsage));
-    const idx = new Uint32Array(MAX_ROPES * (RINGS - 1) * RAD * 6); g.setIndex(new THREE.BufferAttribute(idx, 1).setUsage(THREE.DynamicDrawUsage)); this.idx = idx;
+    const idx = new Uint32Array(MAX_ROPES * (RINGS - 1) * SIDES * 6); g.setIndex(new THREE.BufferAttribute(idx, 1).setUsage(THREE.DynamicDrawUsage)); this.idx = idx;
+    this.colDirty = true;
     const mat = PAINTED ? toon({ color: 0xffffff, vertexColors: true, rim: 0.4, key: 'rope' }) : new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.95 });
     this.mesh = new THREE.Mesh(g, mat); this.mesh.frustumCulled = false; this.mesh.castShadow = true; this.mesh.receiveShadow = true; game.scene.add(this.mesh);
     const parts = vineParts();
     this.leaves = new THREE.InstancedMesh(parts.leafNode, parts.leaf, 240); this.leaves.count = 0; this.leaves.frustumCulled = false; this.leaves.castShadow = false; this.leaves.instanceMatrix.setUsage(THREE.DynamicDrawUsage); game.scene.add(this.leaves);
   }
+  applyQuality() { this.colDirty = true; }   // (Low's ropes have fewer rings and sides, so their triangles are listed afresh)
   of(V) { return this.active.get(V) || null; }
   // a point s metres down the rope from its top
   sample(V, s, out) {
@@ -60,25 +62,26 @@ export class Ropes {
     for (let i = i0; i <= i1; i++) { const w = Math.max(0, 1 - Math.abs(i - f) / 2) * h, k = i * 3; R.x[k] += ax * w; R.x[k + 1] += ay * w; R.x[k + 2] += az * w; }
   }
   list(focus) {
-    const g = this.g, near = g.near, keep = new Set(), cand = [];
-    for (const T of g.veg.climbNear(focus.x, focus.z, 40)) {
+    const g = this.g, near = g.near, keep = new Set(), cand = [], Q = g.q, reach = Q.ropeMax < MAX_ROPES ? 22 : 34;
+    for (const T of g.veg.climbNear(focus.x, focus.z, reach + 6)) {
       if (!T.vines || !T.vines.length) continue;
       const nearSlot = near && near.slotOf(T);
       for (const V of T.vines) {
         if (V.fixed && !nearSlot) continue;   // a root is part of the instanced tree's mesh until the tree goes near
-        const d = Math.hypot(V.a.x - focus.x, V.a.z - focus.z); if (d < 34) cand.push([d, V, T]);
+        const d = Math.hypot(V.a.x - focus.x, V.a.z - focus.z); if (d < reach) cand.push([d, V, T]);
       }
     }
     cand.sort((a, b) => a[0] - b[0]);
-    for (let i = 0; i < cand.length && keep.size < MAX_ROPES; i++) {
+    for (let i = 0; i < cand.length && keep.size < Q.ropeMax; i++) {
       const [, V, T] = cand[i]; keep.add(V);
-      if (!this.active.has(V)) { this.active.set(V, new Rope(V, T)); V.active = true; }
+      if (!this.active.has(V)) { this.active.set(V, new Rope(V, T)); V.active = true; this.colDirty = true; }
     }
-    for (const [V, R] of this.active) if (!keep.has(V) && !V.held) { this.active.delete(V); V.active = false; }
+    for (const [V, R] of this.active) if (!keep.has(V) && !V.held) { this.active.delete(V); V.active = false; this.colDirty = true; }
   }
   update(dt, focus) {
     if (--this.t <= 0) { this.t = 15; this.list(focus); }
-    const h = Math.min(1 / 30, Math.max(1 / 240, dt || 1 / 60)), g = this.g, P = g.player, near = g.near;
+    if (!this.active.size && !this.drawn) return;   // (none in reach: nothing to work out or upload)
+    const h = Math.min(1 / 30, Math.max(1 / 240, dt || 1 / 60)), g = this.g, P = g.player, near = g.near, ITER = g.q.ropeMax < MAX_ROPES ? 4 : ITERS;
     const windX = G.uWind.value.x, windZ = G.uWind.value.y, st = G.uWindStrength.value, time = G.uTime.value;
     // Vanaj's body, as a segment: ropes are pushed clear of it
     const px = P.pos.x, py = P.pos.y, pz = P.pos.z, PR = 0.3;
@@ -130,7 +133,9 @@ export class Ropes {
   }
   draw() {
     const { pos, nor, col, idx } = this; let v = 0, ii = 0, lf = 0, m = 0;
-    const leaves = this.leaves;
+    // Low draws them thinner in the mesh: half the rings, four sides. (Which ropes are out changes only now and then, and the indices
+    // and colours with it, so those are written and uploaded only then. The buffers are sized for 44 ropes; only what is used is uploaded.)
+    const leaves = this.leaves, lean = this.g.q.ropeMax < MAX_ROPES, SUB = lean ? 1 : SUBS, RAD = lean ? 4 : SIDES, dirty = this.colDirty;
     for (const R of this.active.values()) {
       if (m >= MAX_ROPES) break; m++;
       const n = R.N, x = R.x, rows = (n - 1) * SUB + 1, base = v, C = R.col;
@@ -152,20 +157,23 @@ export class Ropes {
         for (let j = 0; j <= RAD; j++) {
           const a = j / RAD * 6.2832, ca = Math.cos(a), sa = Math.sin(a), ox = nx * ca + bx * sa, oy = ny * ca + by * sa, oz = nz * ca + bz * sa, w = v * 3;
           pos[w] = px + ox * rad; pos[w + 1] = py + oy * rad; pos[w + 2] = pz + oz * rad; nor[w] = ox; nor[w + 1] = oy; nor[w + 2] = oz;
-          const sh = tone * (0.92 + 0.08 * ca);
-          col[w] = C.r * sh; col[w + 1] = C.g * sh; col[w + 2] = C.b * sh; v++;
+          if (dirty) { const sh = tone * (0.92 + 0.08 * ca); col[w] = C.r * sh; col[w + 1] = C.g * sh; col[w + 2] = C.b * sh; }
+          v++;
         }
       }
-      for (let r = 0; r < rows - 1; r++) for (let j = 0; j < RAD; j++) { const a = base + r * (RAD + 1) + j, b = a + 1, c = a + RAD + 1, d = c + 1; idx[ii++] = a; idx[ii++] = c; idx[ii++] = b; idx[ii++] = b; idx[ii++] = c; idx[ii++] = d; }
+      if (dirty) for (let r = 0; r < rows - 1; r++) for (let j = 0; j < RAD; j++) { const a = base + r * (RAD + 1) + j, b = a + 1, c = a + RAD + 1, d = c + 1; idx[ii++] = a; idx[ii++] = c; idx[ii++] = b; idx[ii++] = b; idx[ii++] = c; idx[ii++] = d; }
       // leaves in tufts along a liana
       if (!R.fixed) for (let i = 1; i < n; i += 1) {
         if (lf >= 240) break;
         const k = i * 3; _p.set(x[k], x[k + 1], x[k + 2]); _m.compose(_p, _q.identity(), _s); leaves.setMatrixAt(lf++, _m);
       }
     }
-    leaves.count = lf; leaves.instanceMatrix.needsUpdate = true;
-    this.geo.index.needsUpdate = true; for (const a of ['position', 'normal', 'color']) this.geo.attributes[a].needsUpdate = true;
-    this.geo.setDrawRange(0, ii);
+    leaves.count = lf; leaves.instanceMatrix.clearUpdateRanges(); if (lf) { leaves.instanceMatrix.addUpdateRange(0, lf * 16); leaves.instanceMatrix.needsUpdate = true; }
+    const send = (A, n) => { A.clearUpdateRanges(); if (n) { A.addUpdateRange(0, n); A.needsUpdate = true; } };
+    const G = this.geo.attributes;
+    send(G.position, v * 3); send(G.normal, v * 3);
+    if (dirty) { send(G.color, v * 3); send(this.geo.index, ii); this.geo.setDrawRange(0, ii); this.colDirty = false; }
+    this.mesh.visible = v > 0; this.leaves.visible = lf > 0; this.drawn = v > 0;
   }
 }
 function limbFrac(L, p) {

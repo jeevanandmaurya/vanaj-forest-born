@@ -33,8 +33,8 @@ site('village', VILLAGE.x, VILLAGE.z, 'Turia Village');
 const std = (o) => new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0, ...o });
 
 export class Props {
-  constructor(scene, T, veg) {
-    this.scene = scene; this.T = T; this.veg = veg;
+  constructor(scene, T, veg, q) {
+    this.scene = scene; this.T = T; this.veg = veg; this.q = q;
     this.inter = []; // interactables
     this.colliders = []; // [x,z,r]
     this.mounds = []; this.hives = []; this.boulders = [];
@@ -58,6 +58,95 @@ export class Props {
     this.buildBoulders(); this.buildMounds(); this.buildDen(); this.buildHives(); this.buildMahuaClue();
     this.buildStumps(); this.buildCave(); this.buildDholeDen(); this.buildSandbar(); this.buildShrine(); this.buildTower(); this.buildVillage(); this.buildLogs();
     if (PAINTED) { toonify(this.group, { outline: 0, rim: 0.3, soften: 3 }); if (this.crops) this.cropMat = this.crops.material; }   // other props: toon light, textures softened to painted patches
+    // the instanced things, with all their instances kept aside for update() to choose from
+    this.spread = [];
+    this.group.traverse((o) => { if (o.isInstancedMesh && o.count > 1) this.spread.push({ im: o, n: o.count, m: o.instanceMatrix.array.slice(0, o.count * 16), c: o.instanceColor ? o.instanceColor.array.slice(0, o.count * 3) : null }); });
+    this.applyQuality();
+  }
+  // Whatever was anywhere in front of the camera was drawn, even the village from two kilometres off, behind the whole forest. And boulders,
+  // termite mounds, crops and fences are each one mesh of instances across the whole map, so all of them went together, and again for the
+  // shadows: the termite mounds alone were 81,000 triangles at any moment. Now only what is out to where the forest is drawn, or a
+  // little past it, listed again every 20 m walked.
+  update(cam, force = false) {
+    if (!force && this.lastCull && (cam.x - this.lastCull.x) ** 2 + (cam.z - this.lastCull.z) ** 2 < 400) return;
+    this.lastCull = { x: cam.x, z: cam.z };
+    const R2 = this.q.treeFar * this.q.treeFar, seen = this.q.treeFar * 1.25;
+    // (what is too far off leaves the group altogether, so that a frame has hundreds of things less to walk over)
+    for (const P of this.pieces || []) { const on = Math.hypot(P.x - cam.x, P.z - cam.z) - P.r < seen; if (on && !P.o.parent) this.group.add(P.o); else if (!on && P.o.parent) this.group.remove(P.o); }
+    for (const S of this.spread) {
+      const { im, m, c } = S, A = im.instanceMatrix, C = im.instanceColor; let k = 0;
+      for (let i = 0; i < S.n; i++) {
+        const o = i * 16, dx = m[o + 12] - cam.x, dz = m[o + 14] - cam.z;
+        if (dx * dx + dz * dz > R2) continue;
+        A.array.set(m.subarray(o, o + 16), k * 16);
+        if (c) C.array.set(c.subarray(i * 3, i * 3 + 3), k * 3);
+        k++;
+      }
+      im.count = k; im.visible = k > 0; im.boundingSphere = null;   // (three.js works it out again, for the instances now in the list)
+      A.clearUpdateRanges(); if (k) { A.addUpdateRange(0, k * 16); A.needsUpdate = true; }
+      if (C) { C.clearUpdateRanges(); if (k) { C.addUpdateRange(0, k * 3); C.needsUpdate = true; } }
+    }
+  }
+  // On a lean level, only the big things cast a shadow: the walls, the den's fallen tree and the like, not the several hundred small parts of them
+  applyQuality() {
+    const low = !!this.q.lean, v = new THREE.Vector3();
+    for (const P of this.pieces || []) if (!P.o.parent) this.group.add(P.o);
+    this.group.updateMatrixWorld(true);
+    this.group.traverse((o) => {
+      if (!o.isMesh) return;
+      if (o.userData.casts === undefined) o.userData.casts = o.castShadow;
+      if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere();
+      const small = o.userData.small ?? o.geometry.boundingSphere.radius * o.getWorldScale(v).x < 1.5;
+      o.castShadow = o.userData.casts && !(low && (o.isInstancedMesh || small));
+    });
+    this.lastCull = null;
+  }
+  // The den, the village and the rest are built of some four hundred separate small meshes, and each one in view is a draw call: facing the
+  // den, nearly six hundred in a frame. None of them ever moves. So once the physics has read them (js/core/physics.js wants them apart),
+  // those with the same material in the same 64 m square become one mesh. A piece something else keeps hold of (a hive, a clue) stays as it is.
+  mergeStatic() {
+    this.group.updateMatrixWorld(true);
+    const sets = new Map(), v = new THREE.Vector3(), keep = new Set(), same = new Map();
+    for (const it of [...this.hives, ...this.inter]) if (it.mesh) it.mesh.traverse((o) => keep.add(o));
+    const shown = (o) => { for (; o; o = o.parent) if (!o.visible) return false; return true; };
+    // (each piece was made with a material of its own, many of them alike: alike, they can share one, and so a mesh)
+    const hex = (c) => (c ? c.getHexString() : '');
+    const alike = (m) => { const k = [m.type, m.map ? m.map.uuid : '', hex(m.color), m.vertexColors, m.side, m.alphaTest, m.flatShading, hex(m.emissive), m.emissiveIntensity, m.polygonOffset, m.polygonOffsetFactor, m.polygonOffsetUnits, m.customProgramCacheKey()].join('|'); if (!same.has(k)) same.set(k, m); return same.get(k); };
+    this.group.traverse((o) => {
+      if (!o.isMesh || o.isInstancedMesh || o.isSkinnedMesh || keep.has(o) || Array.isArray(o.material) || o.material.transparent || o.customDepthMaterial || !shown(o)) return;
+      o.material = alike(o.material);
+      const g = o.geometry;
+      if (!g.attributes.position || Object.keys(g.morphAttributes).length || g.groups.length || o.matrixWorld.determinant() < 0) return;   // (a mirrored piece needs its own winding)
+      if (!g.boundingSphere) g.computeBoundingSphere();
+      const small = g.boundingSphere.radius * o.getWorldScale(v).x < 1.5;
+      v.copy(g.boundingSphere.center).applyMatrix4(o.matrixWorld);
+      const attrs = Object.keys(g.attributes).sort().map((k) => k + g.attributes[k].itemSize + g.attributes[k].array.constructor.name + g.attributes[k].normalized).join();
+      const key = [Math.floor(v.x / 64), Math.floor(v.z / 64), o.material.uuid, o.userData.casts, o.receiveShadow, small, !!g.index, attrs].join('|');
+      if (!sets.has(key)) sets.set(key, { list: [], small });
+      sets.get(key).list.push(o);
+    });
+    for (const { list, small } of sets.values()) {
+      if (list.length < 2) continue;
+      const geo = mergeGeometries(list.map((o) => o.geometry.clone().applyMatrix4(o.matrixWorld)), false);
+      if (!geo) continue;
+      geo.computeBoundingSphere();
+      const m = new THREE.Mesh(geo, list[0].material);
+      m.receiveShadow = list[0].receiveShadow; m.matrixAutoUpdate = false; m.userData.casts = list[0].userData.casts; m.userData.small = small;
+      this.group.add(m);
+      for (const o of list) o.parent.remove(o);
+    }
+    // the groups they came out of, now empty
+    const empty = []; this.group.traverse((o) => { if (o !== this.group && !o.isMesh && !o.children.length) empty.push(o); });
+    for (const o of empty) o.parent.remove(o);
+    // where each remaining piece stands, for update() to leave out what is too far off to see
+    this.pieces = [];
+    const box = new THREE.Box3(), sph = new THREE.Sphere();
+    for (const o of this.group.children) {
+      if (o.isInstancedMesh || !o.visible) continue;
+      box.setFromObject(o); if (box.isEmpty()) continue;
+      box.getBoundingSphere(sph); this.pieces.push({ o, x: sph.center.x, z: sph.center.z, r: sph.radius });
+    }
+    this.applyQuality();
   }
   rockGeo(seed, r) {
     const g = new THREE.IcosahedronGeometry(r, 2), p = g.attributes.position, rng = mulberry32(seed);

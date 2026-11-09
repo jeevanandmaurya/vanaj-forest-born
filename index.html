@@ -9,7 +9,7 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%230d0e0b'/%3E%3Cpath d='M32 8 L40 30 L32 56 L24 30Z' fill='%23d3954a'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Karla:wght@400;500;600&family=Tiro+Devanagari+Hindi&family=Kalam:wght@400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Karla:wght@400;500;600&family=Tiro+Devanagari+Hindi&display=swap" rel="stylesheet">
 <script type="importmap">{ "imports": { "three": "./lib/three.module.min.js", "three/addons/": "./lib/addons/", "@dimforge/rapier3d-compat": "./lib/rapier/rapier.mjs" } }</script>
 <style>
 :root { --bone:#ebe3d0; --bone2:rgba(235,227,208,.72); --ochre:#d3954a; --ember:#e8743a; --blood:#9c2418; --ink:#0d0e0b; --panel:rgba(16,15,12,.82); --line:rgba(235,227,208,.16); --serif:'Cormorant Garamond', Georgia, serif; --sans:'Karla', system-ui, sans-serif; }
@@ -27,6 +27,15 @@ button { font-family:var(--sans); cursor:pointer; }
 #loading p.q { font-family:var(--serif); font-style:italic; font-size:21px; color:var(--bone2); margin:18px 0 46px; max-width:620px; text-align:center; line-height:1.5; }
 .lbar { width:320px; height:2px; background:rgba(255,255,255,.1); overflow:hidden; } #load-bar { height:100%; width:0; background:var(--ochre); transition:width .3s; }
 #load-step { margin-top:14px; font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:rgba(235,227,208,.5); }
+/* loading done, on a phone: the bar gives way to the offer of full screen */
+#load-go { display:none; flex-direction:column; align-items:center; gap:6px; }
+#loading.ready .lbar, #loading.ready #load-step { display:none; }
+#loading.ready #load-go { display:flex; }
+#go-full { background:none; border:0; border-bottom:1px solid var(--ochre); color:var(--bone); font-family:var(--serif); font-size:26px; letter-spacing:.03em; padding:6px 12px 8px; }
+#go-stay { background:none; border:0; color:var(--bone2); font-family:var(--serif); font-style:italic; font-size:16px; padding:8px 14px; }
+#loading h1 { font-size:clamp(44px, 15vw, 84px); }
+@media (max-height: 520px) { #loading h1 { font-size:40px; } #loading p.q { font-size:14px; line-height:1.35; margin:8px 0 12px; max-width:78vw; } #go-full { font-size:20px; padding:3px 10px 5px; } #go-stay { font-size:14px; padding:6px 12px; } }
+@media (max-width: 560px) and (min-height: 521px) { #loading p.q { max-width:84vw; font-size:18px; } }
 /* title */
 #title { position:fixed; inset:0; z-index:40; display:none; background:linear-gradient(90deg, rgba(8,8,6,.86) 0%, rgba(8,8,6,.55) 38%, rgba(8,8,6,0) 70%); }
 #title.show { display:block; }
@@ -154,15 +163,17 @@ button { font-family:var(--sans); cursor:pointer; }
 #mapcv { width:min(calc(100vh - 122px), calc(100vw - 68px), 760px); height:auto; aspect-ratio:1; display:block; border:2px solid #6a5034; border-radius:4px; box-shadow:0 6px 30px rgba(0,0,0,.45); }
 #map .box { padding:14px 16px 16px; min-width:0; overflow:hidden; background:rgba(40,30,20,.88); } #map h2 { margin:0 0 8px; font-size:26px; }
 /* prologue */
-#prologue { position:fixed; inset:0; z-index:45; background:#000; display:none; opacity:0; transition:opacity .7s; }
-#prologue.on { display:block; } #prologue.show { opacity:1; }
-#prologue-cv { position:absolute; inset:0; width:100%; height:100%; transition:opacity .9s; } #prologue-cv.out { opacity:0; }
-#prologue-line { position:absolute; left:50%; bottom:0; transform:translateX(-50%); width:min(1040px, 92vw); height:var(--capH, 19vh); display:flex; align-items:center; justify-content:center; text-align:center; font-family:'Kalam', var(--serif); font-size:clamp(17px, 2.5vh, 27px); line-height:1.35; padding:0 96px 0 24px; opacity:0; transition:opacity .7s; color:#2a2018; }
+#prologue { position:fixed; inset:0; z-index:45; display:none; flex-direction:column; align-items:center; justify-content:center; gap:clamp(4px, 1.6vh, 14px); padding:clamp(8px, 2.4vh, 24px) 16px 0; opacity:0; transition:opacity .35s; background:#cdbb94 radial-gradient(ellipse at center, #dccdaa 40%, #b7a27a 100%); color:#2a2118; }
+#prologue.on { display:flex; } #prologue.show { opacity:1; }
+/* a painting on its page: ruled in ink with a band of red ochre, as album leaves are */
+#pro-frame { position:relative; flex:none; width:min(calc(100vw - 40px), calc((100vh - clamp(92px, 17vh, 150px)) * 16 / 9)); aspect-ratio:16 / 9; overflow:hidden; background:#d8c8a4; outline:1px solid #2a2118; box-shadow:0 0 0 4px #cdbb94, 0 0 0 9px #8c5140, 0 0 0 10px #2a2118; transition:opacity .8s; } #pro-frame.out { opacity:0; }
+.pro-plate { position:absolute; inset:0; width:100%; height:100%; will-change:transform, opacity; backface-visibility:hidden; }
+#prologue-line { flex:none; width:min(1000px, 90vw); min-height:clamp(52px, 11vh, 96px); padding:clamp(6px, 1.6vh, 14px) 76px 0; display:flex; align-items:center; justify-content:center; text-align:center; font-family:var(--serif); font-style:italic; font-weight:500; font-size:clamp(17px, 3.1vh, 29px); line-height:1.25; opacity:0; transition:opacity .45s; color:#2a2118; }
 #prologue-line.show { opacity:1; }
-#prologue-title { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; font-family:'Kalam', var(--serif); font-size:clamp(70px, 16vh, 150px); letter-spacing:.2em; padding-left:.2em; color:#2a2018; opacity:0; transition:opacity 1.4s; pointer-events:none; }
-#prologue-title small { font-size:.2em; letter-spacing:.3em; }
+#prologue-title { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; font-family:var(--serif); font-weight:500; font-size:clamp(70px, 16vh, 150px); letter-spacing:.24em; padding-left:.24em; color:#2a2118; opacity:0; transition:opacity 1.2s; pointer-events:none; }
+#prologue-title small { font-size:.2em; font-style:italic; letter-spacing:.14em; }
 #prologue-title.show { opacity:1; }
-#prologue-skip { position:absolute; right:22px; bottom:20px; background:rgba(42,32,24,.07); border:1.5px solid rgba(42,32,24,.5); border-radius:6px; color:#2a2018; padding:6px 14px; font-family:'Kalam', var(--serif); font-size:15px; }
+#prologue-skip { position:absolute; right:18px; bottom:14px; background:none; border:1px solid rgba(42,33,24,.5); border-radius:3px; color:#2a2118; padding:5px 12px; font-family:var(--serif); font-size:15px; }
 #prologue-skip:hover { background:rgba(42,32,24,.16); }
 /* choice, death, ending */
 #choice .box, #death .box { text-align:center; } #choice button, #death button, #pause button.big { display:block; width:100%; margin:9px 0; background:rgba(255,255,255,.04); border:1px solid var(--line); color:var(--bone); font-family:var(--serif); font-size:22px; padding:11px; } #choice button:hover, #death button:hover, #pause button.big:hover { border-color:var(--ochre); color:var(--ochre); }
@@ -234,6 +245,39 @@ button { font-family:var(--sans); cursor:pointer; }
 #prompt { background:rgba(242,230,200,.9); color:var(--inkb); text-shadow:none; padding:5px 14px; border-radius:20px; border:1.5px solid rgba(90,64,38,.55); }
 #prompt kbd, #objective kbd { background:#4a2f18; color:#f2e6c8; border-radius:4px; padding:0 5px; }
 #subtitle { color:#fff7e6; }
+/* ---- the HUD: dark glass and warm line icons over the picture, thin and at the edges (no blur behind it: that is dear on a phone) */
+.ic { display:block; width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; flex:none; } .ic .f { fill:currentColor; stroke:none; }
+#objective-box, #stats, #clock, .toast, #prompt { --bone:#f2e8d2; --bone2:rgba(242,232,210,.72); --line:rgba(240,230,205,.3); color:#f2e8d2; background:rgba(18,15,10,.56); border:1px solid rgba(240,230,205,.26); box-shadow:none; text-shadow:none; }
+/* your own mark: the same pointer as the objective's, in its own colour */
+#ptarget { position:absolute; left:0; top:0; width:0; height:0; opacity:0; transition:opacity .35s; pointer-events:none; }
+#ptarget svg { position:absolute; display:none; overflow:visible; filter:drop-shadow(0 2px 3px rgba(0,0,0,.45)); } #ptarget-arrow { left:-19px; top:-19px; } #ptarget-dot { left:-12px; top:-12px; }
+#ptarget path { fill:#4fd0e0; stroke:#10282c; stroke-width:2; stroke-linejoin:round; } #ptarget.ahead #ptarget-dot, #ptarget.off #ptarget-arrow { display:block; }
+#ptarget span { position:absolute; left:-40px; top:21px; width:80px; text-align:center; font-family:var(--sans); font-size:13px; font-weight:600; color:#e8fbff; text-shadow:0 1px 3px #000, 0 0 6px rgba(0,0,0,.7); }
+.cmark.pin b { color:#4fd0e0; } #mapcv { cursor:crosshair; } #map h2 small { font:400 12px var(--sans); letter-spacing:0; white-space:nowrap; opacity:.7; margin-left:8px; }
+#minimap { position:absolute; left:20px; top:16px; width:150px; height:150px; border-radius:50%; } #minimap canvas { display:block; width:100%; height:100%; border-radius:50%; border:2px solid rgba(240,230,205,.55); box-sizing:border-box; }
+#minimap svg { position:absolute; left:50%; top:50%; width:22px; height:22px; margin:-11px 0 0 -11px; } #minimap path { fill:#fff7e6; stroke:#1c140c; stroke-width:1.6; stroke-linejoin:round; }
+#minimap i { position:absolute; left:50%; top:2px; transform:translateX(-50%); font:700 10px var(--sans); color:#fff7e6; text-shadow:0 1px 2px #000; }
+#objective-box { border-radius:10px; left:20px; top:176px; padding:8px 12px; max-width:min(300px, calc(50vw - 250px)); } #objective { color:#f2e8d2; font-family:var(--sans); font-size:15px; line-height:1.3; } #chapter { color:#e8b070; }
+#skillcard { border-top-color:rgba(240,230,205,.22); } #skillcard h5 { color:#e8b070; } #skillcard .sk { color:#f2e8d2; } #skillcard .sk i { border-color:rgba(240,230,205,.5); color:#9fe0a0; }
+#objective kbd, #skillcard .sk kbd, #prompt kbd { background:rgba(240,230,205,.16); color:#f2e8d2; border-radius:4px; align-items:center; }
+#compass { top:14px; } #compass::after { background:#e8953a; width:2px; }
+.ctick { color:#f2e8d2; background:rgba(240,230,205,.6); text-shadow:0 1px 3px #000; } .ctick.major { background:none; }
+#clock { right:20px; top:16px; height:36px; padding:0 10px; border-radius:10px; display:flex; align-items:center; gap:6px; text-align:left; } #clock .ic { color:#f0c070; } #clock b { display:inline; font-family:var(--sans); font-size:14px; font-weight:600; } #clock span { font-size:12px; color:var(--bone2); }
+#stats { left:50%; bottom:16px; width:min(340px, 36vw); transform:translateX(-50%); padding:7px 10px; border-radius:12px; }
+.srow { display:flex; align-items:center; gap:6px; margin:2px 0; } .srow.two { gap:9px; } .pair { flex:1; min-width:0; display:flex; align-items:center; gap:4px; }
+.si { flex:none; display:flex; } .si .ic { width:15px; height:15px; } .si.hp { color:#ef6a55; } .si.sta { color:#e8d6a4; } .si.hu { color:#e0a050; } .si.th { color:#70c0dc; }
+#stats .bar { flex:1; height:5px; margin:0; border:0; border-radius:3px; background:rgba(240,230,205,.2); overflow:hidden; } #stats .bar.big { height:9px; border-radius:5px; } #stats .bar > div { border-radius:inherit; }
+#bar-hp { background:#e0503c; } #bar-st { background:#e8d6a4; } #bar-hu { background:#e0a050; } #bar-th { background:#58b4d4; }
+#bar-st-wrap.dim { opacity:.5; }
+#status { position:absolute; left:0; right:0; bottom:calc(100% + 5px); margin:0; display:flex; justify-content:center; gap:5px; }
+.st { width:26px; height:26px; padding:0; display:flex; align-items:center; justify-content:center; border-radius:50%; background:rgba(18,15,10,.62); border:1px solid rgba(240,230,205,.32); color:#f2e8d2; } .st .ic { width:15px; height:15px; } .st.bleed { color:#ff7a66; border-color:#ff7a66; } .st.sick { color:#c8e070; border-color:#c8e070; } .st.warn { color:#ffc070; border-color:#ffc070; } .st.cold { color:#a0e0f8; border-color:#a0e0f8; } .st.drunk { color:#f0c8e8; border-color:#f0c8e8; }
+.slot { background:rgba(18,15,10,.56); border:1px solid rgba(240,230,205,.26); border-radius:10px; --bone:#f2e8d2; color:#f2e8d2; } .slot .ic { width:24px; height:24px; } .slot.on, .slot.sel, .slot.active { border-color:#e8953a; background:rgba(232,149,58,.22); box-shadow:none; } .slot i { color:rgba(242,232,210,.7); }
+#weapon { right:20px; bottom:16px; }
+#prompt { border-radius:18px; padding:5px 13px; }
+.toast { border-left:3px solid #e8953a; border-radius:8px; box-shadow:none; }
+#toasts { right:20px; top:64px; }
+@media (max-width: 1100px) { #compass { top:14px; width:260px; margin-left:-130px; } #objective-box { max-width:min(300px, calc(50vw - 40px)); } #objective { font-size:14px; } }
+
 </style>
 </head>
 <body>
@@ -243,6 +287,7 @@ button { font-family:var(--sans); cursor:pointer; }
     <p class="q">“Before I had words, I had sounds. The langur’s cough meant a cat. The sambar’s bell meant a big cat. Silence meant the biggest cat of all.”</p>
     <div class="lbar"><div id="load-bar"></div></div>
     <div id="load-step">Starting</div>
+    <div id="load-go"><button id="go-full">Play full screen</button><button id="go-stay">Stay in the browser</button></div>
   </div>
 
   <div id="title">
@@ -288,7 +333,7 @@ button { font-family:var(--sans); cursor:pointer; }
   <div id="card"><h1></h1><h2></h2></div>
   <div id="fade"></div>
 
-  <div id="prologue"><canvas id="prologue-cv"></canvas><div id="prologue-line"></div><div id="prologue-title">VANAJ<small>Forest-Born</small></div><button id="prologue-skip">Skip</button></div>
+  <div id="prologue"><div id="pro-frame"></div><div id="prologue-line"></div><div id="prologue-title">VANAJ<small>Forest-Born</small></div><button id="prologue-skip">Skip</button></div>
 
   <div id="ending">
     <p>They asked me which I was. Forest or village.</p>
@@ -316,7 +361,7 @@ button { font-family:var(--sans); cursor:pointer; }
     <div class="journal"><div><h3 style="font-family:var(--sans);font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:var(--ochre)">What I found</h3><div id="j-story"></div></div><div><h3 style="font-family:var(--sans);font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:var(--ochre)">Forest lore</h3><div id="j-lore"></div></div><div><h3 style="font-family:var(--sans);font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:var(--ochre)">What I can do</h3><div id="j-skills"></div></div></div>
   </div></div>
 
-  <div class="panel" id="map"><div class="box"><button class="close">×</button><h2>Pench</h2><canvas id="mapcv" width="768" height="768"></canvas></div></div>
+  <div class="panel" id="map"><div class="box"><button class="close">×</button><h2>Pench <small>Tap to mark. Tap the mark to remove.</small></h2><canvas id="mapcv" width="768" height="768"></canvas></div></div>
 
   <div class="panel" id="chapters"><div class="box"><button class="close">×</button><h2>Chapters</h2><div class="chaplist" id="chapter-list"></div><p class="note">Jumping to a chapter gives you a fitting set of tools.</p></div></div>
 
@@ -324,6 +369,8 @@ button { font-family:var(--sans); cursor:pointer; }
     <h2>Settings</h2>
     <div class="row"><label>Graphics quality</label><select id="set-quality"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="ultra">Ultra</option></select></div>
     <p class="note" id="set-quality-note"></p>
+    <div class="row"><label>Frame limit</label><select id="set-fps"><option value="auto">Automatic</option><option value="30">30 FPS (cooler)</option><option value="60">60 FPS</option><option value="0">None</option></select></div>
+    <div class="row"><label>Full screen</label><input type="checkbox" id="set-full"></div>
     <div class="row"><label>Camera</label><select id="set-view"><option value="tpp">Third person</option><option value="fpp">First person</option></select></div>
     <div class="row"><label>Mouse sensitivity</label><input type="range" id="set-sens" min="0.2" max="3" step="0.05"><span id="set-sens-v"></span></div>
     <div class="row"><label>Field of view</label><input type="range" id="set-fov" min="55" max="100" step="1"><span id="set-fov-v"></span></div>

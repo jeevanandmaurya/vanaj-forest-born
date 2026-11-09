@@ -2,7 +2,7 @@
 // waterholes, village), biome fields, chunked LOD terrain with skirts + far mesh, and a splat terrain shader.
 import * as THREE from 'three';
 import { Simplex, fbm, ridged, smoothstep, clamp, lerp } from '../core/noise.js';
-import { G, patch, NOISE_GLSL } from '../core/shaderlib.js';
+import { G, patch, NOISE_GLSL, NOISE_LOOKUP } from '../core/shaderlib.js';
 import { PAINTED, PU } from '../core/palette.js';
 import { toon } from '../core/toon.js';
 
@@ -502,7 +502,7 @@ export function createPaintedTerrainMaterial(far, lq = false) {
   const m = toon({
     key: (far ? 'terrain-far' : 'terrain') + (lq ? '-lq' : ''), rim: 0, patch: (s) => {
       Object.assign(s.uniforms, PU);
-      s.uniforms.uNearRect = m.userData.near;
+      s.uniforms.uNearRect = m.userData.near; s.uniforms.uTreeFar = m.userData.treeFar;
       s.vertexShader = s.vertexShader
         .replace('#include <common>', `#include <common>
           attribute vec4 aSplat; attribute vec4 aBio; attribute float aField;
@@ -514,9 +514,11 @@ export function createPaintedTerrainMaterial(far, lq = false) {
         .replace('#include <common>', `#include <common>
           ${lq ? '#define TERRAIN_LQ' : ''}
           ${NOISE_GLSL}
+          ${lq ? NOISE_LOOKUP : ''}
           uniform sampler2D tGroundAO; uniform vec4 uNearRect, uAORect;
           uniform float uSeasonGreen, uWetness, uDry, uTime; uniform vec2 uWind; uniform vec3 uSunDir;
           uniform vec3 uGround, uGrassRoot, uGrassTip, uRock, uSand, uLaterite, uRiver;
+          ${far ? 'uniform float uTreeFar; uniform vec3 uLeafShade, uLeafLit;' : ''}
           varying vec4 vSplat; varying vec4 vBio; varying float vField; varying vec3 vWP; varying vec3 vWN;
           float aaStep(float e, float x) { float w = fwidth(x) * 0.75 + 1e-4; return smoothstep(e - w, e + w, x); }
           // one fallen leaf per lucky cell: a flat painted oval in teak-fall colours
@@ -538,11 +540,17 @@ export function createPaintedTerrainMaterial(far, lq = false) {
           float slope = 1.0 - vWN.y, camD = length(vViewPosition);
           vec4 bio = vBio;   // x moisture, y canopy, z laterite, w black soil
           float fieldW = max(vField, 0.0), bedW = smoothstep(0.0, 0.6, -vField);
+          // (the ground is most of the screen, and noise is what its shader spends its time on: Low makes do with five lookups a pixel, not eighteen)
+          #ifdef TERRAIN_LQ
+          float big = vnoise(uv * 0.016) * 0.62 + vnoise(uv * 0.045 + 1.7) * 0.34, mid = vnoise(uv * 0.09 + 3.0);
+          float st = vnoise(vec2((0.86 * uv.x + 0.5 * uv.y) * 0.45, (0.86 * uv.y - 0.5 * uv.x) * 0.9));
+          #else
           float big = fbm2(uv * 0.016), mid = vnoise(uv * 0.09 + 3.0);
           // brush strokes: noise stretched along a slowly turning direction, cut into a light and a dark tone
           float ang = vnoise(uv * 0.015 + 7.0) * 6.2832; vec2 sdir = vec2(cos(ang), sin(ang));
           vec2 su = vec2(dot(uv, sdir), dot(uv, vec2(-sdir.y, sdir.x)));
           float st = vnoise(vec2(su.x * 0.45, su.y * 0.9)) * 0.6 + vnoise(uv * 0.5 + 4.0) * 0.4;
+          #endif
           float strokeW = 1.0 - smoothstep(60.0, 160.0, camD);
           float sL = aaStep(0.66, st) * strokeW, sD = aaStep(0.68, 1.0 - st) * strokeW;
           // forest floor: the season's ground colour in warm and cool patches, red laterite on ridges and
@@ -561,7 +569,11 @@ export function createPaintedTerrainMaterial(far, lq = false) {
           // sharpened weights: patches meet at a painted edge, not a photographic blend
           vec4 w = vSplat;
           w.z = max(w.z, smoothstep(0.42, 0.6, slope + (mid - 0.5) * 0.15));
+          #ifdef TERRAIN_LQ
+          w.y *= 0.7 + 0.6 * mid;
+          #else
           w.y *= 0.7 + 0.6 * vnoise(uv * 0.05);
+          #endif
           w = w * w * w; w /= (w.x + w.y + w.z + w.w + 1e-5);
           vec3 tcol = gnd * w.x + grass * w.y + rock * w.z + sand * w.w;
           #ifndef TERRAIN_LQ
@@ -574,9 +586,15 @@ export function createPaintedTerrainMaterial(far, lq = false) {
           #endif
           vec3 fieldC = mix(uGround * vec3(1.0, 0.88, 0.7), uGrassRoot * 1.15, uSeasonGreen) * (0.88 + 0.22 * aaStep(0.5, 0.5 + 0.5 * sin(uv.x * 2.2)));
           tcol = mix(tcol, fieldC, fieldW * 0.85);
-          float burn = uDry * smoothstep(0.64, 0.7, fbm2(uv * 0.006 + 9.0)) * bio.y * w.x * (1.0 - bedW) * (1.0 - fieldW);
-          tcol = mix(tcol, vec3(0.1, 0.09, 0.1), burn * 0.7);
+          if (uDry > 0.01) {
+            float burn = uDry * smoothstep(0.64, 0.7, fbm2(uv * 0.006 + 9.0)) * bio.y * w.x * (1.0 - bedW) * (1.0 - fieldW);
+            tcol = mix(tcol, vec3(0.1, 0.09, 0.1), burn * 0.7);
+          }
+          #ifdef TERRAIN_LQ
+          vec3 bedC = mix(uRiver * vec3(0.35, 0.45, 0.4), uRock * 0.5, 0.3);
+          #else
           vec3 bedC = mix(uRiver * vec3(0.35, 0.45, 0.4), uRock * 0.5, aaStep(0.55, vnoise(uv * 0.6)) * 0.6);
+          #endif
           tcol = mix(tcol, bedC, bedW * 0.9);
           // contact shadow round trunks and rocks, cool rather than black; canopy weight for the sun flecks
           vec2 aoUV = (vWP.xz - uAORect.xy) * uAORect.z;
@@ -588,8 +606,14 @@ export function createPaintedTerrainMaterial(far, lq = false) {
           tcol = mix(tcol, tcol * vec3(0.55, 0.55, 0.8), contact * 0.7);
           float wet = clamp(uWetness * 0.7 + bedW, 0.0, 1.0);
           tcol *= mix(1.0, 0.72, wet);
-          float puddle = clamp(uWetness * 1.4 - 0.3, 0.0, 1.0) * aaStep(0.64, vnoise(uv * 0.11 + 2.0) * 0.7 + vnoise(uv * 0.5) * 0.3) * smoothstep(0.06, 0.01, slope) * w.x * (1.0 - bedW);
-          tcol = mix(tcol, vec3(0.2, 0.28, 0.4), puddle * 0.8);
+          if (uWetness > 0.22) {
+            float puddle = clamp(uWetness * 1.4 - 0.3, 0.0, 1.0) * aaStep(0.64, vnoise(uv * 0.11 + 2.0) * 0.7 + vnoise(uv * 0.5) * 0.3) * smoothstep(0.06, 0.01, slope) * w.x * (1.0 - bedW);
+            tcol = mix(tcol, vec3(0.2, 0.28, 0.4), puddle * 0.8);
+          }
+          ${far ? `
+          // Past the last of the trees the forest is a colour on the ground, so a far hill reads as forested and not as bare earth
+          float treesGone = smoothstep(uTreeFar * 0.82, uTreeFar, camD) * smoothstep(0.2, 0.55, bio.y) * (1.0 - bedW) * (1.0 - fieldW);
+          tcol = mix(tcol, mix(uLeafShade, uLeafLit, 0.2 + 0.6 * smoothstep(0.3, 0.7, big)) * (0.85 + 0.3 * mid), treesGone);` : ''}
           diffuseColor.rgb = tcol;
         `)
         .replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
@@ -597,13 +621,17 @@ export function createPaintedTerrainMaterial(far, lq = false) {
             // sun flecks under the canopy: soft-edged painted patches, drifting slowly with the wind
             vec2 sp = vWP.xz - uSunDir.xz / max(uSunDir.y, 0.25) * 9.0;
             vec2 wo = uWind * uTime * 0.12;
+            #ifdef TERRAIN_LQ
+            float ck = vnoise(sp * 0.5 + wo);
+            #else
             float ck = vnoise(sp * 0.4 + wo) * 0.6 + vnoise(sp * 1.2 - wo * 1.5) * 0.4;
+            #endif
             reflectedLight.directDiffuse *= mix(1.0, smoothstep(0.47, 0.56, ck), gCanopy * 0.7);
             reflectedLight.indirectDiffuse *= 1.0 - contact * 0.3;
           }`);
     },
   });
-  m.userData.near = { value: new THREE.Vector4(0, 0, 0, 0) };
+  m.userData.near = { value: new THREE.Vector4(0, 0, 0, 0) }; m.userData.treeFar = { value: 500 };
   return m;
 }
 
@@ -611,7 +639,7 @@ export class TerrainManager {
   constructor(scene, tex, quality) {
     this.scene = scene; this.q = quality;
     this.tex = tex;
-    const lq = this.lq = quality.name === 'Low';
+    const lq = this.lq = !!quality.lean;
     this.mat = PAINTED ? createPaintedTerrainMaterial(false, lq) : createTerrainMaterial(tex, false, lq);
     this.farMat = PAINTED ? createPaintedTerrainMaterial(true, lq) : createTerrainMaterial(tex, true, lq);
     this.chunks = new Map();
@@ -619,29 +647,35 @@ export class TerrainManager {
     this.center = { cx: 1e9, cz: 1e9 };
     this.R = quality.chunkR;
     // far mesh
-    const farN = quality.farSegs || 256;
-    const far = buildGridGeometry(-HALF, -HALF, HALF * 2, farN, height, false, 1.3);
+    this.farN = quality.farSegs || 256;
+    const far = buildGridGeometry(-HALF, -HALF, HALF * 2, this.farN, height, false, 1.3);
+    if (this.farMat.userData.treeFar) this.farMat.userData.treeFar.value = quality.treeFar;
     this.far = new THREE.Mesh(far.geometry, this.farMat);
     this.far.receiveShadow = false; this.far.castShadow = false;
     this.far.frustumCulled = false;
-    this.far.renderOrder = -1;
+    this.far.renderOrder = this.groundOrder(-1);
     scene.add(this.far);
   }
   // a new graphics level: how far chunks reach, their detail, and Low's simpler ground shader
   applyQuality() {
     this.R = this.q.chunkR; this.center = { cx: 1e9, cz: 1e9 };
-    const lq = this.q.name === 'Low';
+    if (this.q.farSegs !== this.farN) { this.farN = this.q.farSegs; this.far.geometry.dispose(); this.far.geometry = buildGridGeometry(-HALF, -HALF, HALF * 2, this.farN, height, false, 1.3).geometry; }
+    const lq = !!this.q.lean;
+    if (this.farMat.userData.treeFar) this.farMat.userData.treeFar.value = this.q.treeFar;
     if (lq === this.lq) return;
     this.lq = lq;
     const oldM = this.mat, oldF = this.farMat, near = oldF.userData.near && oldF.userData.near.value;
     this.mat = PAINTED ? createPaintedTerrainMaterial(false, lq) : createTerrainMaterial(this.tex, false, lq);
     this.farMat = PAINTED ? createPaintedTerrainMaterial(true, lq) : createTerrainMaterial(this.tex, true, lq);
+    if (this.farMat.userData.treeFar) this.farMat.userData.treeFar.value = this.q.treeFar;
     if (near && this.farMat.userData.near) this.farMat.userData.near.value.copy(near);
+    this.far.renderOrder = this.groundOrder(-1); for (const c of this.chunks.values()) c.mesh.renderOrder = this.groundOrder(0);
     this.far.material = this.farMat;
     for (const c of this.chunks.values()) c.mesh.material = this.mat;
     oldM.dispose(); oldF.dispose();
   }
-  lodFor(d) { return d <= 1 ? (this.q.name === 'Low' ? 64 : 128) : d <= 2 ? 32 : 16; }
+  // (fine enough round him that grass and tree roots, which stand on the true height of the land, don't show daylight under them)
+  lodFor(d) { const S = this.q.chunkSegs; return d <= 1 ? S[0] : d <= 2 ? S[1] : S[2]; }
   update(px, pz, budgetMs = 6, force = false) {
     const cx = Math.floor(px / CHUNK), cz = Math.floor(pz / CHUNK);
     if (cx !== this.center.cx || cz !== this.center.cz || force) {
@@ -687,10 +721,13 @@ export class TerrainManager {
     if (r >= 0) nr.set((cx - r) * CHUNK + 0.5, (cz - r) * CHUNK + 0.5, (cx + r + 1) * CHUNK - 0.5, (cz + r + 1) * CHUNK - 0.5);
     else nr.set(0, 0, 0, 0);
   }
+  // The ground goes after the trees and rocks: its shader is the dearest there is, and what stands in front of it then saves all of it.
+  // (Measured on a Mali-G57, 59 to 70 FPS.)
+  groundOrder() { return 2; }
   buildChunk(w, res = buildGridGeometry(w.kx * CHUNK, w.kz * CHUNK, CHUNK, w.segs, height, true)) {
     const old = this.chunks.get(w.k);
-    const mesh = new THREE.Mesh(res.geometry, this.mat);
-    mesh.receiveShadow = true; mesh.castShadow = false;
+    const mesh = new THREE.Mesh(res.geometry, this.mat); mesh.renderOrder = this.groundOrder(0);
+    mesh.receiveShadow = true; mesh.castShadow = false; mesh.matrixAutoUpdate = false;
     this.scene.add(mesh);
     if (old) { this.scene.remove(old.mesh); old.mesh.geometry.dispose(); }
     this.chunks.set(w.k, { mesh, segs: w.segs });

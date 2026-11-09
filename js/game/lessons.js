@@ -2,7 +2,10 @@
 // ticks itself off the moment the player does that thing, and the card goes away when it is finished. The first chapter's
 // objectives walk through the basics; everything else comes up when it first matters (first time in deep water, first
 // time on a rope, the first bleeding wound, the first bow). All of it stays listed in the journal.
+import { wordIcon } from './icons.js';
 const kbd = (k) => k.split(' ').map((x) => `<kbd>${x}</kbd>`).join('');
+// on a phone the control's own picture, as on its button
+const kbdTouch = (k) => k.split(' ').map((x) => `<kbd>${wordIcon(x) || x}</kbd>`).join('');
 const swung = (P) => P.canopy.mode === 'hang' && P.canopy.vel.lengthSq() > 4;
 const anyMove = (k) => k.KeyW || k.KeyA || k.KeyS || k.KeyD;
 
@@ -113,7 +116,7 @@ export class Lessons {
     });
     this.el = document.getElementById('skillcard');
   }
-  kbdOf(s) { return kbd(this.g.touch ? TOUCH_KEY[s.k] || s.k : s.k); }
+  kbdOf(s) { return this.g.touch ? kbdTouch(TOUCH_KEY[s.k] || s.k) : kbd(s.k); }
   textOf(id, s) { return (this.g.touch && TOUCH_TEXT[id]) || s.t; }
   reset() { this.done.clear(); this.seenMoment.clear(); this.ids = null; this.fromObjective = false; this.render(); }
   has(...ids) { return ids.every((i) => this.done.has(i)); }

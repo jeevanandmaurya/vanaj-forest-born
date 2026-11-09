@@ -193,7 +193,7 @@ export class SkySystem {
         }`,
     });
     const geo = new THREE.SphereGeometry(2500, 48, 24);
-    this.paintSky = new THREE.Mesh(geo, sky); this.paintSky.renderOrder = -6; this.paintSky.frustumCulled = false;
+    this.paintSky = new THREE.Mesh(geo, sky); this.paintSky.renderOrder = 3;   /* (last of the solid things, so it is painted only where it shows. It sits at the very back whatever the order.) */ this.paintSky.frustumCulled = false;
     this.paintClouds = new THREE.Mesh(geo, clouds); this.paintClouds.renderOrder = -3; this.paintClouds.frustumCulled = false;
     this.scene.add(this.paintSky, this.paintClouds);
     this.scene.environment = null;
@@ -286,6 +286,7 @@ export class SkySystem {
     this.hemi.intensity = lerp(0.4, 0.95, day) + this.flash * 4;
     // stars / moon
     this.starMat.opacity = night * (1 - this.cloudCover * 0.9);
+    this.stars.visible = this.starMat.opacity > 0.005;   // (no draw call for stars by day)
     this.stars.position.copy(camera.position);
     this.stars.rotation.set(0.38, hour / 24 * Math.PI * 2, 0);
     this.moon.position.copy(camera.position).addScaledVector(md, 2000);

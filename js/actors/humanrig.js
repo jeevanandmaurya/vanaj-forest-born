@@ -252,15 +252,15 @@ function boySkin(opts, O, A) {
 }
 // Short shaggy hair that nobody has ever cut straight: thick, tapered chunks falling from the crown, a fringe that
 // stops above the brows, over the tops of the ears at the sides, to the nape behind, a few tufts standing up.
-function shaggyHair(skull, E, seed = 23) {
-  let sd = seed; const rr = () => (sd = (sd * 16807) % 2147483647) / 2147483647;
+function shaggyHair(skull, E, lean, seed = 23) {
+  let sd = seed; const rr =() => (sd = (sd * 16807) % 2147483647) / 2147483647;
   const parts = [], dir = (az, pol, out) => out.set(Math.sin(pol) * Math.sin(az), Math.cos(pol), Math.sin(pol) * Math.cos(az));
   const p = new THREE.Vector3(), on = (d, k) => new THREE.Vector3(skull.x + d.x * E.x * k, skull.y + d.y * E.y * k, skull.z + d.z * E.z * k);
   // a lock: rooted at (az, pol), following the skull down to pol1, sweeping sideways, its tip kicking out
   const lock = (az, pol, pol1, sweep, r0, kick = 0.05) => {
     const pts = [on(dir(az, pol, p), 0.94)], N = 5;
     for (let i = 1; i <= N; i++) { const t = i / N; pts.push(on(dir(az + sweep * t, pol + (pol1 - pol) * t, p), 1.17 + 0.03 * Math.sin(t * 3 + az) + kick * t * t)); }
-    parts.push(lockGeo(new THREE.CatmullRomCurve3(pts), r0, r0 * 0.2, rr() * 6.28, 8, 6));
+    parts.push(lockGeo(new THREE.CatmullRomCurve3(pts), r0, r0 * 0.2, rr() * 6.28, lean ? 4 : 8, lean ? 4 : 6));
   };
   for (let i = 0; i < 15; i++) { const a = -0.86 + i * 0.123 + (rr() - 0.5) * 0.08; lock(a, 0.15 + rr() * 0.3, 1.14 + rr() * 0.2, (a > 0 ? 1 : -1) * (0.14 + rr() * 0.22), 0.03 + rr() * 0.01, 0.03); }    // fringe
   for (const s of [1, -1]) for (let i = 0; i < 9; i++) { const a = s * (0.95 + i * 0.13 + (rr() - 0.5) * 0.1); lock(a, 0.35 + rr() * 0.35, 1.7 + rr() * 0.38, s * (rr() - 0.3) * 0.25, 0.031 + rr() * 0.011, 0.09); }    // over the ears
@@ -539,7 +539,7 @@ function dress(inst, opts, S, cranium) {
   const hr = cranium ? Math.max(cranium.r.x, cranium.r.z) : sn ? rad : 0.115;
   const skull = cranium ? cranium.c.clone() : sn ? new THREE.Vector3(sx / sn, top - hr, sz / sn) : head.clone().setY(head.y + 0.13);
   if (opts.hair === 'shaggy') {
-    const m = add(shaggyHair(skull, cranium ? cranium.r : new THREE.Vector3(hr, hr, hr)), boyHairMat(opts.hairColor || 0x31211a, opts.hairU), 'DEF-head');
+    const m = add(shaggyHair(skull, cranium ? cranium.r : new THREE.Vector3(hr, hr, hr), opts.detail > 2), boyHairMat(opts.hairColor || 0x31211a, opts.hairU), 'DEF-head');
     m.userData.hair = true;
   } else if (opts.hair === 'matted') {
     add(mattedHair(skull, cranium ? cranium.r : hr), hairMat(opts.hairColor || 0x16110d), 'DEF-head');

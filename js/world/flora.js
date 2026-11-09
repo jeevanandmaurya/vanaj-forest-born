@@ -2,7 +2,8 @@
 // seasonal foliage (leaf fall, palash/mahua flowering), wind, grass tufts, trunk collision and langur perches.
 import * as THREE from 'three';
 import { mulberry32, hash2, clamp, smoothstep } from '../core/noise.js';
-import { G, patch, WIND_VERTEX, NOISE_GLSL } from '../core/shaderlib.js';
+import { G, patch, WIND_VERTEX, NOISE_GLSL, ATMOS_VARY } from '../core/shaderlib.js';
+import { FarTrees } from './fartrees.js';
 import { mergeVertices, mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { height, biomeAt, waterAt, CHUNK, WATERHOLES, lakeE } from './terrain.js';
 import { PAINTED, PU, ACCENT } from '../core/palette.js';
@@ -295,13 +296,18 @@ function growSkeleton(P, rng) {
   return { branches, leaves, r0, trunkL };
 }
 
+// detail 0: the full mesh. 1: the far one, trunk and main limbs. For Low, 2: the far one again, trunk and the largest limbs only, about
+// a quarter the triangles. 3: the near one, a tenth of the full mesh's triangles (and no surface roots), until the tree is close
+// enough to become a near tree (js/world/neartree.js)
 function meshSkeleton(gb, sk, P, rng, detail, H) {
   const fl = P.flute, flPh = sk.flPh ?? (sk.flPh = rng() * 6.28);   // (the near-detail mesh reuses the phase)
   for (const b of sk.branches) {
     if (detail === 1 && b.level >= 2) continue;
+    if (detail === 2 && (b.level >= 2 || (b.level === 1 && b.sections[0].r < sk.r0 * 0.42))) continue;
+    if (detail === 3 && b.level === 2 && b.sections[0].r < 0.05) continue;
     if (b.level >= 3) continue;   // finest twigs sit inside the leaf clusters; not worth their vertices
-    const segs = detail === 1 ? Math.max(3, Math.round(b.segs * 0.5)) : b.segs;
-    const step = detail === 1 && b.sections.length > 4 ? 2 : 1;
+    const segs = detail === 1 ? Math.max(3, Math.round(b.segs * 0.5)) : detail === 2 ? (b.level ? 3 : 4) : detail === 3 ? Math.max(b.level ? 3 : 5, Math.round(b.segs * (b.level ? 0.4 : 0.6))) : b.segs;
+    const step = detail === 2 ? 3 : (detail === 1 || detail === 3) && b.sections.length > 4 ? 2 : 1;
     const secs = b.sections.filter((s, i) => i % step === 0 || i === b.sections.length - 1);
     const base = gb.p.length / 3; let len = 0;
     const uRep = Math.max(1, Math.round(2 * Math.PI * b.sections[0].r / 0.9));
@@ -328,7 +334,7 @@ function meshSkeleton(gb, sk, P, rng, detail, H) {
       const a = base + i * (segs + 1) + j, bb = a + 1, c = a + segs + 1, d = c + 1;
       gb.i.push(a, c, bb, bb, c, d);
     }
-    { const L = secs[secs.length - 1], Q = secs[secs.length - 2] || L, h = clamp(L.p.y / H, 0, 1); capEnd(gb, base + (secs.length - 1) * (segs + 1), segs, [L.p.x, L.p.y, L.p.z], [Q.p.x, Q.p.y, Q.p.z], L.r, b.level === 0 ? Math.pow(h, 2.2) * 0.22 : 0.16 + 0.22 * b.level * h, rng()); }
+    if (detail !== 2) { const L = secs[secs.length - 1], Q = secs[secs.length - 2] || L, h = clamp(L.p.y / H, 0, 1); capEnd(gb, base + (secs.length - 1) * (segs + 1), segs, [L.p.x, L.p.y, L.p.z], [Q.p.x, Q.p.y, Q.p.z], L.r, b.level === 0 ? Math.pow(h, 2.2) * 0.22 : 0.16 + 0.22 * b.level * h, rng()); }
   }
 }
 
@@ -394,6 +400,7 @@ function buildGeneric(specName, seed) {
   // the climbable skeleton: trunk and every limb thick enough to grip (x, y, z, radius per section)
   const climb = sk.branches.map((b, bi) => [b, bi]).filter(([b]) => b.level <= 2 && b.sections[0].r > 0.045).map(([b, bi]) => ({ level: b.level, bi, pts: b.sections.map((q) => [q.p.x, q.p.y, q.p.z, q.r]) }));
   const tmpl = { bark: gb.geo(), leaf: sk.leaves.length ? leafG.geo() : null, bark1: lb.geo(), leaf1: sk.leaves.length ? leaf1.geo() : null, H, trunkR: r0 * (1.25 + (P.flute ? P.flute.amp * 0.5 : 0)), crownY: crownC.y || H * 0.7, crownR, barkKind: spec.bark, leafKind: spec.leaf, climb };
+  { const nb = new GB(), fb = new GB(); meshSkeleton(nb, sk, P, mulberry32(seed + 11), 3, H); meshSkeleton(fb, sk, P, mulberry32(seed + 13), 2, H); tmpl.barkLow = nb.geo(); tmpl.bark1Low = fb.geo(); }
   // everything js/world/neartree.js needs to build this tree's near form
   tmpl.hi = { kind: 'tree', sk, P, spec, H, crownC, crownR, tail: () => tailOf(tmpl.bark, rootV, rootI), leafGeo: () => tmpl.leaf };
   return tmpl;
@@ -402,7 +409,7 @@ function buildGeneric(specName, seed) {
 function buildBamboo(seed) {
   const rng = mulberry32(seed); const gb = new GB(), lg = new GB();
   const N = 22 + Math.floor(rng() * 14);
-  const lb = new GB(), ll = new GB();
+  const lb = new GB(), ll = new GB(), nb = new GB(), fb = new GB();   // (nb, fb: the lean levels' near and far stems)
   const crownC = new THREE.Vector3(0, 7, 0);
   let maxH = 0;
   const culms = [], all = [{ level: 0, pts: [[0, -1, 0], [0, 6, 0]], r: [0.3, 0.3], parent: -1, tA: 0, noMesh: true }], tips = [];
@@ -422,6 +429,8 @@ function buildBamboo(seed) {
     const cb = all.length; all.push({ level: 1, pts, r: rads, parent: 0, tA: 0, segs: 6 });
     if (c % 3 === 1 && rad > 0.5) culms.push({ level: 1, bi: cb, pts: pts.slice(2).map((q, i) => [q[0], q[1], q[2], Math.max(0.04, rads[i + 2])]) });
     if (c % 3 === 0) tube(lb, [pts[0], pts[4], pts[8]], [rads[0], rads[4], rads[8]], 3, (p) => clamp(p[1] / H, 0, 1) ** 1.6 * 0.9, 0.5, 1);
+    if (c % 2 === 0) tube(nb, [pts[0], pts[2], pts[4], pts[6], pts[8]], [rads[0] * 1.25, rads[2] * 1.25, rads[4] * 1.25, rads[6] * 1.25, rads[8] * 1.25], 3, (p) => clamp(p[1] / H, 0, 1) ** 1.6 * 0.9, 0.5, 1);
+    if (c % 6 === 0) tube(fb, [pts[0], pts[8]], [rads[0] * 1.6, rads[8] * 1.6], 3, (p) => clamp(p[1] / H, 0, 1) ** 1.6 * 0.9, 0.5, 1);
     for (let s = 3; s <= 8; s++) {
       const p = new THREE.Vector3(...pts[s]);
       const up = new THREE.Vector3(Math.cos(a), 0.3 - rng() * 0.6, Math.sin(a)).normalize();
@@ -432,7 +441,7 @@ function buildBamboo(seed) {
     }
   }
   const climb = [{ level: 0, bi: 0, pts: [[0, -1, 0, 1.0], [0, maxH * 0.35, 0, 0.85], [0, maxH * 0.7, 0, 0.55]] }, ...culms];
-  const tmpl = { bark: gb.geo(), leaf: lg.geo(), bark1: lb.geo(), leaf1: ll.geo(), H: maxH, trunkR: 1.1, crownY: 7, crownR: 5, barkKind: 'bamboo', leafKind: 'bamboo', climb };
+  const tmpl = { bark: gb.geo(), leaf: lg.geo(), bark1: lb.geo(), leaf1: ll.geo(), barkLow: nb.geo(), bark1Low: fb.geo(), H: maxH, trunkR: 1.1, crownY: 7, crownR: 5, barkKind: 'bamboo', leafKind: 'bamboo', climb };
   tmpl.hi = { kind: 'bamboo', branches: all, leaves: tips, H: maxH, crownC, crownR: 5, spec: { tint: [1, 1, 1] }, leafGeo: () => tmpl.leaf };
   return tmpl;
 }
@@ -685,18 +694,87 @@ const LEAF_FRAG_DROP = /* glsl */`
     diffuseColor.a *= 1.0 + max(0.0, 0.5 * log2(max(dot(ddx, ddx), dot(ddy, ddy)))) * 0.3; }`;
 // species leaf colour against the season's foliage pair: teak and kulu yellower, mahua, arjun and banyan deeper
 const LEAF_KIND = { semal: [0.9, 1.0, 0.86], teak: [1.06, 1.0, 0.84], mahua: [0.8, 0.9, 0.84], saja: [0.86, 0.95, 0.9], kulu: [1.1, 1.05, 0.8], palash: [0.95, 1.0, 0.86], small: [0.9, 1.0, 0.9], arjun: [0.8, 0.92, 0.88], bamboo: [1.0, 1.08, 0.8], banyan: [0.74, 0.88, 0.84], lantana: [0.9, 1.0, 0.85] };
+// Leaves on a phone. Measured on a Mali-G57: the leaf cards alone cost more than the rest of the frame together, because each pixel of each
+// layer of a tree ran the whole lighting, shadow and fog sum before being kept or cut. With all of that worked out once per corner of a
+// card, a pixel is one texture read and a multiply, and the frame rate doubled. The light still falls the same way (the same bands, sky
+// light and rim); what goes is variation inside one card.
+const LEAF_LQ_VERTEX_DECL = /* glsl */`
+#ifdef LEAF_LQ
+  #include <lights_pars_begin>
+  ${ATMOS_VARY}
+  uniform vec3 uRim, uLeafTint, uLeafShade, uLeafLit; uniform vec4 uFlower; uniform float uLeafDrop;
+  varying vec3 vLeafCol, vLeafRim, vLeafFog; varying float vLeafFogF, vLeafCut;
+#endif`;
+const LEAF_LQ_VERTEX = /* glsl */`
+#ifdef LEAF_LQ
+{
+  vec4 lqW = vec4(transformed, 1.0);
+  #ifdef USE_INSTANCING
+    lqW = instanceMatrix * lqW;
+  #endif
+  lqW = modelMatrix * lqW;
+  vec3 lqN = normalize(vNormal), lqL = ambientLightColor;
+  #if NUM_HEMI_LIGHTS > 0
+    lqL += getHemisphereLightIrradiance(hemisphereLights[0], lqN);
+  #endif
+  #if NUM_DIR_LIGHTS > 0
+  { float x = dot(lqN, directionalLights[0].direction) * 0.5 + 0.5, lit = 0.5 * smoothstep(0.44, 0.54, x) + 0.5 * smoothstep(0.6, 0.7, x);
+    lqL += lit * directionalLights[0].color; }
+  #endif
+  #if NUM_POINT_LIGHTS > 0
+  { IncidentLight L; getPointLightInfo(pointLights[0], -vViewPosition, L); lqL += L.color * max(0.0, dot(lqN, L.direction) * 0.5 + 0.5); }
+  #endif
+  vec3 lqC = vColor * mix(uLeafShade, uLeafLit, 0.5) * uLeafTint * (0.97 + 0.06 * fract(aRand * 13.7));
+  if (fract(aRand * 7.31) < uFlower.a) lqC = mix(lqC, uFlower.rgb * vColor, 0.62);   // (flowers as a blush over the whole card)
+  vLeafCol = lqC * lqL * RECIPROCAL_PI;
+  vLeafRim = uRim * pow(1.0 - saturate(dot(lqN, normalize(vViewPosition))), 3.0) * 0.3;
+  // the same correction as LEAF_FRAG_DROP, from the card's size on the screen: mip levels soften the alpha, and far masses would thin out
+  float lqPx = aSize * bbS * projectionMatrix[1][1] * 210.0 / max(-mvPosition.z, 0.1);
+  vLeafCut = 1.0 + max(0.0, log2(128.0 / max(lqPx, 1.0))) * 0.3;
+  if (aRand < uLeafDrop) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);   // (a leaf the season has dropped: nothing to draw at all)
+  #ifdef USE_FOG
+    atmosVary(lqW.xyz, vLeafFog, vLeafFogF);
+  #else
+    vLeafFog = vec3(0.0); vLeafFogF = 0.0;
+  #endif
+}
+#else
+  #include <fog_vertex>
+#endif`;
+const LEAF_LQ_FRAGMENT = /* glsl */`
+#include <common>
+#include <uv_pars_fragment>
+#include <map_pars_fragment>
+varying vec3 vLeafCol, vLeafRim, vLeafFog; varying float vLeafFogF, vLeafCut;
+void main() {
+  vec4 t = texture2D(map, vMapUv);
+  if (t.a * vLeafCut < 0.5) discard;
+  gl_FragColor = vec4(mix(t.rgb * vLeafCol + vLeafRim, vLeafFog, vLeafFogF), 1.0);
+}`;
+// On a lean level every painted leaf material takes the short form. A define, so the level can change in play.
+let LEAN_LEAVES = false; const ALL_LEAVES = [];
+export function setLeanLeaves(on) {
+  LEAN_LEAVES = !!on;
+  if (LEAF_SPRITE) { const a = on ? 1 : 4; if (LEAF_SPRITE.anisotropy !== a) { LEAF_SPRITE.anisotropy = a; LEAF_SPRITE.needsUpdate = true; } }
+  for (const m of ALL_LEAVES) { if (!!m.defines.LEAF_LQ === LEAN_LEAVES) continue; if (LEAN_LEAVES) m.defines.LEAF_LQ = 1; else delete m.defines.LEAF_LQ; m.needsUpdate = true; }
+}
 export function paintedLeafMaterial(key, opt = {}) {
   LEAF_SPRITE = LEAF_SPRITE || leafSpriteTexture();
+  if (LEAN_LEAVES) LEAF_SPRITE.anisotropy = 1;
+  // (one program for all the species: only their uniforms differ, and each material still gets its own)
   const m = toon({
-    map: opt.map || LEAF_SPRITE, alphaTest: 0.5, vertexColors: true, wind: true, rim: 0.3, key: 'leaf-' + key, patch: (s) => {
+    map: opt.map || LEAF_SPRITE, alphaTest: 0.5, vertexColors: true, wind: true, rim: 0.3, key: opt.soft ? 'leaf-soft' : 'leaf', patch: (s) => {
       s.uniforms.uFocus = G.uFocus; s.uniforms.uLeafDrop = m.userData.drop; s.uniforms.uLeafTint = m.userData.tint; s.uniforms.uFlower = m.userData.flower;
       Object.assign(s.uniforms, PU);
       if (opt.soft) s.uniforms.tSoft = opt.soft.tex;
       s.vertexShader = s.vertexShader.replace('#include <common>', `#include <common>\n #define CAM_FADE
  uniform vec4 uFocus; attribute float aSize; varying float vRand; ${opt.soft ? opt.soft.decl : ''}`)
+        .replace('void main() {', `${LEAF_LQ_VERTEX_DECL}\nvoid main() {`)
         .replace('#include <project_vertex>', `${opt.soft ? opt.soft.vertex : ''}${BILLBOARD_VERTEX}
           vRand = aRand;
-          vNormal = normalize(vNormal + vec3(bbC, 0.0) * 0.12);   // a hint of roundness per sprite; the mass's normal leads`);
+          vNormal = normalize(vNormal + vec3(bbC, 0.0) * 0.12);   // a hint of roundness per sprite; the mass's normal leads`)
+        .replace('#include <shadowmap_vertex>', '#ifndef LEAF_LQ\n#include <shadowmap_vertex>\n#endif')
+        .replace('#include <fog_vertex>', LEAF_LQ_VERTEX);
       s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>
           uniform float uLeafDrop; uniform vec3 uLeafTint, uLeafShade, uLeafLit; uniform vec4 uFlower; varying float vRand;`)
         .replace('#include <map_fragment>', `#include <map_fragment>\n${LEAF_FRAG_DROP}`)
@@ -709,16 +787,19 @@ export function paintedLeafMaterial(key, opt = {}) {
             float spot = 1.0 - smoothstep(0.24, 0.3 + fw, length(fract(fu) - 0.5));
             diffuseColor.rgb = mix(diffuseColor.rgb, uFlower.rgb * vColor, mix(spot, 0.62, clamp(fw * 1.6, 0.0, 1.0)));
           }`);
+      s.fragmentShader = `#ifdef LEAF_LQ\n${LEAF_LQ_FRAGMENT}\n#else\n${s.fragmentShader}\n#endif`;
     },
   });
   m.userData.drop = opt.share ? opt.share.drop : { value: 0 }; m.userData.tint = opt.share ? opt.share.tint : { value: new THREE.Vector3(1, 1, 1) }; m.userData.flower = opt.share ? opt.share.flower : { value: new THREE.Vector4(0, 0, 0, 0) };
   if (opt.share) m.userData.nearCopy = true;
+  if (LEAN_LEAVES) m.defines.LEAF_LQ = 1;
+  ALL_LEAVES.push(m);
   return m;
 }
 export const getLeafSprite = () => LEAF_SPRITE;
 function paintedLeafDepth(key, dropRef) {
   const m = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, map: LEAF_SPRITE, alphaTest: 0.5 });
-  patch(m, 'leafdepth-p-' + key, (s) => {
+  patch(m, 'leafdepth-p', (s) => {
     s.uniforms.uLeafDrop = dropRef;
     s.vertexShader = s.vertexShader.replace('#include <common>', `#include <common>
       attribute float aWind; attribute float aRand; attribute float aSize; varying float vRand; uniform float uTime; uniform vec2 uWind; uniform float uWindStrength;`)
@@ -744,7 +825,7 @@ export function vineParts() {
 export const BARK_COL = { semal: '#a8a29a', teak: '#a49482', mahua: '#7a6656', saja: '#857c76', kulu: '#e6e0d6', palash: '#94826e', small: '#94826c', arjun: '#c4b49c', dead: '#9a9088', deadfall: '#8a7a68', stones: '#9a96a4', bamboo: '#b4ac5c', banyan: '#8a8070', lantana: '#6a5a40' };
 function paintedBarkMaterial(key) {
   return toon({
-    color: new THREE.Color(BARK_COL[key] || '#7a6a58'), vertexColors: true, wind: true, rim: 0.6, key: 'bark-' + key, patch: (s) => {
+    color: new THREE.Color(BARK_COL[key] || '#7a6a58'), vertexColors: true, wind: true, rim: 0.6, key: 'bark', patch: (s) => {
       s.vertexShader = s.vertexShader.replace('#include <common>', '#include <common>\n varying vec2 vBUv; varying float vLYb;')
         .replace('#include <begin_vertex>', '#include <begin_vertex>\n vBUv = uv; vLYb = position.y;');
       s.fragmentShader = s.fragmentShader.replace('#include <common>', `#include <common>\n${NOISE_GLSL}\n varying vec2 vBUv; varying float vLYb;`)
@@ -779,7 +860,7 @@ const _lk = new THREE.Vector3(), SEMAL_RED = new THREE.Color('#d0342a');
 
 export class Vegetation {
   constructor(scene, T, quality) {
-    this.scene = scene; this.T = T; this.q = quality;
+    this.scene = scene; this.T = T; this.q = quality; setLeanLeaves(quality.lean);
     this.cells = new Map();
     this.exclusions = []; // {x,z,r}
     this.templates = [];
@@ -816,7 +897,6 @@ export class Vegetation {
     }
     // instanced meshes
     this.meshes = [];
-    const cap0 = quality.treeCap0 || 1400, cap1 = quality.treeCap1 || 6000;
     for (let s = 0; s < SPECIES_LIST.length; s++) {
       const name = SPECIES_LIST[s].name;
       const per = [];
@@ -824,46 +904,76 @@ export class Vegetation {
         const t = this.templates[s][v];
         const nv = SPECIES_LIST[s].variants;
         const capMul = (name === 'teak' ? 1.0 : name === 'banyan' || name === 'semal' ? 0.12 : name === 'deadfall' || name === 'stones' ? 0.45 : 0.5) * Math.min(1, 1.9 / nv);
-        const c0 = Math.ceil(cap0 * capMul), c1 = Math.ceil(cap1 * capMul);
-        const mk = (geo, mat, cap, shadow, depth) => {
+        const sizes = this.capsFor(s, v, capMul, nv);
+        const mk = (geo, mat, cap, shadow, depth, near) => {
           if (!geo || !geo.attributes.position || geo.attributes.position.count === 0) return null;
           const m = new THREE.InstancedMesh(geo, mat, cap);
-          m.count = 0; m.frustumCulled = false; m.castShadow = shadow;
+          m.count = 0; m.frustumCulled = false; m.castShadow = shadow; m.matrixAutoUpdate = false;
           // Leaves take their light from the sun's angle, not from the shadow map. A sprite's four corners share one point,
           // so it read one shadow value for the whole sprite and flipped light or dark at once whenever wind or the sun
           // moved that point across a shadow edge.
           m.receiveShadow = !(PAINTED && mat.userData && mat.userData.drop);
           if (depth) m.customDepthMaterial = depth;
           m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+          if (near) shadowHooks(m);
           this.scene.add(m); return m;
         };
-        const lm = this.leafMats[name];
+        const lm = this.leafMats[name], lean = quality.lean;
         per.push({
-          b0: mk(t.bark, this.barkMats[name], c0, true), l0: lm ? mk(t.leaf, lm, c0, true, lm.userData.depth) : null,
-          b1: mk(t.bark1, this.barkMats[name], c1, false), l1: lm ? mk(t.leaf1, lm, c1, false) : null,
-          c0, c1, n0: 0, n1: 0, capMul,
+          b0: mk(lean && t.barkLow || t.bark, this.barkMats[name], sizes[0], true, null, true), l0: lm ? mk(t.leaf, lm, sizes[0], true, lm.userData.depth, true) : null,
+          b1: mk(lean && t.bark1Low || t.bark1, this.barkMats[name], sizes[1], false), l1: lm ? mk(t.leaf1, lm, sizes[1], false) : null,
+          c0: sizes[0], c1: sizes[1], n0: 0, n1: 0, nS: 0, rest: [], capMul, nv, t,
         });
       }
       this.meshes.push(per);
     }
     this.setSeason('winter');
   }
+  // Which shape of its species a tree is drawn with, close to and far off. (A lean level has few, each one being more draw calls. The climbing
+  // skeleton goes with the near shape, so a tree is always climbed as it looks. Far off it hardly matters, and one is enough.)
+  nearShape(sp, v) { return Math.min(v, this.q.treeVariants + (sp === SP.teak ? 1 : 0) - 1); }
+  farShape(sp, v) { return this.q.farOneShape ? 0 : this.nearShape(sp, v); }
+  // how many instances each shape needs room for: its share of the level's limit, and none for a shape not in use on this level
+  capsFor(s, v, capMul, nv) {
+    const q = this.q, cap0 = q.treeCap0 || 1400, cap1 = q.treeCap1 || 6000;
+    const near = this.nearShape(s, v) === v ? Math.ceil(cap0 * capMul) : 1;
+    const far = PAINTED && q.farPics ? 1 : this.farShape(s, v) === v ? Math.ceil(cap1 * (q.farOneShape && s === SP.teak ? 1.2 : capMul * (q.farOneShape ? nv / Math.min(nv, 1.9) : 1))) : 1;   // (far trees are pictures on this level: see farPictures)
+    return [near, far];
+  }
+  // Past the near trees, Low and Medium draw a picture of each tree (js/world/fartrees.js). Made when first needed; the leaf materials share
+  // their species' season, tint and flowers.
+  farPictures() {
+    if (!PAINTED || !this.q.farPics) return null;
+    if (!this.far) this.far = new FarTrees(this.scene, SPECIES_LIST.map((sp, s) => {
+      const t = this.templates[s][0], lm = this.leafMats[sp.name], parts = [];
+      if (t.debris) return null;
+      if (t.bark) parts.push([t.bark, toon({ color: new THREE.Color(BARK_COL[sp.name] || '#7a6a58'), vertexColors: true, rim: 0.6, key: 'far-bark' })]);
+      if (t.leaf && lm) parts.push([t.leaf, paintedLeafMaterial('far', { share: lm.userData })]);
+      return parts.length ? { parts } : null;
+    }), 16000);
+    return this.far;
+  }
   // a new graphics level: how many trees may be drawn (buffers grow when they must; a lower limit just uses less of them)
   applyQuality() {
-    const cap0 = this.q.treeCap0 || 1400, cap1 = this.q.treeCap1 || 6000, aa = !!this.q.aa;
+    const aa = !!this.q.aa; setLeanLeaves(this.q.lean);
     const grow = (mesh, cap) => {
       if (!mesh || mesh.instanceMatrix.count >= cap) return mesh;
       const n = new THREE.InstancedMesh(mesh.geometry, mesh.material, cap);
-      n.count = 0; n.frustumCulled = false; n.castShadow = mesh.castShadow; n.receiveShadow = mesh.receiveShadow;
+      n.count = 0; n.frustumCulled = false; n.castShadow = mesh.castShadow; n.receiveShadow = mesh.receiveShadow; n.matrixAutoUpdate = false;
       if (mesh.customDepthMaterial) n.customDepthMaterial = mesh.customDepthMaterial;
+      if (mesh.onBeforeShadow === beforeShadow) shadowHooks(n);
       n.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       this.scene.remove(mesh); mesh.dispose(); this.scene.add(n);
       return n;
     };
-    for (const per of this.meshes) for (const m of per) {
-      m.c0 = Math.ceil(cap0 * m.capMul); m.c1 = Math.ceil(cap1 * m.capMul);
+    this.job = null; if (this.climbCache) this.climbCache.clear();   // (a lean level draws fewer shapes of tree, so a tree may change shape)
+    const lean = this.q.lean;
+    this.meshes.forEach((per, s) => per.forEach((m, v) => {
+      [m.c0, m.c1] = this.capsFor(s, v, m.capMul, m.nv);
       m.b0 = grow(m.b0, m.c0); m.l0 = grow(m.l0, m.c0); m.b1 = grow(m.b1, m.c1); m.l1 = grow(m.l1, m.c1);
-    }
+      if (m.b0) m.b0.geometry = lean && m.t.barkLow || m.t.bark;
+      if (m.b1) m.b1.geometry = lean && m.t.bark1Low || m.t.bark1;
+    }));
     for (const name in this.leafMats) { const lm = this.leafMats[name]; if (lm.alphaToCoverage !== aa) { lm.alphaToCoverage = aa; lm.needsUpdate = true; } }
   }
   setSeason(season) {
@@ -884,7 +994,7 @@ export class Vegetation {
       if (m.map !== map) { m.map = map; m.userData.depth.map = map; m.needsUpdate = true; m.userData.depth.needsUpdate = true; }
     }
   }
-  addExclusion(x, z, r) { this.exclusions.push({ x, z, r }); for (const [k, c] of this.cells) if (Math.abs(c.cx * CHUNK + 32 - x) < r + 64 && Math.abs(c.cz * CHUNK + 32 - z) < r + 64) this.cells.delete(k); this.lastPos.set(1e9, 0, 1e9); }
+  addExclusion(x, z, r) { this.exclusions.push({ x, z, r }); for (const [k, c] of this.cells) if (Math.abs(c.cx * CHUNK + 32 - x) < r + 64 && Math.abs(c.cz * CHUNK + 32 - z) < r + 64) this.cells.delete(k); this.lastPos.set(1e9, 0, 1e9); this.aoKey = null; }
   excluded(x, z) { for (const e of this.exclusions) { const dx = x - e.x, dz = z - e.z; if (dx * dx + dz * dz < e.r * e.r) return true; } return false; }
   genCell(cx, cz) {
     const rng = mulberry32((cx * 73856093) ^ (cz * 19349663) ^ 0x5bd1e995);
@@ -934,56 +1044,102 @@ export class Vegetation {
     }
     return { cx, cz, data: new Float32Array(out) };
   }
+  // The list of trees to draw is rebuilt every 10 m the camera moves. Done in one go that is a dropped frame or two each time on a phone,
+  // every couple of seconds at a run, so it is done over several frames, a couple of milliseconds in each. Nothing changes on screen, and
+  // the trunks to collide with stay as they were, until the whole new list is ready. A forced update (a teleport) finishes at once.
   update(cam, force = false) {
-    if (!force && this.lastPos.distanceToSquared(cam) < 100) return;
-    this.lastPos.copy(cam);
+    if (force) this.job = null;
+    if (!this.job) {
+      if (!force && this.lastPos.distanceToSquared(cam) < 100) return;
+      this.lastPos.copy(cam);
+      this.job = this.rebuild(cam.x, cam.z, force);
+    }
+    const t0 = performance.now();
+    while (!this.job.next().done) if (!force && performance.now() - t0 > 2) return;
+    this.job = null;
+  }
+  *rebuild(camX, camZ, force) {
     const R1 = this.q.treeFar, R0 = this.q.treeNear;
     const r = Math.ceil(R1 / CHUNK);
-    const pcx = Math.floor(cam.x / CHUNK), pcz = Math.floor(cam.z / CHUNK);
+    const pcx = Math.floor(camX / CHUNK), pcz = Math.floor(camZ / CHUNK);
     for (const per of this.meshes) for (const m of per) { m.n0 = 0; m.n1 = 0; }
-    this.colliders.length = 0; this.rocks.length = 0; this.perches.length = 0; this.aoTrees.length = 0; this.slotMap.clear();
-    const R0s = R0 * R0, R1s = R1 * R1;
-    let gen = 0;
+    const colliders = [], rocks = [], perches = [], aoTrees = [], slotMap = new Map();
+    const R0s = R0 * R0, R1s = R1 * R1, thin = this.q.treeThin ?? 1, thinR = R1s * 0.25, lean = this.q.lean;
+    // Near trees within the shadows' reach go first in their lists, so that the shadow pass need only draw that many of them (see shadowHooks)
+    const sR = this.q.shadowDist + 8, sRs = sR * sR, debR = R0s * (lean ? 0.35 : 0.6);
+    const place = (m, x, y, z, rot, s, gth, deb, dist2) => {
+      if (m.n0 >= m.c0) return;
+      // (remember where the trees close by went, so the near-detail swap can hide and show them in place)
+      if (!deb && dist2 < 60 * 60) {
+        const key = Math.round(x * 100) * 1e6 + Math.round(z * 100);
+        slotMap.set(key, { m, i: m.n0, x, y, z, rot, s, g: gth });
+        if (this.hidden.has(key)) zeroMat(m.b0, m.l0, m.n0); else writeMat(m.b0, m.l0, m.n0, x, y, z, rot, s, gth, deb);
+      } else writeMat(m.b0, m.l0, m.n0, x, y, z, rot, s, gth, deb);
+      m.n0++;
+    };
+    for (const per of this.meshes) for (const m of per) { m.rest.length = 0; m.nT = 0; }
+    const trunks = this.q.farOneShape ? this.meshes[SP.teak][0] : null;
+    const pics = this.farPictures(); if (pics) pics.begin();
     for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
       const cx = pcx + dx, cz = pcz + dz;
-      const ccx = (cx + 0.5) * CHUNK - cam.x, ccz = (cz + 0.5) * CHUNK - cam.z;
+      const ccx = (cx + 0.5) * CHUNK - camX, ccz = (cz + 0.5) * CHUNK - camZ;
       if (ccx * ccx + ccz * ccz > (R1 + 46) * (R1 + 46)) continue;
       const key = cx * 100003 + cz;
       let cell = this.cells.get(key);
-      if (!cell) { if (gen > (force ? 1e9 : 12)) continue; cell = this.genCell(cx, cz); this.cells.set(key, cell); gen++; }
+      if (!cell) { cell = this.genCell(cx, cz); this.cells.set(key, cell); yield; }
       const d = cell.data;
       const near = Math.abs(dx) <= 1 && Math.abs(dz) <= 1;
       for (let i = 0; i < d.length; i += STRIDE) {
         const x = d[i], y = d[i + 1], z = d[i + 2];
-        const ddx = x - cam.x, ddz = z - cam.z, dist2 = ddx * ddx + ddz * ddz;
+        const ddx = x - camX, ddz = z - camZ, dist2 = ddx * ddx + ddz * ddz;
         if (dist2 > R1s) continue;
-        const sp = d[i + 5], va = d[i + 6], m = this.meshes[sp][va];
+        const sp = d[i + 5], va = this.nearShape(sp, d[i + 6]), m = this.meshes[sp][va];
         const tmpl = this.templates[sp][va];
         const s = d[i + 4], deb = tmpl.debris;
         const gth = deb ? 1 : girthOf(x, z);
-        if (near && tmpl.trunkR > 0) (deb ? this.rocks : this.colliders).push(x, z, tmpl.trunkR * s * gth * 0.92);
-        if (near) this.aoTrees.push(x, z, deb ? (tmpl.aoR || 0) * s : tmpl.trunkR * s * gth * 0.8, tmpl.crownR * s * 0.8);
-        if (near && !deb && sp !== SP.lantana && sp !== SP.bamboo && dist2 < 70 * 70) this.perches.push(x, y + tmpl.crownY * s * 0.85, z, sp);
+        if (near && tmpl.trunkR > 0) (deb ? rocks : colliders).push(x, z, tmpl.trunkR * s * gth * 0.92);
+        if (near) aoTrees.push(x, z, deb ? (tmpl.aoR || 0) * s : tmpl.trunkR * s * gth * 0.8, tmpl.crownR * s * 0.8);
+        if (near && !deb && sp !== SP.lantana && sp !== SP.bamboo && dist2 < 70 * 70) perches.push(x, y + tmpl.crownY * s * 0.85, z, sp);
         if (dist2 < R0s) {
-          if (deb && dist2 > R0s * 0.6) continue;
-          if (m.n0 < m.c0) {
-            // (remember where the trees close by went, so the near-detail swap can hide and show them in place)
-            if (!deb && dist2 < 60 * 60) {
-              const key = Math.round(x * 100) * 1e6 + Math.round(z * 100);
-              this.slotMap.set(key, { m, i: m.n0, x, y, z, rot: d[i + 3], s, g: gth });
-              if (this.hidden.has(key)) zeroMat(m.b0, m.l0, m.n0); else writeMat(m.b0, m.l0, m.n0, x, y, z, d[i + 3], s, gth, deb);
-            } else writeMat(m.b0, m.l0, m.n0, x, y, z, d[i + 3], s, gth, deb);
-            m.n0++;
-          }
+          if (deb && dist2 > debR) continue;
+          if (dist2 < sRs) place(m, x, y, z, d[i + 3], s, gth, deb, dist2);
+          else m.rest.push(x, y, z, d[i + 3], s, gth, deb ? 1 : 0, dist2);
         } else if (!deb && (sp !== SP.lantana || dist2 < R1s * 0.25)) {
-          if (m.n1 < m.c1) { writeMat(m.b1, m.l1, m.n1, x, y - 0.6, z, d[i + 3], s, gth, false); m.n1++; }
+          if (dist2 > thinR && (d[i + 3] * 7.31) % 1 > thin) continue;   // (the rotation is a random number that goes with the tree)
+          if (pics) { pics.add(sp, x, y - 0.6, z, s, d[i + 3]); continue; }
+          const f = this.meshes[sp][this.farShape(sp, d[i + 6])];
+          // (on a lean level the far trunks of nearly all kinds are one mesh, in the height of the tree: far off a trunk is a trunk, and that is
+          // eight draw calls fewer. Its leaves stay its own, for the season's colours.)
+          const t = trunks && sp !== SP.bamboo && f.b1 ? trunks : null;
+          if (t ? f.n1 < f.c1 && t.nT < t.c1 : f.n1 < f.c1) {
+            if (t) { writeMat(null, f.l1, f.n1, x, y - 0.6, z, d[i + 3], s, gth, false); writeMat(t.b1, null, t.nT++, x, y - 0.6, z, d[i + 3], s * tmpl.H / t.t.H, gth, false); }
+            else writeMat(f.b1, f.l1, f.n1, x, y - 0.6, z, d[i + 3], s, gth, false);
+            f.n1++;
+          }
         }
       }
+      yield;
     }
     for (const per of this.meshes) for (const m of per) {
-      for (const [mesh, n] of [[m.b0, m.n0], [m.l0, m.n0], [m.b1, m.n1], [m.l1, m.n1]]) if (mesh) { mesh.count = n; mesh.instanceMatrix.needsUpdate = true; }
+      m.nS = m.n0; const E = m.rest;
+      for (let k = 0; k < E.length; k += 8) place(m, E[k], E[k + 1], E[k + 2], E[k + 3], E[k + 4], E[k + 5], !!E[k + 6], E[k + 7]);
     }
-    if (this.onRebuild) this.onRebuild({ x0: (pcx - 1) * CHUNK, z0: (pcz - 1) * CHUNK, size: 3 * CHUNK }, this.aoTrees);
+    // ready: take the new list into use
+    if (pics) pics.commit(); else if (this.far) this.far.clear();
+    this.colliders = colliders; this.rocks = rocks; this.perches = perches; this.aoTrees = aoTrees; this.slotMap = slotMap;
+    for (const per of this.meshes) for (const m of per) {
+      for (const [mesh, n, nS] of [[m.b0, m.n0, m.nS], [m.l0, m.n0, m.nS], [m.b1, trunks ? m.nT + (m.t.spName === 'bamboo' ? m.n1 : 0) : m.n1, 0], [m.l1, m.n1, 0]]) if (mesh) {
+        mesh.count = n; mesh.userData.n = n; mesh.userData.nS = nS;
+        if (mesh.onBeforeShadow === beforeShadow) mesh.castShadow = nS > 0 && !(lean && m.t.debris);
+        // (with nothing to draw it goes out of the scene: the frame has one thing less to walk over. Not before the shaders are compiled.)
+        if (this.warmed) { if (n && !mesh.parent) this.scene.add(mesh); else if (!n && mesh.parent) this.scene.remove(mesh); }
+        // (only the part in use goes to the GPU: the buffers are sized for the most that could ever be drawn)
+        const A = mesh.instanceMatrix; A.clearUpdateRanges(); if (n) { A.addUpdateRange(0, n * 16); A.needsUpdate = true; }
+      }
+    }
+    // (the ground's shading map is the same for as long as the camera stays in this chunk, and redrawing it means an upload)
+    const aoKey = pcx * 100003 + pcz;
+    if (this.onRebuild && (force || aoKey !== this.aoKey)) { this.aoKey = aoKey; this.onRebuild({ x0: (pcx - 1) * CHUNK, z0: (pcz - 1) * CHUNK, size: 3 * CHUNK }, aoTrees); }
     // prune far cells
     if (this.cells.size > 1600) for (const [k, c] of this.cells) { if (Math.abs(c.cx - pcx) > r + 3 || Math.abs(c.cz - pcz) > r + 3) this.cells.delete(k); }
   }
@@ -1017,7 +1173,7 @@ export class Vegetation {
       const d = cell.data;
       for (let i = 0; i < d.length; i += STRIDE) {
         const tx = d[i], tz = d[i + 2]; if ((tx - x) * (tx - x) + (tz - z) * (tz - z) > R2) continue;
-        const tmpl = this.templates[d[i + 5]][d[i + 6]]; if (!tmpl.climb) continue;
+        const tmpl = this.templates[d[i + 5]][this.nearShape(d[i + 5], d[i + 6])]; if (!tmpl.climb) continue;
         const key = Math.round(tx * 100) * 1e6 + Math.round(tz * 100);
         let t = cache.get(key);
         if (!t) {
@@ -1031,8 +1187,10 @@ export class Vegetation {
     return out;
   }
   writeNear(mesh, T) { writeMat(mesh, null, 0, T.x, T.y, T.z, T.rot, T.s, T.g); mesh.instanceMatrix.needsUpdate = true; }
-  hide(key) { this.hidden.add(key); const s = this.slotMap.get(key); if (s) { zeroMat(s.m.b0, s.m.l0, s.i); for (const m of [s.m.b0, s.m.l0]) if (m) m.instanceMatrix.needsUpdate = true; } }
-  show(key) { this.hidden.delete(key); const s = this.slotMap.get(key); if (s) { writeMat(s.m.b0, s.m.l0, s.i, s.x, s.y, s.z, s.rot, s.s, s.g); for (const m of [s.m.b0, s.m.l0]) if (m) m.instanceMatrix.needsUpdate = true; } }
+  // (a new list half made would reach the GPU with this one tree's change, so it is finished first)
+  finishList() { if (this.job) { while (!this.job.next().done); this.job = null; } }
+  hide(key) { this.finishList(); this.hidden.add(key); const s = this.slotMap.get(key); if (s) { zeroMat(s.m.b0, s.m.l0, s.i); upload(s); } }
+  show(key) { this.finishList(); this.hidden.delete(key); const s = this.slotMap.get(key); if (s) { writeMat(s.m.b0, s.m.l0, s.i, s.x, s.y, s.z, s.rot, s.s, s.g); upload(s); } }
   nearestTree(x, z, maxD = 3, species) {
     let best = null, bd = maxD * maxD;
     const c = this.colliders;
@@ -1113,7 +1271,13 @@ function climbSpine(trunk, limbs) {
   }
   return pts.length > 1 ? { pts, r, own, t } : { pts: trunk.pts, r: trunk.r, own: trunk.pts.map(() => trunk), t: trunk.pts.map((_, i) => i / (trunk.pts.length - 1)) };
 }
+// The shadow pass draws only the instances that can reach the shadow camera's view: the first userData.nS in the list. (Instances have no
+// culling of their own, so every near tree's vertices went through the shadow pass, including those far outside it.)
+function beforeShadow() { this.count = this.userData.nS ?? this.count; }
+function afterShadow() { this.count = this.userData.n ?? this.count; }
+function shadowHooks(m) { m.onBeforeShadow = beforeShadow; m.onAfterShadow = afterShadow; }
 function zeroMat(bm, lm, idx) { for (const m of [bm, lm]) if (m) m.instanceMatrix.array.fill(0, idx * 16, idx * 16 + 16); }
+function upload(s) { for (const m of [s.m.b0, s.m.l0]) if (m) { m.instanceMatrix.addUpdateRange(s.i * 16, 16); m.instanceMatrix.needsUpdate = true; } }
 function writeMat(bm, lm, idx, x, y, z, rot, s, g = 1, slopeAlign = false) {
   const h = Math.sin(x * 4.898 + z * 7.23) * 1458.5453, f = h - Math.floor(h);
   if (slopeAlign) {
@@ -1313,8 +1477,8 @@ export class Grass {
         }
       }
     }
-    this.short.count = ns; this.tall.count = nt;
-    this.short.instanceMatrix.needsUpdate = true; this.tall.instanceMatrix.needsUpdate = true;
+    this.short.count = ns; this.tall.count = nt; this.short.visible = ns > 0; this.tall.visible = nt > 0;
+    for (const [m, n] of [[this.short, ns], [this.tall, nt]]) { const A = m.instanceMatrix; A.clearUpdateRanges(); if (n) { A.addUpdateRange(0, n * 16); A.needsUpdate = true; } }
     if (this.cells.size > 6000) for (const [k] of this.cells) { this.cells.delete(k); if (this.cells.size < 3000) break; }
   }
   // how hidden the player is (tall grass)

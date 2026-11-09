@@ -167,11 +167,12 @@ export class Weather {
       for (const s of this.flashSeq) f = Math.max(f, Math.exp(-Math.abs(t - s) * 40));
       this.flash = f;
     } else this.flash = 0;
-    this.bolt.material.opacity = Math.max(0, this.bolt.material.opacity - dt * 5);
+    this.bolt.material.opacity = Math.max(0, this.bolt.material.opacity - dt * 5); this.bolt.visible = this.bolt.material.opacity > 0;
     G.uFlash.value = this.flash; sky.flash = this.flash;
   }
   updateSplashes(dt, cam) {
     const on = this.env.rain > 0.05;
+    this.splash.visible = on;
     if (!on) { this.splash.count = 0; return; }
     const m = new THREE.Matrix4(); let n = 0;
     const maxN = Math.floor(this.splashData.length * Math.min(1, this.env.rain * 1.3));

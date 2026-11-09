@@ -1,392 +1,485 @@
-// The opening, as a sketchbook: rough toon drawings on paper, made in code. Each panel is redrawn about twelve times a
-// second with its lines wobbling a little ("line boil", as in hand-drawn animation), starts by being drawn onto the page
-// stroke by stroke, and moves in simple cut-out fashion. Coordinates in a panel run 0-1600 by 0-900.
-const INK = '#2a2018', PAPER = '#efe3c8';
+// The opening, as a set of paintings in the manner of an Indian miniature: figures in profile with long eyes, flat stacked
+// country, patterned water, scrolling clouds, all in brush and ink over thin mineral washes on aged paper. Each plate is
+// painted once, ahead of time, into its own canvas; during the opening nothing is drawn at all. The finished plates just
+// fade from one to the next and drift slowly, which the browser does on its own.
 const W = 1600, H = 900;
-const C = { storm: '#67737c', sky: '#a8b4b0', dusk: '#c9a98a', hill: '#6f8466', hill2: '#8ea088', leaf: '#6f8a4e', leaf2: '#4f6c3e', flood: '#8d7655', river: '#7f9a90', night: '#34404c', nightR: '#46565c', sand: '#d9c292', skin: '#b67f55', hair: '#2b1d14', sari: '#b8483a', cloth: '#efe7d4', wolf: '#8d8c88', wolfD: '#5f5e5b', wood: '#8a6238', woodD: '#5e4228', steel: '#b4bcc0', bull: '#c8b48e', dawn: '#e8c9a0', den: '#57463a' };
-const hash = (n) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return (s - Math.floor(s)) * 2 - 1; };
-const ell = (x, y, rx, ry = rx, rot = 0, n = 10) => { const p = [], c = Math.cos(rot), s = Math.sin(rot); for (let i = 0; i < n; i++) { const a = i / n * 6.2832, X = Math.cos(a) * rx, Y = Math.sin(a) * ry; p.push([x + X * c - Y * s, y + X * s + Y * c]); } return p; };
-const clamp01 = (v) => Math.max(0, Math.min(1, v));
-const smooth = (a, b, x) => { const t = clamp01((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+const C = { ink: '#2a2118', sepia: '#4a3a2a', paper: '#dccdab', indigo: '#8a9493', night: '#56626a', ochre: '#bca06a', red: '#9a5c48', green: '#a3a57f', greenD: '#7f8667', umber: '#8d7558', flesh: '#c49e78', white: '#eee6d2', steel: '#a8aaa2', water: '#a9b2a6', flood: '#a8987a', sand: '#d8c7a0', wolf: '#a59e8c', dusk: '#d6bd96', leaf: '#6f7858' };
 
-class Ink {
-  constructor(x) { this.x = x; this.n = 0; this.limit = Infinity; this.boil = 0; }
-  // a Catmull-Rom path through the points
-  curve(pts, closed, jit) {
-    const out = [], n = pts.length, P = pts.map((p, i) => [p[0] + hash(this.n * 3.1 + i * 7.7 + this.boil) * jit, p[1] + hash(this.n * 5.3 + i * 3.3 + this.boil * 1.7) * jit]);
-    const get = (i) => (closed ? P[(i + n) % n] : P[Math.max(0, Math.min(n - 1, i))]), segs = closed ? n : n - 1;
+function rngOf(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+
+// Two tiles shared by every plate: pigment settling unevenly (alpha to take away from a wash) and paper fibre (to multiply over)
+let GRAIN = null, FIBRE = null;
+function tiles() {
+  if (GRAIN) return;
+  const S = 256, r = rngOf(9), mk = () => { const c = document.createElement('canvas'); c.width = c.height = S; return c; };
+  const lo = new Float32Array(32 * 32); for (let i = 0; i < lo.length; i++) lo[i] = r();
+  const at = (x, y) => { const X = x / 21, Y = y / 21, i = Math.floor(X), j = Math.floor(Y), u = X - i, v = Y - j, g = (a, b) => lo[((b & 31) * 32 + (a & 31))]; return (g(i, j) * (1 - u) + g(i + 1, j) * u) * (1 - v) + (g(i, j + 1) * (1 - u) + g(i + 1, j + 1) * u) * v; };
+  GRAIN = mk(); const gx = GRAIN.getContext('2d'), gd = gx.createImageData(S, S);
+  FIBRE = mk(); const fx = FIBRE.getContext('2d'), fd = fx.createImageData(S, S);
+  for (let y = 0, k = 0; y < S; y++) for (let x = 0; x < S; x++, k += 4) {
+    const blot = at(x, y), fine = r();
+    gd.data[k] = gd.data[k + 1] = gd.data[k + 2] = 0; gd.data[k + 3] = Math.max(0, blot * 0.25 + fine * 0.75 - 0.5) * 170;
+    const v = 236 + blot * 14 + (fine - 0.5) * 12; fd.data[k] = v; fd.data[k + 1] = v * 0.985; fd.data[k + 2] = v * 0.95; fd.data[k + 3] = 255;
+  }
+  gx.putImageData(gd, 0, 0); fx.putImageData(fd, 0, 0);
+  fx.globalAlpha = 0.1; fx.strokeStyle = '#6a5636'; fx.lineWidth = 0.7;
+  for (let i = 0; i < 90; i++) { const X = r() * S, Y = r() * S, a = r() * 6.28; fx.beginPath(); fx.moveTo(X, Y); fx.lineTo(X + Math.cos(a) * 14, Y + Math.sin(a) * 14); fx.stroke(); }
+}
+
+class Painter {
+  constructor(scale, seed) {
+    tiles();
+    this.s = scale; this.r = rngOf(seed);
+    const c = this.c = document.createElement('canvas'); c.width = Math.round(W * scale); c.height = Math.round(H * scale);
+    const x = this.x = c.getContext('2d'); x.setTransform(scale, 0, 0, scale, 0, 0); x.lineCap = 'round'; x.lineJoin = 'round';
+    x.fillStyle = C.paper; x.fillRect(0, 0, W, H);
+    this.sc = document.createElement('canvas'); this.sc.width = c.width; this.sc.height = c.height;
+    this.sx = this.sc.getContext('2d', { willReadFrequently: false }); this.sx.setTransform(scale, 0, 0, scale, 0, 0); this.sx.lineCap = 'round'; this.sx.lineJoin = 'round';
+    this.grain = this.sx.createPattern(GRAIN, 'repeat');
+  }
+  // a hand-drawn curve through the points
+  curve(pts, closed = false, jit = 0.8, hard = false) {
+    const r = this.r, n = pts.length, P = pts.map((p) => [p[0] + (r() - 0.5) * jit, p[1] + (r() - 0.5) * jit]), out = [];
+    if (hard) { const m = closed ? n : n - 1; for (let i = 0; i < m; i++) { const a = P[i], b = P[(i + 1) % n], K = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 8)); for (let k = 0; k < K; k++) out.push([a[0] + (b[0] - a[0]) * k / K + (r() - 0.5) * 0.7, a[1] + (b[1] - a[1]) * k / K + (r() - 0.5) * 0.7]); } out.push(closed ? out[0] : P[n - 1]); return out; }
+    const g = (i) => (closed ? P[(i + n) % n] : P[Math.max(0, Math.min(n - 1, i))]), segs = closed ? n : n - 1;
     for (let i = 0; i < segs; i++) {
-      const a = get(i - 1), b = get(i), c = get(i + 1), d = get(i + 2);
-      for (let k = 0; k < 5; k++) { const t = k / 5, t2 = t * t, t3 = t2 * t; out.push([0.5 * (2 * b[0] + (c[0] - a[0]) * t + (2 * a[0] - 5 * b[0] + 4 * c[0] - d[0]) * t2 + (3 * b[0] - a[0] - 3 * c[0] + d[0]) * t3), 0.5 * (2 * b[1] + (c[1] - a[1]) * t + (2 * a[1] - 5 * b[1] + 4 * c[1] - d[1]) * t2 + (3 * b[1] - a[1] - 3 * c[1] + d[1]) * t3)]); }
+      const a = g(i - 1), b = g(i), c = g(i + 1), d = g(i + 2), l = Math.hypot(c[0] - b[0], c[1] - b[1]), K = Math.max(2, Math.ceil(l / 7));
+      for (let k = 0; k < K; k++) { const t = k / K, t2 = t * t, t3 = t2 * t; out.push([0.5 * (2 * b[0] + (c[0] - a[0]) * t + (2 * a[0] - 5 * b[0] + 4 * c[0] - d[0]) * t2 + (3 * b[0] - a[0] - 3 * c[0] + d[0]) * t3), 0.5 * (2 * b[1] + (c[1] - a[1]) * t + (2 * a[1] - 5 * b[1] + 4 * c[1] - d[1]) * t2 + (3 * b[1] - a[1] - 3 * c[1] + d[1]) * t3)]); }
     }
-    if (!closed) out.push(P[n - 1]);
+    if (!closed) out.push(P[n - 1]); else out.push(out[0]);
     return out;
   }
-  go() { this.n++; return this.n <= this.limit; }
-  // a pen line, thick in the middle and thin at the ends, with a fainter second try beside it as in a rough drawing
-  line(pts, w = 3, col = INK, jit = 1.6) {
-    if (!this.go()) return;
-    const x = this.x;
-    for (let pass = 0; pass < 2; pass++) {
-      const c = this.curve(pts, false, pass ? jit * 1.9 : jit), n = c.length, L = [], R = [], ww = pass ? w * 0.45 : w;
+  // A loaded brush: several bristles side by side, thick in the middle of the stroke and lifting off at the ends, running
+  // dry in places. A faint first pencil line sits beside it, as under-drawing does.
+  line(pts, w = 2.2, col = C.ink, o = {}) {
+    const x = this.x, r = this.r, c = this.curve(pts, false, o.jit ?? 1.1, o.hard), n = c.length; if (n < 2) return;
+    const dry = (o.dry ?? 0.1) + 0.1, nb = Math.max(1, Math.round(w * 1.2)), ph = r() * 9;
+    x.strokeStyle = col;
+    if (o.ghost !== false && w > 1) for (let pass = 0; pass < 2; pass++) {
+      const k = pass ? 3.4 : 2.1, q = ph + pass * 2.7;
+      x.globalAlpha = pass ? 0.2 : 0.34; x.lineWidth = 0.7; x.beginPath();
+      for (let i = 0; i < n; i++) { const X = c[i][0] + Math.sin(i * 0.13 + q) * k, Y = c[i][1] + Math.cos(i * 0.1 + q) * k; if (i) x.lineTo(X, Y); else x.moveTo(X, Y); }
+      x.stroke();
+    }
+    x.globalAlpha = o.a ?? 0.88; x.lineWidth = Math.max(0.55, (w / nb) * 1.5);
+    for (let b = 0; b < nb; b++) {
+      const off = nb > 1 ? (b / (nb - 1) - 0.5) : 0, seed = r() * 40; x.beginPath(); let pen = false;
       for (let i = 0; i < n; i++) {
-        const a = c[Math.max(0, i - 1)], b = c[Math.min(n - 1, i + 1)], dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1, th = ww * (0.32 + 0.68 * Math.sin((i + 0.5) / n * Math.PI)) * 0.5;
-        L.push([c[i][0] - dy / l * th, c[i][1] + dx / l * th]); R.push([c[i][0] + dy / l * th, c[i][1] - dx / l * th]);
+        const A = c[Math.max(0, i - 1)], B = c[Math.min(n - 1, i + 1)], dx = B[0] - A[0], dy = B[1] - A[1], l = Math.hypot(dx, dy) || 1, t = (i + 0.5) / n;
+        const press = (0.34 + 0.66 * Math.pow(Math.sin(t * Math.PI), 0.55)) * (0.78 + 0.3 * Math.sin(i * 0.07 + ph));
+        const X = c[i][0] - dy / l * off * w * press, Y = c[i][1] + dx / l * off * w * press;
+        // the outer bristles run out first
+        const gap = dry * (0.5 + Math.abs(off) * 1.6) > 0 && Math.sin(i * 0.31 + seed) * Math.sin(i * 0.083 + seed * 2) > 1 - dry * (1.3 + Math.abs(off) * 2);
+        if (gap) { pen = false; continue; }
+        if (pen) x.lineTo(X, Y); else { x.moveTo(X, Y); pen = true; }
       }
-      x.fillStyle = col; x.globalAlpha = pass ? 0.4 : 0.95;
-      x.beginPath(); x.moveTo(L[0][0], L[0][1]); for (let i = 1; i < n; i++) x.lineTo(L[i][0], L[i][1]); for (let i = n - 1; i >= 0; i--) x.lineTo(R[i][0], R[i][1]); x.closePath(); x.fill();
+      x.stroke();
     }
     x.globalAlpha = 1;
   }
-  // a watercolour wash: flat colour, a little off the line, darker at the edge
-  wash(pts, col, a = 0.85, jit = 2.2) {
-    if (!this.go()) return;
-    const x = this.x, c = this.curve(pts, true, jit);
-    x.save(); x.translate(3, 2); x.beginPath(); x.moveTo(c[0][0], c[0][1]); for (let i = 1; i < c.length; i++) x.lineTo(c[i][0], c[i][1]); x.closePath();
-    x.globalAlpha = a; x.fillStyle = col; x.fill(); x.globalAlpha = a * 0.3; x.strokeStyle = col; x.lineWidth = 5; x.stroke(); x.restore(); x.globalAlpha = 1;
+  // Body colour, as miniatures are painted: opaque pigment laid flat, settling a little unevenly and darker at its edge, with
+  // what is under it covered. o.thin instead lets what is under it show, for glazes over the paper.
+  wash(pts, col, a = 0.94, o = {}) {
+    const S = this.sx, x = this.x, s = this.s, c = o.raw ? pts : this.curve(pts, true, o.jit ?? 1.4, o.hard);
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const p of c) { if (p[0] < x0) x0 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[0] > x1) x1 = p[0]; if (p[1] > y1) y1 = p[1]; }
+    x0 = Math.max(0, x0 - 6); y0 = Math.max(0, y0 - 6); x1 = Math.min(W, x1 + 6); y1 = Math.min(H, y1 + 6); if (x1 <= x0 || y1 <= y0) return;
+    S.save(); S.clearRect(x0, y0, x1 - x0, y1 - y0);
+    S.beginPath(); S.moveTo(c[0][0], c[0][1]); for (let i = 1; i < c.length; i++) S.lineTo(c[i][0], c[i][1]); S.closePath();
+    S.fillStyle = col; S.globalAlpha = 1; S.fill();
+    if (!o.noEdge) { S.globalAlpha = 0.5; S.strokeStyle = '#3a3026'; S.lineWidth = 1.6; S.globalCompositeOperation = 'source-atop'; S.stroke(); }
+    S.globalCompositeOperation = 'destination-out'; S.globalAlpha = o.thin ? 0.8 : 0.4; S.fillStyle = this.grain; S.fillRect(x0, y0, x1 - x0, y1 - y0);
+    S.restore();
+    x.save(); x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = a; x.globalCompositeOperation = o.thin ? 'multiply' : 'source-over';
+    const X = Math.floor(x0 * s), Y = Math.floor(y0 * s), Wd = Math.ceil((x1 - x0) * s), Hd = Math.ceil((y1 - y0) * s);
+    x.drawImage(this.sc, X, Y, Wd, Hd, X, Y, Wd, Hd); x.restore();
   }
-  // a washed shape with an inked outline
-  shape(pts, col, w = 3, a = 0.9) { this.wash(pts, col, a); this.line([...pts, pts[0], pts[1]], w); }
-  // shading: quick parallel pen strokes
-  hatch(x0, y0, x1, y1, gap = 14, slant = 16, a = 0.45, col = INK) {
-    if (!this.go()) return;
-    const x = this.x; x.beginPath(); x.strokeStyle = col; x.globalAlpha = a; x.lineWidth = 1.4;
-    for (let X = x0, i = 0; X < x1; X += gap, i++) { const j = hash(i * 9.1 + this.n + this.boil) * 3; x.moveTo(X + j, y0 + hash(i + 2.2) * 6); x.lineTo(X + slant + j, y1 + hash(i + 7.4) * 6); }
-    x.stroke(); x.globalAlpha = 1;
+  // washed shape with a brush outline
+  shape(pts, col, a = 0.94, w = 1.8, o = {}) { this.wash(pts, col, Math.max(a, 0.9), o); this.line(o.hard ? [...pts, pts[0]] : [...pts, pts[0], pts[1]], w, o.lineCol || C.ink, { dry: 0.14, hard: o.hard }); }
+  // parallel strokes kept inside a shape: pen shading, or (with dash) the dashes a Gond painter fills a form with
+  hatch(pts, o = {}) {
+    const x = this.x, r = this.r, c = this.curve(pts, true, 0, o.hard), gap = o.gap ?? 9, ang = o.ang ?? -0.9;
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (const p of c) { if (p[0] < x0) x0 = p[0]; if (p[1] < y0) y0 = p[1]; if (p[0] > x1) x1 = p[0]; if (p[1] > y1) y1 = p[1]; }
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, R = Math.hypot(x1 - x0, y1 - y0) / 2 + 4, ca = Math.cos(ang), sa = Math.sin(ang);
+    x.save(); x.beginPath(); x.moveTo(c[0][0], c[0][1]); for (let i = 1; i < c.length; i++) x.lineTo(c[i][0], c[i][1]); x.closePath(); x.clip();
+    x.strokeStyle = o.col || C.ink; x.globalAlpha = o.a ?? 0.4; x.lineWidth = o.w ?? 0.8; x.beginPath();
+    for (let d = -R; d < R; d += gap * (0.8 + r() * 0.4)) {
+      const px = cx - sa * d, py = cy + ca * d; let t = -R + r() * 8;
+      const dl = o.dash ?? 0; if (!dl) { x.moveTo(px + ca * t, py + sa * t); x.lineTo(px + ca * (R - r() * 8) + (r() - 0.5) * 2, py + sa * (R - r() * 8) + (r() - 0.5) * 2); continue; }
+      while (t < R) { const e = t + dl * (0.7 + r() * 0.6); x.moveTo(px + ca * t, py + sa * t); x.lineTo(px + ca * e, py + sa * e); t = e + (o.space ?? dl * 0.9) * (0.7 + r() * 0.6); }
+    }
+    x.stroke(); x.restore(); x.globalAlpha = 1;
+  }
+  dots(pts, r0 = 1.4, col = C.ink, a = 0.75) { const x = this.x; x.fillStyle = col; x.globalAlpha = a; x.beginPath(); for (const p of pts) { const q = r0 * (0.75 + this.r() * 0.5); x.moveTo(p[0] + q, p[1]); x.arc(p[0], p[1], q, 0, 6.283); } x.fill(); x.globalAlpha = 1; }
+  // the sheet settles: paper fibre over everything, and the edges of the painting browned with age
+  finish(tone = 0.26) {
+    const x = this.x; x.save(); x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'multiply';
+    x.fillStyle = x.createPattern(FIBRE, 'repeat'); x.fillRect(0, 0, this.c.width, this.c.height);
+    const g = x.createRadialGradient(this.c.width / 2, this.c.height / 2, this.c.height * 0.4, this.c.width / 2, this.c.height / 2, this.c.width * 0.62); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(1, `rgba(${Math.round(255 - tone * 200)},${Math.round(255 - tone * 280)},${Math.round(255 - tone * 420)},1)`);
+    x.fillStyle = g; x.fillRect(0, 0, this.c.width, this.c.height); x.restore();
+    this.sc.width = 1; this.sc.height = 1; this.sc = null; this.sx = null;
   }
 }
 
-// ---------------------------------------------------------------------------------------------- things to draw
-const sky = (I, col, col2, y = 620) => { I.wash([[-20, -20], [1620, -20], [1620, y], [-20, y]], col, 0.85, 0); if (col2) I.wash([[-20, y * 0.45], [1620, y * 0.45], [1620, y], [-20, y]], col2, 0.55, 0); };
-function cloud(I, x, y, s, col) {
-  const p = []; for (let i = 0; i < 9; i++) { const a = Math.PI + i / 8 * Math.PI; p.push([x + Math.cos(a) * 170 * s, y + Math.sin(a) * (60 + 26 * Math.abs(hash(i + x))) * s]); }
-  p.push([x + 150 * s, y + 24 * s], [x, y + 34 * s], [x - 150 * s, y + 22 * s]);
-  I.shape(p, col, 2.4, 0.85);
-  for (let i = 0; i < 3; i++) I.line([[x - 110 * s + i * 80 * s, y - 16 * s], [x - 70 * s + i * 80 * s, y - 40 * s], [x - 24 * s + i * 80 * s, y - 20 * s]], 1.6);
+// ---------------------------------------------------------------------------------------------- the world of the paintings
+function skyWash(P, col, y = 560, col2) {
+  P.wash([[-10, -10], [W + 10, -10], [W + 10, y], [-10, y]], col, 0.92, { jit: 0, hard: true, noEdge: true });
+  if (col2) P.wash([[-10, -10], [W + 10, -10], [W + 10, y * 0.46], [-10, y * 0.46]], col2, 0.32, { jit: 0, thin: true, hard: true, noEdge: true });
+  // the sky scumbled in by hand, in long loose diagonal strokes
+  P.hatch([[-10, -10], [W + 10, -10], [W + 10, y], [-10, y]], { hard: true, gap: 21, ang: -0.62, a: 0.1, w: 1.2 });
 }
-function hills(I, y, amp, col, seed, w = 2.4) {
-  const p = [[-40, H + 40]]; for (let i = 0; i <= 10; i++) p.push([-40 + i * 168, y + hash(i * 1.7 + seed) * amp + Math.sin(i * 0.9 + seed) * amp * 0.6]); p.push([1660, H + 40]);
-  I.wash(p, col, 0.9, 1); I.line(p.slice(1, -1), w);
-}
-function tree(I, x, y, s, sway = 0) {
-  I.shape([[x - 13 * s, y], [x - 9 * s, y - 120 * s], [x + 9 * s, y - 120 * s], [x + 14 * s, y]], C.woodD, 2.2, 0.8);
-  I.line([[x, y - 90 * s], [x + 44 * s, y - 150 * s]], 3 * s); I.line([[x, y - 110 * s], [x - 40 * s, y - 165 * s]], 3 * s);
-  const bx = x + sway * s; I.shape(ell(bx, y - 205 * s, 104 * s, 88 * s, 0, 12).map((q, i) => [q[0] + hash(i + x) * 16 * s, q[1] + hash(i * 2 + x) * 14 * s]), C.leaf, 2.2, 0.82);
-  I.line([[bx - 60 * s, y - 225 * s], [bx - 30 * s, y - 250 * s], [bx, y - 232 * s]], 1.5); I.line([[bx + 20 * s, y - 175 * s], [bx + 55 * s, y - 196 * s], [bx + 74 * s, y - 180 * s]], 1.5);
-  I.hatch(bx - 60 * s, y - 165 * s, bx + 50 * s, y - 135 * s, 13, -14, 0.35);
-}
-// a band of moving water, its surface at y(x)
-function water(I, y0, col, t, o = {}) {
-  const amp = o.amp ?? 10, sp = o.sp ?? 1.1, top = [];
-  for (let i = 0; i <= 16; i++) { const X = -40 + i * 105; top.push([X, y0 + Math.sin(i * 0.9 + t * sp) * amp + (o.tilt || 0) * (X - 800)]); }
-  I.wash([...top, [1660, H + 40], [-40, H + 40]], col, o.a ?? 0.92, 1);
-  I.line(top, 3);
-  const rows = o.rows ?? 4;
-  for (let r = 0; r < rows; r++) for (let k = 0; k < 5; k++) {
-    const X = ((k * 340 + r * 170 + t * (55 + r * 25)) % 1800) - 100, Y = y0 + 44 + r * 56 + Math.sin(k * 2 + r + t) * 6 + (o.tilt || 0) * (X - 800);
-    I.line([[X, Y], [X + 44, Y - 8], [X + 92, Y], [X + 130, Y - 6]], 1.7);
+// clouds as a miniature painter draws the monsoon: a band of curling scrolls along the top of the sky
+function cloudBand(P, y, col, dark = 0.8, n = 8) {
+  const r = P.r, top = [[-20, -20], [W + 20, -20], [W + 20, y - 10]], step = W / n;
+  for (let i = n; i >= 0; i--) { const cx = i * step + (r() - 0.5) * 30; top.push([cx + step * 0.5, y + 16 + r() * 14], [cx + step * 0.15, y + 46 + r() * 24], [cx - step * 0.25, y + 18 + r() * 12]); }
+  P.wash(top, col, dark);
+  for (let i = 0; i <= n; i++) {
+    const cx = i * step + (r() - 0.5) * 40, cy = y + 8 + r() * 26, R = 26 + r() * 22, sp = [];
+    for (let a = 0; a < 15; a++) { const t = a / 14, ang = t * 8.6 + i, q = R * (1 - t * 0.86); sp.push([cx + Math.cos(ang) * q * 1.5, cy + Math.sin(ang) * q * 0.7]); }
+    P.line(sp, 1.5, C.ink, { dry: 0.2, ghost: false, a: 0.7 });
+    P.line([[cx - R * 2.3, cy - R * 0.8], [cx - R * 1.2, cy - R * 1.3], [cx + R * 0.3, cy - R * 1.2], [cx + R * 1.7, cy - R * 0.7]], 1.1, C.white, { a: 0.6, ghost: false, dry: 0.3 });
   }
 }
-function rain(x, t, n = 110, slant = -0.28, a = 0.42) {
-  x.strokeStyle = '#3a4a52'; x.lineWidth = 1.5; x.globalAlpha = a; x.beginPath();
-  for (let i = 0; i < n; i++) { const sp = 900 + (i % 5) * 120, y = ((i * 89 + t * sp) % 1000) - 60, X = ((i * 173) % 1800) - 100 - y * slant, l = 34 + (i % 4) * 8; x.moveTo(X, y); x.lineTo(X + slant * l, y + l); }
+// rain as fine parallel strokes
+function rain(P, y0 = 80, y1 = 860, n = 220, a = 0.34, slant = -0.22) {
+  const x = P.x, r = P.r; x.strokeStyle = C.ink; x.globalAlpha = a; x.lineWidth = 0.75; x.beginPath();
+  for (let i = 0; i < n; i++) { const X = r() * (W + 200) - 100, Y = y0 + r() * (y1 - y0), l = 16 + r() * 22; x.moveTo(X, Y); x.lineTo(X + slant * l, Y + l); }
   x.stroke(); x.globalAlpha = 1;
 }
-function face(I, x, y, r, o = {}) {
-  const f = o.f ?? 1;
-  I.shape(ell(x, y, r, r * 1.06, 0, 9), o.skin || C.skin, Math.max(2, r * 0.07), 0.95);
-  if (o.hair !== false) { const h = []; for (let i = 0; i <= 8; i++) { const a = Math.PI * (1.02 + i / 8 * 0.98) + (o.hairTip || 0); h.push([x + Math.cos(a) * r * 1.07, y + Math.sin(a) * r * 1.1]); } h.push([x + r * 0.5 * f, y - r * 0.55], [x - r * 0.3 * f, y - r * 0.6]); I.shape(h, o.hairCol || C.hair, Math.max(1.6, r * 0.05), 0.97); }
-  if (o.bun) I.shape(ell(x - f * r * 0.92, y - r * 0.5, r * 0.38), C.hair, 2, 0.97);
-  const eyeY = y - r * 0.05, ex = x + f * r * 0.28, gap = r * 0.42, ew = Math.max(2.4, r * 0.11);
-  if (o.closed) { I.line([[ex - gap * 0.55, eyeY], [ex - gap * 0.3, eyeY + r * 0.08], [ex - gap * 0.05, eyeY]], ew * 0.8); I.line([[ex + gap * 0.3, eyeY], [ex + gap * 0.55, eyeY + r * 0.08], [ex + gap * 0.8, eyeY]], ew * 0.8); }
-  else { I.wash(ell(ex - gap * 0.3, eyeY, ew, ew * 1.25, 0, 6), INK, 1, 0.5); I.wash(ell(ex + gap * 0.55, eyeY, ew, ew * 1.25, 0, 6), INK, 1, 0.5); }
-  if (o.brow !== false) { const b = o.browUp || 0; I.line([[ex - gap * 0.6, eyeY - r * 0.28 - b], [ex - gap * 0.1, eyeY - r * 0.32]], ew * 0.7); I.line([[ex + gap * 0.3, eyeY - r * 0.32], [ex + gap * 0.85, eyeY - r * 0.28 - b]], ew * 0.7); }
-  I.line([[x + f * r * 0.52, y + r * 0.1], [x + f * r * 0.62, y + r * 0.28], [x + f * r * 0.46, y + r * 0.3]], ew * 0.6);
-  const m = o.mouth ?? 0.2; if (m > 0.5) I.shape(ell(x + f * r * 0.3, y + r * 0.55, r * 0.14, r * 0.14 * m), '#5a2a22', 1.6, 0.95); else I.line([[x + f * r * 0.1, y + r * 0.55], [x + f * r * 0.3, y + r * (0.58 + m * 0.2)], [x + f * r * 0.5, y + r * 0.53]], ew * 0.6);
-}
-function toddler(I, x, y, s, o = {}) {
-  const f = o.f ?? 1, rot = o.rot || 0, c = Math.cos(rot), sn = Math.sin(rot), P = (dx, dy) => [x + (dx * c - dy * sn) * s, y + (dx * sn + dy * c) * s], kick = o.kick || 0;
-  I.line([P(-10, 40), P(-20 - kick * 8, 74), P(-26 - kick * 12, 104)], 15 * s, C.skin, 1.2); I.line([P(10, 40), P(18 + kick * 8, 74), P(24 + kick * 12, 104)], 15 * s, C.skin, 1.2);
-  I.shape([P(-28, -10), P(28, -10), P(32, 36), P(16, 54), P(-16, 54), P(-32, 36)], C.cloth, 2.4, 0.97);
-  I.line([P(-30, 30), P(0, 38), P(30, 30)], 1.8);
-  const a = o.arm ?? 0.3; I.line([P(24, -6), P(40 * f, 16 - a * 26), P(52 * f, 28 - a * 56)], 12 * s, C.skin, 1); I.line([P(-24, -6), P(-40 * f, 18), P(-46 * f, 42)], 12 * s, C.skin, 1);
-  const h = P(0, -44); face(I, h[0], h[1], 37 * s, { f, closed: o.closed, mouth: o.mouth ?? 0.25, brow: false });
-}
-function lota(I, x, y, s) {
-  I.shape([[x - 22 * s, y - 5 * s], [x - 12 * s, y - 22 * s], [x - 14 * s, y - 34 * s], [x + 14 * s, y - 34 * s], [x + 12 * s, y - 22 * s], [x + 22 * s, y - 5 * s], [x + 18 * s, y + 18 * s], [x - 18 * s, y + 18 * s]], C.steel, 2.2, 0.98);
-  I.line([[x - 14 * s, y - 2 * s], [x - 8 * s, y + 8 * s]], 2, '#f8fbfc');
-}
-function teakLog(I, x, y, l, r, rot = 0) {
-  const c = Math.cos(rot), s = Math.sin(rot), P = (a, b) => [x + a * c - b * s, y + a * s + b * c];
-  I.shape([P(-l, -r), P(0, -r * 1.08), P(l, -r * 0.92), P(l + r * 0.3, 0), P(l, r * 0.92), P(0, r), P(-l, r)], C.wood, 3, 0.96);
-  I.shape(ell(P(-l, 0)[0], P(-l, 0)[1], r * 0.34, r, rot, 8), '#c49a66', 2.2, 0.98);
-  for (let i = 0; i < 4; i++) I.line([P(-l * 0.7 + i * l * 0.4, -r * 0.4), P(-l * 0.45 + i * l * 0.4, -r * 0.5)], 1.6);
-  I.hatch(P(-l * 0.5, r * 0.3)[0], P(0, r * 0.3)[1], P(l * 0.7, r * 0.3)[0], P(0, r * 0.75)[1], 20, 12, 0.5);
-}
-function wolf(I, x, y, s, f, ph, o = {}) {
-  const P = (dx, dy) => [x + dx * f * s, y + dy * s], down = o.down || 0, B = Math.sin(ph * 2) * 2;
-  const leg = (bx, by, a, near) => { const sw = Math.sin(ph + a) * 20, kn = [bx + sw * 0.5, by + 42], ft = [bx + sw * 1.1, by + 84 - Math.max(0, Math.cos(ph + a)) * 12]; I.line([P(bx, by), P(kn[0], kn[1]), P(ft[0], ft[1])], (near ? 16 : 13) * s, near ? C.wolf : C.wolfD, 1.1); I.line([P(ft[0], ft[1]), P(ft[0] + 14, ft[1] + 2)], 8 * s, INK); };
-  leg(-78, -6, 2.8, false); leg(62, -8, 0.8, false);
-  // the tail, then the body
-  I.shape([P(-108, -30 + B), P(-160, -20 + B), P(-205, 18 + B), P(-178, 34 + B), P(-130, 12 + B), P(-100, -8 + B)], C.wolf, 2.4, 0.95);
-  I.shape([P(-112, -34 + B), P(-40, -52 + B), P(40, -56 + B), P(92, -62 + B), P(110, -24 + B), P(82, 16 + B), P(10, 8 + B), P(-70, 18 + B), P(-118, 6 + B)], C.wolf, 3, 0.96);
-  I.wash([P(-90, 6 + B), P(10, 2 + B), P(78, 8 + B), P(50, -8 + B), P(-40, -6 + B)], '#c9c6bd', 0.8);
-  I.hatch(P(-90, 0)[0] * (f > 0 ? 1 : 1), y - 45 * s, P(-90, 0)[0] + (f > 0 ? 120 : -120) * s, y - 28 * s, 16, -8, 0.4);
-  leg(-90, 0, 0, true); leg(72, -2, 3.8, true);
-  // neck and head
-  const hx = 148, hy = -66 + down * 96 + B;
-  I.shape([P(78, -58 + B), P(hx - 12, hy - 24), P(hx + 8, hy + 18), P(100, 6 + B)], C.wolf, 2.6, 0.97);
-  I.shape([P(hx - 34, hy - 24), P(hx - 28, hy - 56), P(hx - 12, hy - 28), P(hx + 4, hy - 56), P(hx + 14, hy - 22), P(hx + 58, hy - 2), P(hx + 72, hy + 14), P(hx + 54, hy + 28), P(hx + 8, hy + 30), P(hx - 28, hy + 16)], C.wolf, 3, 0.98);
-  I.wash(ell(P(hx + 6, hy + 4)[0], P(hx + 6, hy + 4)[1], 7 * s, 7 * s, 0, 6), INK, 1, 0.3);
-  I.wash(ell(P(hx + 68, hy + 11)[0], P(hx + 68, hy + 11)[1], 8 * s, 7 * s, 0, 6), INK, 1, 0.3);
-  I.line([P(hx + 56, hy + 26), P(hx + 30, hy + 22), P(hx + 14, hy + 16)], 2.4);
-  return P(hx + 34, hy + 34);   // the mouth
-}
-function bullock(I, x, y, s, ph) {
-  const P = (a, b) => [x + a * s, y + b * s];
-  const leg = (a, o, n) => { const sw = Math.sin(ph + o) * 10; I.line([P(a, 10), P(a + sw * 0.5, 50), P(a + sw, 94)], 15 * s, n ? C.bull : '#9d8a68', 1); };
-  leg(-74, 2.6, false); leg(58, 0.6, false);
-  I.shape([P(-100, -48), P(-30, -58), P(50, -70), P(92, -56), P(102, 8), P(40, 22), P(-40, 18), P(-102, 14)], C.bull, 3, 0.96);
-  I.shape([P(50, -74), P(66, -102), P(82, -80)], C.bull, 2.4, 0.96);   // the hump
-  leg(-90, 0, true); leg(72, 3.6, true);
-  I.shape([P(88, -56), P(136, -66), P(166, -44), P(172, -14), P(144, -6), P(110, -22)], C.bull, 3, 0.97);
-  I.line([P(132, -64), P(122, -96), P(140, -112)], 5 * s, '#efe7d4'); I.line([P(150, -60), P(160, -92), P(180, -100)], 5 * s, '#efe7d4');
-  I.wash(ell(P(146, -40)[0], P(146, -40)[1], 5 * s, 5 * s, 0, 6), INK, 1, 0.3);
-  I.line([P(-100, -38), P(-118, -6), P(-116, 34)], 3);
-}
-function cart(I, x, y, s, t, o = {}) {
-  const P = (a, b) => [x + a * s, y + b * s], spin = t * 0.7;
-  I.shape([P(-130, -44), P(120, -44), P(130, -4), P(-140, -4)], C.wood, 3, 0.96);
-  I.line([P(120, -22), P(238, -28)], 8 * s, C.woodD);
-  for (let i = 0; i < 4; i++) I.line([P(-112 + i * 72, -42), P(-116 + i * 72, -8)], 1.6);
-  // two people on it
-  const m = o.mother !== false, ppl = o.people !== false;
-  if (ppl) {
-    I.shape([P(76, -44), P(70, -110), P(112, -112), P(120, -44)], C.cloth, 2.6, 0.96);
-    face(I, P(94, -136)[0], P(94, -136)[1], 26 * s, { f: 1, hair: false, mouth: 0.15 });
-    I.shape([P(66, -152), P(94, -172), P(124, -154), P(120, -140), P(68, -140)], '#c64f3c', 2.2, 0.97);   // his turban
-    I.line([P(104, -96), P(130, -74), P(178, -60)], 10 * s, C.skin);    // the reins
-    if (m) {
-      I.shape([P(-68, -44), P(-74, -116), P(-24, -120), P(-12, -44)], C.sari, 2.6, 0.96);
-      face(I, P(-44, -142)[0], P(-44, -142)[1], 25 * s, { f: 1, bun: true, mouth: 0.25 });
-      I.line([P(-70, -118), P(-48, -176), P(-12, -116)], 4, C.sari);
-      toddler(I, P(-2, -100)[0], P(-2, -100)[1], 0.52 * s, { f: 1, arm: 0.5 });
-      lota(I, P(22, -86)[0], P(22, -86)[1], 0.52 * s);
-    }
+// a range of the rounded, overlapping hummocks painters give the Satpura country: each lobe drawn on its own, of its own size
+function hills(P, y, amp, col, seed, a = 0.94, hatch = true) {
+  const r = rngOf(seed), lobes = []; let X = -120;
+  while (X < W + 120) { const w = (0.8 + r() * 1.4) * amp * 1.9; lobes.push([X + w * 0.5, w, amp * (0.55 + r() * 0.75)]); X += w * (0.55 + r() * 0.3); }
+  // furthest back first, each lobe a dome that overlaps the next
+  for (const i of lobes.map((_, k) => k).sort(() => r() - 0.5)) {
+    const [cx, w, h] = lobes[i], top = y - h, dome = [[cx - w * 0.75, y + 40], [cx - w * 0.62, y - h * 0.34], [cx - w * 0.32, top + h * 0.12], [cx + (r() - 0.5) * w * 0.2, top], [cx + w * 0.36, top + h * 0.16], [cx + w * 0.64, y - h * 0.3], [cx + w * 0.78, y + 40]];
+    P.wash(dome, col, 0.97, { noEdge: true }); P.line(dome.slice(0, 7), 1.7, C.ink, { dry: 0.3 });
+    if (hatch) for (let k = 0; k < 6; k++) { const q = cx + w * 0.1 + k * w * 0.075, v = top + h * (0.2 + k * 0.1); P.line([[q, v], [q + w * 0.05, v + h * 0.22], [q + w * 0.01, v + h * 0.44]], 0.8, C.ink, { ghost: false, a: 0.34, dry: 0.3 }); }
+    for (let k = 0; k < 3; k++) { const q = cx + (r() - 0.5) * w * 0.7, v = top + Math.pow(Math.abs(q - cx) / (w * 0.62), 2) * h * 0.66 + 1; P.line([[q, v], [q - 1, v - 6], [q + 3, v - 11]], 0.9, C.ink, { ghost: false, a: 0.6 }); }
   }
-  for (const a of [-80, 74]) {
-    I.shape(ell(P(a, 26)[0], P(a, 26)[1], 54 * s, 54 * s, 0, 12), '#b98d57', 3.2, 0.3);
-    for (let k = 0; k < 4; k++) { const an = spin + k * Math.PI / 4; I.line([[P(a, 26)[0] - Math.cos(an) * 52 * s, P(a, 26)[1] - Math.sin(an) * 52 * s], [P(a, 26)[0] + Math.cos(an) * 52 * s, P(a, 26)[1] + Math.sin(an) * 52 * s]], 3.2, C.woodD); }
-    I.shape(ell(P(a, 26)[0], P(a, 26)[1], 10 * s), C.woodD, 2, 1);
+  P.wash([[-20, y + 16], [W + 20, y + 16], [W + 20, H + 20], [-20, H + 20]], col, 0.97, { jit: 0, hard: true, noEdge: true });
+}
+// a tree as the old painters draw one: a dark rounded mass of separately dabbed leaves on a slim trunk
+function tree(P, x, y, s = 1, col = C.leaf, kind = 0) {
+  const r = P.r, h = (kind ? 104 : 86) * s;
+  const T = [[x - 9 * s, y + 3], [x - 5.5 * s, y - h * 0.5], [x - 6 * s, y - h], [x + 6 * s, y - h], [x + 6.5 * s, y - h * 0.5], [x + 11 * s, y + 3]];
+  P.wash(T, C.umber, 0.95, { jit: 0.5 }); P.line(T.slice(0, 3), 1.3); P.line(T.slice(3).reverse(), 1.3);
+  P.hatch(T, { gap: 3.6, ang: 0.5, a: 0.5, w: 0.7 });
+  P.line([[x, y - h * 0.5], [x + 3, y - h * 0.32]], 0.8, C.ink, { ghost: false, a: 0.5 }); P.line([[x - 2, y - h * 0.18], [x + 2, y]], 0.8, C.ink, { ghost: false, a: 0.5 });
+  // the crown: a heap of separate rounded clumps, back ones first, each with its own edge of leaves
+  const clumps = []; const n = kind ? 5 : 7, wid = (kind ? 40 : 66) * s, tall = (kind ? 92 : 68) * s, cy = y - h - tall * 0.62;
+  for (let i = 0; i < n; i++) { const a = i / n * 6.283 + r() * 0.5, q = i === n - 1 ? 0 : 0.72; clumps.push([x + Math.cos(a) * wid * q, cy + Math.sin(a) * tall * q * 0.7, (kind ? 30 : 34) * s * (0.85 + r() * 0.4)]); }
+  clumps.sort((p, q) => p[1] - q[1]);
+  const X = P.x;
+  for (const [cx, c2, R] of clumps) {
+    const ring = []; for (let i = 0; i < 11; i++) { const a = i / 11 * 6.283, q = 1 + (i % 2 ? 0.1 : -0.05) + (r() - 0.5) * 0.1; ring.push([cx + Math.cos(a) * R * q, c2 + Math.sin(a) * R * 0.86 * q]); }
+    P.wash(ring, col, 0.96, { jit: 0.6 });
+    // separately dabbed leaves: dark all through, pale toward the light
+    X.strokeStyle = C.ink; X.globalAlpha = 0.6; X.lineWidth = 0.9; X.beginPath();
+    const m = Math.round(R * R * 0.045 + 7);
+    for (let i = 0; i < m; i++) { const a = r() * 6.283, q = Math.sqrt(r()) * 0.96, lx = cx + Math.cos(a) * q * R, ly = c2 + Math.sin(a) * q * R * 0.84, an = r() * 3.14, l = 3.3 * Math.max(0.7, s); X.moveTo(lx - Math.cos(an) * l, ly - Math.sin(an) * l); X.quadraticCurveTo(lx + Math.sin(an) * l * 0.7, ly - Math.cos(an) * l * 0.7, lx + Math.cos(an) * l, ly + Math.sin(an) * l); }
+    X.stroke(); X.globalAlpha = 1;
+    const pale = []; for (let i = 0; i < m * 0.5; i++) { const a = -2.5 + r() * 1.8, q = 0.35 + r() * 0.6; pale.push([cx + Math.cos(a) * q * R, c2 + Math.sin(a) * q * R * 0.84]); } P.dots(pale, 1.25 * Math.max(0.8, s), C.white, 0.5);
+    P.line([...ring, ring[0], ring[1]], 1, C.ink, { a: 0.62, dry: 0.42, ghost: false, jit: 0.5 });
   }
+}
+// water drawn as rows of little interlocking waves, the way river and sea are painted in the miniatures
+function waves(P, y0, y1, col, o = {}) {
+  const x = P.x, r = P.r, step = o.step ?? 44, dy = o.dy ?? 22;
+  P.wash(o.shape || [[-10, y0], [W + 10, y0], [W + 10, y1], [-10, y1]], col, o.a ?? 0.7, { jit: 0 });
+  x.save(); if (o.clip) { x.beginPath(); x.moveTo(o.clip[0][0], o.clip[0][1]); for (const p of o.clip) x.lineTo(p[0], p[1]); x.closePath(); x.clip(); }
+  x.strokeStyle = C.ink; x.globalAlpha = o.ink ?? 0.5; x.lineWidth = 0.95; x.beginPath();
+  for (let row = 0, y = y0 + dy * 0.6; y < y1 + dy; row++, y += dy) {
+    const s = step * (0.7 + 0.5 * (y - y0) / Math.max(1, y1 - y0));
+    for (let X = -60 + (row % 2) * s * 0.5; X < W + 60; X += s) { const j = (r() - 0.5) * 3, q = s * 0.5; x.moveTo(X - q, y + j); x.quadraticCurveTo(X - q * 0.2, y - dy * 0.75 + j, X + q * 0.25, y - dy * 0.55 + j); x.quadraticCurveTo(X + q * 0.2, y - dy * 0.1 + j, X - q * 0.1, y + dy * 0.05 + j); }
+  }
+  x.stroke(); x.restore(); x.globalAlpha = 1;
 }
 
-// ---------------------------------------------------------------------------------------------- the panels
-// each: draw(ink, ctx, t seconds, k 0..1 through the panel), cam: [x, y, zoom] at the start and at the end
-export const PANELS = [
-  { // the hills in the rain
-    cam: [[800, 450, 1.06], [860, 470, 1.18]],
-    draw(I, x, t) {
-      sky(I, C.storm, C.sky);
-      cloud(I, 320 + t * 7, 130, 1.5, '#57636d'); cloud(I, 1120 + t * 4, 90, 1.8, '#4d5963'); cloud(I, 780 + t * 9, 200, 1.1, '#6a7680');
-      hills(I, 390, 40, C.hill2, 1); hills(I, 490, 34, C.hill, 4);
-      // the river winding down through them
-      const r = [[1000, 520], [860, 590], [980, 660], [720, 750], [860, 830], [640, 920], [1050, 920], [1040, 820], [1090, 740], [1120, 650], [1010, 590]];
-      I.shape(r, C.river, 2.6, 0.95);
-      hills(I, 640, 22, C.leaf2, 9, 2.2);
-      for (let i = 0; i < 7; i++) tree(I, 60 + i * 96 + hash(i) * 20, 745 + hash(i + 3) * 26, 0.62, Math.sin(t + i) * 3);
-      for (let i = 0; i < 5; i++) tree(I, 1190 + i * 92 + hash(i + 5) * 20, 760 + hash(i + 8) * 24, 0.7, Math.sin(t + i) * 3);
-      rain(x, t, 70);
-    },
+// ---------------------------------------------------------------------------------------------- people, in profile
+// map from a figure's own drawing space (facing right, feet or neck at the origin) into the plate
+const fig = (x, y, s, f = 1) => (a, b) => [x + a * s * f, y + b * s];
+const map = (T, pts) => pts.map((p) => T(p[0], p[1]));
+function head(P, T, s, o = {}) {
+  // the classic line: sloping brow straight into the nose, small mouth, rounded chin, and a long eye reaching toward the ear
+  const face = map(T, [[2, -96], [14, -92], [22, -80], [29, -66], [33, -58], [25, -54], [26, -48], [22, -45], [24, -41], [18, -35], [14, -29], [2, -26], [-4, -28], [-8, -50], [-8, -80]]);
+  P.wash(face, o.skin || C.flesh, 0.8, { jit: 0.4 });
+  if (!o.back) { P.line(map(T, [[3, -96], [14, -92], [22, -80], [29, -66], [33, -58], [25, -54], [26, -48], [22, -45], [24, -41], [18, -35], [14, -29], [3, -26]]), 1.3 * Math.min(1.4, s + 0.4), C.ink, { jit: 0.3, dry: 0.04 }); }
+  const X = P.x;
+  if (o.closed) P.line(map(T, [[-4, -67], [6, -63], [18, -66]]), 1.3, C.ink, { ghost: false, jit: 0.2 });
+  else {
+    const eye = map(T, [[-6, -68], [3, -74], [16, -69], [20, -66], [14, -63], [3, -62]]);
+    P.wash(eye, C.white, 0.95, { body: true, jit: 0.2 }); P.line([...eye, eye[0]], 1, C.ink, { ghost: false, jit: 0.2 });
+    const c = T(8, -68); X.fillStyle = C.ink; X.beginPath(); X.arc(c[0], c[1], 2.9 * s, 0, 6.283); X.fill();
+  }
+  P.line(map(T, [[-8, -77], [4, -83], [20, -78]]), 1.6 * Math.min(1.3, s + 0.3), C.ink, { ghost: false, jit: 0.3 });
+  if (o.mouth) { const m = T(19, -44); X.fillStyle = '#5a2c22'; X.beginPath(); X.ellipse(m[0], m[1], 3.4 * s, 2.2 * s, 0, 0, 6.283); X.fill(); } else P.line(map(T, [[10, -45], [17, -44], [23, -45]]), 1, C.red, { ghost: false, jit: 0.2 });
+}
+function hairWoman(P, T, s, veil = true) {
+  P.shape(map(T, [[3, -98], [-16, -104], [-38, -90], [-46, -62], [-42, -38], [-26, -22], [-12, -24], [-6, -40], [-6, -60], [-2, -76], [6, -88]]), C.ink, 0.9, 1.2, { jit: 0.5 });
+  P.shape(map(T, [[-34, -36], [-54, -36], [-60, -22], [-48, -12], [-32, -20]]), C.ink, 0.9, 1, { jit: 0.5 });
+  if (veil) { const v = map(T, [[10, -106], [-20, -112], [-54, -92], [-68, -50], [-76, 10], [-40, 30], [-16, -14], [-4, -44], [-4, -74], [6, -92]]); P.wash(v, C.red, 0.5); P.line(v, 1.5, C.ink, { dry: 0.14 }); const hem = map(T, [[10, -106], [-4, -74], [-4, -44], [-16, -14]]); P.line(hem, 3.4, C.ochre, { ghost: false, a: 0.85, dry: 0.3 }); }
+}
+function limb(P, T, a, b, c, w0, w1, col, s, o = {}) {
+  // an arm or leg as a tapering form, with a small hand at its end
+  const d = (p, q) => { const dx = q[0] - p[0], dy = q[1] - p[1], l = Math.hypot(dx, dy) || 1; return [-dy / l, dx / l]; }, n1 = d(a, b), n2 = d(b, c);
+  const pts = [[a[0] + n1[0] * w0, a[1] + n1[1] * w0], [b[0] + (n1[0] + n2[0]) * 0.5 * (w0 + w1) * 0.5, b[1] + (n1[1] + n2[1]) * 0.5 * (w0 + w1) * 0.5], [c[0] + n2[0] * w1, c[1] + n2[1] * w1], [c[0] - n2[0] * w1, c[1] - n2[1] * w1], [b[0] - (n1[0] + n2[0]) * 0.5 * (w0 + w1) * 0.5, b[1] - (n1[1] + n2[1]) * 0.5 * (w0 + w1) * 0.5], [a[0] - n1[0] * w0, a[1] - n1[1] * w0]];
+  P.shape(map(T, pts), col, 0.95, 1.15, { jit: 0.3 });
+  P.hatch(map(T, [pts[0], pts[1], pts[2], [(pts[2][0] + c[0]) / 2, (pts[2][1] + c[1]) / 2], b, a]), { gap: 4, ang: 0.9, a: 0.34, w: 0.7 });
+  if (o.hand !== false) {
+    // an open hand: palm, four fingers and a thumb, drawn as one hard outline
+    const u = [c[0] - b[0], c[1] - b[1]], l = Math.hypot(u[0], u[1]) || 1, ux = u[0] / l, uy = u[1] / l, W0 = w1 * 1.15, L = w1 * 2.5;
+    const H0 = (al, nr) => [c[0] + ux * al * L + n2[0] * nr * W0, c[1] + uy * al * L + n2[1] * nr * W0];
+    const hand = [H0(0, 1), H0(0.42, 1.45), H0(0.62, 1.95), H0(0.5, 1.05), H0(0.55, 1), H0(1.02, 1.02), H0(0.62, 0.52), H0(1.2, 0.36), H0(0.66, 0.08), H0(1.2, -0.3), H0(0.62, -0.5), H0(1.02, -0.92), H0(0.5, -0.95), H0(0, -1)];
+    P.shape(map(T, hand), col, 0.97, 0.95, { hard: true, jit: 0.1 });
+  }
+}
+function woman(P, x, y, s, f, o = {}) {
+  // waist up (the river or the cart hides the rest): sari over a dark bodice, the end drawn up over her head
+  const T = fig(x, y, s, f);
+  P.shape(map(T, [[-44, 40], [-42, -6], [-26, -22], [-4, -24], [8, -18], [24, 14], [26, 62], [18, o.len ?? 150], [-46, o.len ?? 150]]), C.red, 0.78, 1.8);
+  P.hatch(map(T, [[-44, 40], [-26, -22], [8, -18], [24, 14], [18, 150], [-46, 150]]), { gap: 11, ang: 1.25, a: 0.32 });
+  P.line(map(T, [[10, -16], [-14, 30], [-36, 70], [-44, 130]]), 3, C.ochre, { ghost: false, a: 0.8, dry: 0.32 });
+  P.line(map(T, [[20, 8], [-6, 34], [-30, 58]]), 0.9, C.ink, { a: 0.5, ghost: false });
+  hairWoman(P, T, s, true);
+  head(P, T, s, o);
+  // necklace and ear-drop
+  P.dots(map(T, [[6, -20], [2, -15], [-3, -12], [-8, -14], [-3, -30]]), 1.8 * s, C.ochre, 0.95);
+}
+function child(P, x, y, s, f, o = {}) {
+  // a small child in a plain tunic, sitting or lying (rot turns the whole figure)
+  const rot = o.rot || 0, c = Math.cos(rot), sn = Math.sin(rot), T = (a, b) => { const X = a * f, Y = b; return [x + (X * c - Y * sn) * s, y + (X * sn + Y * c) * s]; };
+  limb(P, T, [8, 50], [34, 62], [62, 66], 11, 7, C.flesh, s, { hand: false }); limb(P, T, [-6, 52], [14, 72], [38, 86], 11, 7, C.flesh, s, { hand: false });
+  P.shape(map(T, [[-20, -12], [14, -12], [24, 14], [28, 56], [-24, 62], [-26, 18]]), C.white, 0.92, 1.5, { body: true, jit: 0.5 });
+  P.line(map(T, [[-22, 40], [2, 48], [26, 40]]), 2.2, C.red, { ghost: false, a: 0.7, dry: 0.3 });
+  const a = o.arm ?? [[14, 2], [36, 14], [54, 6]]; limb(P, T, a[0], a[1], a[2], 7.5, 5.5, C.flesh, s);
+  // the head: round and large for the body, a tuft of black hair
+  const hT = (u, v) => T(u * 0.72, v * 0.72 - 6);
+  P.shape(map(hT, [[2, -96], [-20, -102], [-40, -82], [-40, -56], [-26, -34], [-8, -30], [-4, -52], [0, -72], [8, -86]]), C.ink, 0.9, 1, { jit: 0.4 });
+  head(P, hT, s * 0.72, { closed: o.closed, mouth: o.mouth });
+}
+function lota(P, x, y, s) {
+  P.shape([[x - 24 * s, y - 6 * s], [x - 13 * s, y - 22 * s], [x - 13 * s, y - 32 * s], [x - 18 * s, y - 38 * s], [x + 18 * s, y - 38 * s], [x + 13 * s, y - 32 * s], [x + 13 * s, y - 22 * s], [x + 24 * s, y - 6 * s], [x + 20 * s, y + 18 * s], [x - 20 * s, y + 18 * s]], C.steel, 0.85, 1.5, { jit: 0.4 });
+  P.line([[x - 15 * s, y - 8 * s], [x - 10 * s, y + 8 * s]], 2 * s, C.white, { ghost: false, a: 0.8 });
+  P.line([[x - 18 * s, y - 38 * s], [x + 18 * s, y - 38 * s]], 1.8, C.ink, { ghost: false });
+}
+function log(P, x, y, l, r, tilt = 0) {
+  const c = Math.cos(tilt), s = Math.sin(tilt), T = (a, b) => [x + a * c - b * s, y + a * s + b * c];
+  P.shape(map(T, [[-l, -r], [-l * 0.3, -r * 1.05], [l * 0.5, -r * 0.92], [l, -r * 0.8], [l + r * 0.2, 0], [l, r * 0.82], [l * 0.4, r], [-l, r]]), C.umber, 0.82, 2);
+  const e = T(-l, 0); P.shape(Array.from({ length: 9 }, (_, i) => { const a = i / 9 * 6.283; return [e[0] + Math.cos(a) * r * 0.36, e[1] + Math.sin(a) * r]; }), C.ochre, 0.6, 1.3, { jit: 0.3 });
+  P.line(Array.from({ length: 8 }, (_, i) => { const a = i / 8 * 6.283; return [e[0] + Math.cos(a) * r * 0.18, e[1] + Math.sin(a) * r * 0.55]; }), 0.8, C.ink, { ghost: false, a: 0.6 });
+  for (let i = 0; i < 9; i++) { const u = -l * 0.8 + (i / 9) * l * 1.7, v = -r * 0.7 + P.r() * r * 1.3; P.line([T(u, v), T(u + l * 0.13, v + (P.r() - 0.5) * 4), T(u + l * 0.26, v + (P.r() - 0.5) * 3)], 0.9, C.ink, { ghost: false, a: 0.5, dry: 0.3 }); }
+}
+function bullock(P, x, y, s, f = 1) {
+  const T = fig(x, y, s, f);
+  const leg = (a, b, near) => { P.shape(map(T, [[a - 11, b - 16], [a + 11, b - 16], [a + 8, b + 34], [a + 7, b + 66], [a - 5, b + 66], [a - 7, b + 34]]), C.white, near ? 0.92 : 0.7, 1.3, { body: true, jit: 0.4 }); P.shape(map(T, [[a - 6, b + 64], [a + 8, b + 64], [a + 10, b + 76], [a - 8, b + 76]]), C.ink, 0.85, 1, { jit: 0.3 }); };
+  leg(-66, 20, false); leg(70, 18, false);
+  const body = [[-104, -42], [-40, -52], [42, -56], [72, -92], [96, -60], [108, -22], [100, 24], [40, 36], [-40, 38], [-98, 28], [-112, -8]];
+  P.shape(map(T, body), C.white, 0.92, 2, { body: true });
+  P.hatch(map(T, [[-100, 8], [-40, 36], [40, 36], [100, 22], [90, 8], [0, 16]]), { gap: 7, ang: 0.1, a: 0.32 });
+  // the painted blanket on his back, and a rope of bells
+  P.wash(map(T, [[-44, -50], [38, -54], [50, 8], [-40, 12]]), C.red, 0.72);
+  P.line(map(T, [[-44, -50], [38, -54], [50, 8], [-40, 12], [-44, -50], [-40, -46]]), 1.2);
+  P.dots(Array.from({ length: 22 }, (_, i) => T(-36 + (i % 6) * 14 + (Math.floor(i / 6) % 2) * 7, -40 + Math.floor(i / 6) * 13)), 1.5 * s, C.ochre, 0.95);
+  leg(-88, 24, true); leg(88, 20, true);
+  P.line(map(T, [[-112, -28], [-126, 10], [-122, 44], [-130, 58]]), 2.6);
+  // neck and head
+  P.shape(map(T, [[92, -50], [136, -66], [184, -48], [194, -18], [176, -6], [152, -12], [112, 22]]), C.white, 0.94, 1.9, { body: true });
+  P.line(map(T, [[142, -64], [132, -96], [146, -120]]), 4.2, C.ink, { a: 0.8 }); P.line(map(T, [[158, -62], [166, -94], [186, -112]]), 4.2, C.ink, { a: 0.8 });
+  P.shape(map(T, [[128, -58], [112, -66], [118, -50]]), C.white, 0.9, 1, { body: true });
+  const e = T(158, -44); P.x.fillStyle = C.ink; P.x.beginPath(); P.x.arc(e[0], e[1], 3.2 * s, 0, 6.283); P.x.fill(); P.line(map(T, [[148, -48], [158, -52], [168, -46], [158, -40], [148, -48]]), 1, C.ink, { ghost: false });
+  P.line(map(T, [[188, -22], [180, -14], [170, -16]]), 1, C.ink, { ghost: false });
+  P.dots(map(T, [[100, 2], [106, 8], [112, 12], [118, 8], [124, 2]]), 2.6 * s, C.ochre, 0.95);
+}
+function wheel(P, x, y, r) {
+  const ring = []; for (let i = 0; i < 16; i++) { const a = i / 16 * 6.283; ring.push([x + Math.cos(a) * r, y + Math.sin(a) * r]); }
+  P.line([...ring, ring[0], ring[1]], 5, C.sepia, { jit: 0.6, dry: 0.08 }); P.line(ring.map((p) => [x + (p[0] - x) * 0.86, y + (p[1] - y) * 0.86]).concat([[x + r * 0.86, y]]), 1.1, C.ink, { ghost: false });
+  for (let k = 0; k < 6; k++) { const a = k / 6 * 3.14159 + 0.3; P.line([[x - Math.cos(a) * r, y - Math.sin(a) * r], [x + Math.cos(a) * r, y + Math.sin(a) * r]], 2.3, C.sepia, { jit: 0.5 }); }
+  P.shape(Array.from({ length: 8 }, (_, i) => { const a = i / 8 * 6.283; return [x + Math.cos(a) * r * 0.16, y + Math.sin(a) * r * 0.16]; }), C.umber, 0.9, 1.2, { jit: 0.3 });
+}
+// a wolf in profile, her coat in rows of short dashes
+function wolf(P, x, y, s, f, o = {}) {
+  const T = fig(x, y, s, f), hd = o.down ? 86 : 0, col = C.wolf;
+  const leg = (a, b, sw, near) => { const pts = [[a - 12, b - 12], [a + 12, b - 12], [a + 9 + sw * 0.5, b + 38], [a + 6 + sw, b + 76], [a + 16 + sw, b + 84], [a - 6 + sw, b + 86], [a - 6 + sw, b + 40]]; P.shape(map(T, pts), near ? col : C.umber, near ? 0.75 : 0.62, 1.3, { jit: 0.4 }); };
+  leg(-64, 4, -14, false); leg(78, 0, 16, false);
+  const tail = [[-112, -30], [-158, -18], [-208, 26], [-214, 46], [-186, 44], [-146, 18], [-110, -2]];
+  P.shape(map(T, tail), col, 0.72, 1.6);
+  P.hatch(map(T, tail), { gap: 8, ang: 0.8, dash: 7, a: 0.55, w: 1 });
+  const body = [[-118, -34], [-60, -50], [8, -46], [66, -62], [108, -56], [124, -24], [100, 18], [40, 14], [-30, 20], [-90, 24], [-124, 6]];
+  P.shape(map(T, body), col, 0.75, 2);
+  P.hatch(map(T, body), { gap: 8, ang: -0.18, dash: 8, a: 0.72, w: 1.05 });
+  P.wash(map(T, [[-90, 18], [-30, 12], [40, 8], [96, 14], [60, 20], [-40, 24]]), C.white, 0.7, { body: true });
+  leg(-84, 8, 16, true); leg(92, 6, -14, true);
+  // neck, head and ears
+  const hy = -74 + hd;
+  P.shape(map(T, [[80, -62], [136, hy - 8], [158, hy + 22], [112, 8]]), col, 0.78, 1.8);
+  P.hatch(map(T, [[80, -62], [136, hy - 8], [158, hy + 22], [112, 8]]), { gap: 9, ang: 0.6, dash: 7, a: 0.6, w: 1 });
+  const head = [[122, hy - 22], [126, hy - 52], [140, hy - 26], [152, hy - 54], [164, hy - 24], [212, hy - 2], [226, hy + 12], [208, hy + 26], [166, hy + 30], [132, hy + 18]];
+  P.shape(map(T, head), col, 0.8, 2);
+  P.hatch(map(T, [[132, hy - 18], [166, hy - 20], [206, hy + 4], [170, hy + 22], [134, hy + 14]]), { gap: 7, ang: 0.15, dash: 5, a: 0.55, w: 0.9 });
+  P.wash(map(T, [[170, hy + 14], [206, hy + 12], [204, hy + 24], [168, hy + 28]]), C.white, 0.8, { body: true });
+  const E = map(T, [[156, hy - 8], [166, hy - 12], [178, hy - 6], [166, hy - 2]]); P.wash(E, C.ochre, 0.95, { body: true, jit: 0.2 }); P.line([...E, E[0]], 1.2, C.ink, { ghost: false, jit: 0.2 });
+  const c = T(167, hy - 7); P.x.fillStyle = C.ink; P.x.beginPath(); P.x.arc(c[0], c[1], 2.6 * s, 0, 6.283); P.x.fill();
+  const n = T(222, hy + 10); P.x.beginPath(); P.x.arc(n[0], n[1], 5 * s, 0, 6.283); P.x.fill();
+  P.line(map(T, [[218, hy + 20], [196, hy + 22], [170, hy + 16]]), 1.6);
+  return T(188, hy + 30);   // her mouth
+}
+
+// ---------------------------------------------------------------------------------------------- the plates
+// the family on the cart: father turbaned and driving, mother with the child on her lap and his lota beside him
+function PEOPLE(P, cy) {
+  { const T = fig(760, cy - 96, 1.02, 1); P.shape(map(T, [[-32, 30], [-30, -6], [-16, -22], [8, -22], [22, 2], [26, 30]]), C.white, 0.95, 1.7, { body: true }); P.hatch(map(T, [[-30, 28], [-28, -4], [-12, -18], [-8, 28]]), { gap: 5, ang: 1.1, a: 0.36, w: 0.8 }); limb(P, T, [8, -8], [34, 12], [62, -2], 6.5, 4.5, C.flesh, 1); head(P, T, 1, {}); P.shape(map(T, [[10, -86], [-8, -106], [-34, -104], [-48, -84], [-42, -66], [-6, -70], [18, -74]]), C.red, 0.95, 1.6, { jit: 0.5 }); for (let k = 0; k < 4; k++) P.line(map(T, [[-44 + k * 4, -70 - k * 8], [-14, -80 - k * 7], [14, -78 - k * 2]]), 0.9, C.ink, { ghost: false, a: 0.6 }); P.line(map(T, [[12, -48], [4, -44], [-4, -48]]), 2, C.ink, { ghost: false }); P.line(map(T, [[70, -4], [190, -10], [330, 10]]), 1, C.ink, { ghost: false, a: 0.7 }); }
+  woman(P, 540, cy - 96, 1.02, 1, { len: 66 });
+  { const T = fig(540, cy - 96, 1.02, 1); limb(P, T, [16, 6], [44, 42], [74, 30], 7, 5, C.flesh, 1); }
+  child(P, 620, cy - 126, 0.8, 1, { arm: [[12, 0], [28, 14], [40, 18]] });
+  lota(P, 672, cy - 100, 0.72);
+}
+const PLATES = [
+  (P) => {   // the hills of Seoni under the monsoon, the Pench winding through them
+    skyWash(P, C.dusk, 470, C.indigo);
+    hills(P, 400, 110, C.green, 3, 0.55); hills(P, 500, 80, C.greenD, 6, 0.55);
+    const riv = [[880, 470], [770, 540], [900, 610], [640, 700], [800, 790], [560, 915], [1120, 915], [1090, 800], [1180, 700], [1130, 620], [1000, 560], [950, 480]];
+    hills(P, 600, 46, C.green, 9, 0.5, false);
+    waves(P, 460, 920, C.water, { a: 0.9, shape: riv, clip: P.curve(riv, true, 0), step: 34, dy: 16, ink: 0.55 });
+    P.line([...riv, riv[0]], 1.6, C.ink, { dry: 0.2 });
+    for (const [x, y, s, k] of [[90, 770, 0.95, 0], [230, 850, 1.2, 1], [390, 790, 0.85, 0], [520, 860, 1, 0], [1270, 830, 1.15, 0], [1410, 770, 0.9, 1], [1530, 860, 1.25, 0], [1180, 880, 0.8, 1]]) tree(P, x, y, s, C.greenD, k);
+    cloudBand(P, 110, C.indigo, 0.82, 7);
+    rain(P, 150, 880, 210, 0.3);
+    // cranes crossing ahead of the rain
+    for (const [x, y] of [[640, 300], [690, 276], [740, 262], [600, 318]]) P.line([[x - 15, y - 5], [x - 3, y + 2], [x + 14, y - 6]], 1.3, C.ink, { ghost: false });
   },
-  { // the cart on the ford
-    cam: [[720, 470, 1.12], [880, 470, 1.12]],
-    draw(I, x, t) {
-      sky(I, C.dusk, C.storm, 560); cloud(I, 300, 110, 1.3, '#6a7680'); cloud(I, 1240, 80, 1.7, '#5a6670');
-      hills(I, 380, 36, C.hill, 2); hills(I, 460, 24, C.leaf2, 6);
-      const prog = t * 22, bob = Math.sin(t * 2.1) * 3;
-      bullock(I, 1016 + prog, 548 + bob, 1.02, t * 2.6); bullock(I, 1000 + prog - 30, 556 - bob, 1.02, t * 2.6 + 1);
-      cart(I, 640 + prog, 560 + Math.sin(t * 1.6) * 3, 1.25, t);
-      water(I, 600, C.river, t, { amp: 7, rows: 4, a: 0.72 });
-      rain(x, t, 44);
-    },
+  (P) => {   // the cart at the ford
+    skyWash(P, C.dusk, 440, C.ochre);
+    hills(P, 330, 70, C.green, 12, 0.5); hills(P, 420, 46, C.greenD, 14, 0.5);
+    for (const [x, y, s] of [[80, 470, 0.7], [280, 460, 0.6], [1330, 470, 0.75], [1510, 460, 0.65]]) tree(P, x, y, s);
+    cloudBand(P, 70, C.indigo, 0.72, 8);
+    waves(P, 610, 910, C.water, { a: 0.7, step: 56, dy: 26 });
+    P.wash([[-10, 480], [W + 10, 490], [W + 10, 625], [-10, 625]], C.sand, 0.96, { jit: 2 });
+    const cy = 590;
+    bullock(P, 1090, cy - 26, 1.02); bullock(P, 1060, cy - 18, 1.02);
+    // the cart: its people first, then the low bed that hides their legs, then the wheels
+    P.line([[820, cy - 60], [920, cy - 70], [1190, cy - 70]], 6, C.sepia);
+    PEOPLE(P, cy);
+    P.shape([[420, cy - 92], [850, cy - 92], [866, cy - 38], [404, cy - 38]], C.umber, 0.95, 2.2, { hard: true });
+    P.hatch([[420, cy - 92], [850, cy - 92], [866, cy - 38], [404, cy - 38]], { gap: 34, ang: 1.5, a: 0.55, w: 1.2, hard: true });
+    wheel(P, 520, cy + 18, 70); wheel(P, 760, cy + 18, 70);
+    rain(P, 90, 700, 120, 0.2);
   },
-  { // the flood comes round the bend
-    cam: [[800, 450, 1.05], [720, 470, 1.22]],
-    draw(I, x, t, k) {
-      const flash = Math.sin(t * 3) > 0.96 ? 0.28 : 0;
-      sky(I, C.storm, '#4b5660', 560); cloud(I, 300, 110, 1.9, '#3f4a54'); cloud(I, 1100, 130, 2.2, '#384049');
-      hills(I, 340, 30, C.hill, 3); hills(I, 450, 24, C.leaf2, 7);
-      cart(I, 1140, 590, 0.74, 0);
-      bullock(I, 1320, 582, 0.6, t * 6);
-      water(I, 626, C.river, t, { amp: 6, rows: 2, a: 0.75 });
-      // the wall of water
-      const wx = -120 + smooth(0, 1, k) * 780, top = 460 - smooth(0, 1, k) * 110, p = [[-60, H + 40], [-60, top + 14]];
-      for (let i = 0; i <= 8; i++) p.push([-60 + i * (wx + 60) / 8, top + Math.sin(i * 1.3 + t * 5) * 18 + i * 2]);
-      p.push([wx + 90, top + 30], [wx + 150, top + 104], [wx + 110, 620], [wx + 210, H + 40]);
-      I.shape(p, C.flood, 4, 0.97);
-      for (let i = 0; i < 5; i++) { const y0 = top + 70 + i * 74; I.line([[-30, y0 + Math.sin(t * 3 + i) * 10], [wx * 0.3, y0 - 14], [wx * 0.6, y0 + 10], [wx - 10 + i * 18, y0 - 8]], 2.2); }
-      // foam, and what it has picked up
-      for (let i = 0; i < 16; i++) { const a = i * 2.3 + t * 3, u = i / 15, X = u < 0.5 ? 40 + u * 2 * wx : wx + 100 + Math.sin(a) * 26 + (u - 0.5) * 120, Y = u < 0.5 ? top + Math.sin(i * 1.3 + t * 5) * 18 - 2 : top + 30 + (u - 0.5) * 2 * 340; I.shape(ell(X, Y, 30 + (i % 3) * 10, 16 + (i % 2) * 6, a, 7), '#f1ebdd', 2, 0.97); }
-      teakLog(I, wx * 0.5, top + 26 + Math.sin(t * 4) * 12, 110, 18, 0.2 + Math.sin(t * 2) * 0.1);
-      rain(x, t, 90, -0.42, 0.5);
-      if (flash) { x.fillStyle = '#fff8e8'; x.globalAlpha = flash; x.fillRect(-100, -100, 1800, 1100); x.globalAlpha = 1; }
-    },
-  },
-  { // she ties him to a log
-    cam: [[800, 440, 1.04], [800, 470, 1.2]],
-    draw(I, x, t) {
-      sky(I, '#4f5c64', '#3f4b53', 900);
-      hills(I, 250, 30, '#55624f', 5);
-      const sw = Math.sin(t * 1.5) * 6, wl = 616 + sw;
-      // her, up to the chest in it
-      I.shape([[560, 900], [554, 500], [624, 448], [760, 448], [824, 500], [832, 900]], C.sari, 3.4, 0.97);
-      I.line([[590, 490], [690, 560], [812, 500]], 3, '#7f2d24'); I.hatch(600, 520, 800, 620, 22, 16, 0.3);
-      // the end of her sari, pulled off the shoulder, wrapped round log and boy
-      face(I, 690, 356, 86, { f: 1, bun: true, mouth: 0.75, browUp: 12 });
-      for (let i = 0; i < 6; i++) { const a = 3.2 + i * 0.35; I.line([[690 + Math.cos(a) * 80, 330 + Math.sin(a) * 60], [650 + Math.cos(a) * 120 + Math.sin(t * 5 + i) * 6, 400 + Math.sin(a) * 100 + 70]], 5, C.hair); }
-      teakLog(I, 930, wl + 18 + sw * 0.4, 300, 40, -0.02);
-      toddler(I, 980, wl - 110 + sw * 0.3, 1.32, { f: -1, arm: 0.9, mouth: 0.9 });
-      lota(I, 1120, wl - 54 + sw * 0.3, 1.2);
-      // the cloth goes round the log and through the pot's handle, again and again
-      const tie = (t * 0.5) % 1, wrap = (X) => { I.shape([[X - 18, wl - 30], [X + 18, wl - 34], [X + 26, wl + 58], [X - 12, wl + 64]], C.sari, 2.4, 0.98); };
-      wrap(960); wrap(1040); wrap(880);
-      I.line([[1040, wl - 30], [1090, wl - 72], [1128, wl - 72]], 11, C.sari);
-      // her arms, pulling the knot tight
-      I.line([[770, 500], [846, 560 + Math.sin(t * 4) * 8], [950, wl - 20 + Math.sin(t * 4) * 10]], 30, C.skin, 1.3);
-      I.line([[600, 520], [730, 600 + Math.cos(t * 4) * 8], [870, wl - 16 + Math.cos(t * 4) * 8]], 30, C.skin, 1.3);
-      water(I, wl + 44, C.flood, t * 2.2, { amp: 14, rows: 4, a: 0.9 });
-      rain(x, t, 90, -0.36, 0.45);
-    },
-  },
-  { // she hums, and the river takes her
-    cam: [[820, 440, 1.2], [820, 470, 1.04]],
-    draw(I, x, t, k) {
-      sky(I, '#3f4b56', '#35404a', 900);
-      const sink = smooth(0.52, 0.95, k), wl = 560, away = smooth(0.42, 1, k) * 280;
-      // her
-      if (sink < 0.99) {
-        const dy = sink * 330, X = 520 - sink * 50;
-        I.shape([[X - 104, 900], [X - 104, 500 + dy], [X - 40, 440 + dy], [X + 80, 440 + dy], [X + 130, 500 + dy], [X + 134, 900]], C.sari, 3.2, 0.97);
-        face(I, X + 20, 360 + dy, 82, { f: 1, bun: true, closed: true, mouth: 0.42, browUp: 4 });
-        I.line([[X + 100, 490 + dy], [X + 210, 520 + dy * 0.8 - sink * 60], [X + 300 + away * 0.25 - sink * 130, 520 + dy * 0.2 - sink * 100]], 26, C.skin, 1.3);
+  (P) => {   // the water comes
+    skyWash(P, C.indigo, 620, C.night);
+    hills(P, 360, 90, C.greenD, 21, 0.55); hills(P, 470, 46, C.greenD, 24, 0.45);
+    // the far-off cart, small and still in the ford
+    waves(P, 590, 920, C.water, { a: 0.62, step: 46, dy: 22, ink: 0.42 });
+    { const cy = 600; bullock(P, 1370, cy - 8, 0.44); woman(P, 1140, cy - 28, 0.42, 1, { len: 50 }); const T = fig(1224, cy - 28, 0.42, 1); P.shape(map(T, [[-32, 30], [-30, -6], [-16, -22], [8, -22], [22, 2], [26, 30]]), C.white, 0.95, 1.2, { body: true }); head(P, T, 0.42, {}); P.shape(map(T, [[10, -86], [-8, -106], [-34, -104], [-48, -84], [-42, -66], [-6, -70], [18, -74]]), C.red, 0.95, 1.1, { jit: 0.3 }); P.shape([[1078, cy - 28], [1270, cy - 28], [1276, cy - 6], [1072, cy - 6]], C.umber, 0.95, 1.6, { hard: true }); wheel(P, 1120, cy + 12, 30); wheel(P, 1224, cy + 12, 30); }
+    // the flood: a great wall of patterned water, its top and leading edge breaking into a white, hooked crest
+    const edge = []; for (let i = 0; i <= 12; i++) { const t = i / 12; edge.push([-20 + t * 960 + Math.sin(i * 1.7) * 30, 300 + t * t * 620 + Math.sin(i * 2.3) * 26]); }
+    const body = [[-20, 930], [-20, 300], ...edge, [960, 930]];
+    waves(P, 280, 930, C.flood, { a: 0.97, shape: body, clip: P.curve(body, true, 0), step: 76, dy: 34, ink: 0.62 });
+    // currents dragging through it
+    for (let k = 0; k < 6; k++) { const y = 400 + k * 90; P.line([[-10, y], [180, y - 30], [400, y + 10], [640 - k * 20, y - 20 + k * 22]], 2.2, C.ink, { a: 0.5, dry: 0.3 }); }
+    for (let i = 0; i < edge.length - 1; i++) {
+      const [ax, ay] = edge[i], [bx, by] = edge[i + 1];
+      for (let k = 0; k < 2 + (i % 2); k++) {
+        const t = k / 3, x0 = ax + (bx - ax) * t + (P.r() - 0.5) * 20, y0 = ay + (by - ay) * t + (P.r() - 0.5) * 24, R = 22 + P.r() * P.r() * 66;
+        // each breaker: a white lobe with a curling hook of ink, flung forward over the edge
+        const lobe = [[x0 - R * 0.9, y0 + R * 0.4], [x0 - R * 0.5, y0 - R * 0.7], [x0 + R * 0.4, y0 - R * 0.8], [x0 + R * 1.05, y0 - R * 0.15], [x0 + R * 0.62, y0 + R * 0.28], [x0 + R * 0.2, y0 + R * 0.12], [x0 - R * 0.05, y0 + R * 0.5]];
+        P.wash(lobe, C.white, 0.97, { jit: 1 }); P.line(lobe.slice(0, 7), 1.5, C.ink, { dry: 0.14 });
+        P.line([[x0 - R * 0.4, y0 - R * 0.1], [x0 + R * 0.2, y0 - R * 0.42], [x0 + R * 0.62, y0 - R * 0.12]], 1, C.ink, { ghost: false, a: 0.7 });
+        const sp = []; for (let q = 0; q < 10; q++) sp.push([x0 + R * (0.4 + P.r() * 1.5), y0 - R * 0.6 + P.r() * R * 1.4]); P.dots(sp, 2, C.white, 0.9);
       }
-      // him, on the log, going away from her
-      const LX = 1000 + away, s2 = Math.sin(t * 1.6) * 8;
-      teakLog(I, LX, wl + 40 + s2, 240, 34, 0.02);
-      toddler(I, LX - 24, wl - 66 + s2, 1.08, { f: -1, arm: 0.2, closed: k < 0.42, mouth: 0.25 });
-      lota(I, LX + 80, wl - 10 + s2, 1);
-      I.shape([[LX - 44, wl + 2 + s2], [LX + 4, wl - 2 + s2], [LX + 8, wl + 76 + s2], [LX - 40, wl + 78 + s2]], C.sari, 2.2, 0.98);
-      water(I, wl + 62, C.flood, t * 2, { amp: 15, rows: 4, a: 0.92 });
-      // four notes, drifting from her over the water
-      const notes = 1 - smooth(0.5, 0.62, k);
-      if (notes > 0.01) for (let i = 0; i < 4; i++) {
-        const nt = clamp01((k - 0.05 - i * 0.08) * 7), X = 620 + i * 90 + nt * 40, Y = 300 - [10, 34, 62, 22][i] - nt * 26 + Math.sin(t * 2 + i) * 8;
-        if (nt > 0) { x.globalAlpha = Math.min(1, nt) * notes; const mark = ell(X, Y, 15, 11, -0.4, 7); I.wash(mark, INK, 1, 0.5); I.line([[X + 12, Y], [X + 15, Y - 52]], 3); I.line([[X + 15, Y - 52], [X + 38, Y - 36]], 3); x.globalAlpha = 1; }
-      }
-      rain(x, t, 80, -0.32, 0.4);
-    },
+    }
+    log(P, 300, 520, 130, 18, 0.34); log(P, 500, 760, 100, 15, -0.5);
+    cloudBand(P, 76, C.night, 0.9, 7);
+    // lightning, as a thin hard line
+    P.line([[1160, 140], [1124, 250], [1176, 280], [1120, 410], [1148, 430], [1104, 540]], 2.2, C.white, { ghost: false, a: 0.9, jit: 0.4 });
+    rain(P, 110, 900, 230, 0.32, -0.34);
   },
-  { // alone on the river, at night
-    cam: [[800, 450, 1.25], [800, 450, 1.0]],
-    draw(I, x, t, k) {
-      sky(I, C.night, '#2b343d', 620);
-      I.shape(ell(1230, 160, 56), '#e6dfc5', 2.2, 0.95); cloud(I, 1100 - t * 5, 180, 1.4, '#37434c');
-      hills(I, 420, 40, '#2d3a38', 3); hills(I, 500, 18, '#27332f', 8);
-      water(I, 560, C.nightR, t * 0.8, { amp: 6, rows: 5, a: 0.95, sp: 1 });
-      const s2 = Math.sin(t * 0.9) * 5, LX = 700 + t * 8;
-      teakLog(I, LX, 610 + s2, 118, 16, 0.02);
-      toddler(I, LX - 14, 562 + s2, 0.46, { f: 1, closed: true, arm: -0.2 });
-      lota(I, LX + 42, 586 + s2, 0.42);
-      // moonlight on the water
-      for (let i = 0; i < 6; i++) { I.line([[1190 + hash(i) * 28, 590 + i * 44], [1230 + hash(i + 2) * 24, 586 + i * 44], [1276 + hash(i + 4) * 28, 591 + i * 44]], 3, '#d9d3bb'); }
-    },
+  (P) => {   // she ties him to the log
+    skyWash(P, C.indigo, 900, C.night);
+    hills(P, 300, 40, C.greenD, 31, 0.45, false);
+    cloudBand(P, 56, C.night, 0.82, 6);
+    const wl = 660;
+    log(P, 960, wl - 26, 360, 44, -0.02);
+    // the sari end wrapped round log and child again and again, through the pot's handle
+    child(P, 1000, wl - 176, 1.26, -1, { closed: false, mouth: true, arm: [[14, 0], [36, -6], [52, -20]] });
+    lota(P, 1180, wl - 94, 1.15);
+    for (const X of [820, 900, 980, 1060]) { const b = [[X - 18, wl - 74], [X + 20, wl - 80], [X + 28, wl + 22], [X - 12, wl + 28]]; P.shape(b, C.red, 0.95, 1.4, { jit: 0.6, hard: true }); P.line([[X - 14, wl - 60], [X + 14, wl - 62]], 1.8, C.ochre, { ghost: false }); P.line([[X - 11, wl + 12], [X + 22, wl + 8]], 1.8, C.ochre, { ghost: false }); }
+    P.line([[1060, wl - 74], [1110, wl - 122], [1176, wl - 136], [1188, wl - 110]], 9, C.red, { dry: 0.1 });
+    woman(P, 560, 420, 1.76, 1, { mouth: true });
+    { const T = fig(560, 420, 1.76, 1); limb(P, T, [18, 6], [62, 60], [122, 62], 7.5, 5, C.flesh, 1.76); limb(P, T, [-20, 12], [42, 92], [124, 98], 8, 5.2, C.flesh, 1.76); }
+    waves(P, wl + 30, 920, C.flood, { a: 0.9, step: 72, dy: 34, ink: 0.6 });
+    P.line([[-10, wl + 34], [300, wl + 22], [620, wl + 38], [980, wl + 24], [1300, wl + 38], [W + 10, wl + 24]], 2.2);
+    rain(P, 110, wl + 100, 170, 0.3, -0.3);
   },
-  { // a sandbank at dawn: she finds him, and picks him up
-    cam: [[820, 470, 1.18], [760, 470, 1.04]],
-    draw(I, x, t, k) {
-      sky(I, C.dawn, '#d9a982', 500); I.shape(ell(1240, 340, 80), '#f5d58f', 2.2, 0.9);
-      hills(I, 390, 26, '#a8a184', 4); hills(I, 450, 20, C.leaf2, 8);
-      for (let i = 0; i < 5; i++) tree(I, 90 + i * 140, 500, 0.6);
-      water(I, 500, C.river, t * 0.6, { amp: 3, rows: 1, a: 0.85 });
-      I.shape([[-30, 610], [340, 560], [900, 576], [1400, 560], [1640, 620], [1640, 930], [-30, 930]], C.sand, 3, 0.96);
-      for (let i = 0; i < 8; i++) { const X = 90 + i * 190 + hash(i) * 40, Y = 700 + hash(i + 3) * 120; I.line([[X, Y], [X + 40, Y - 5], [X + 90, Y + 2]], 1.6); }
-      teakLog(I, 1160, 730, 230, 30, 0.04);
-      const lift = smooth(0.6, 0.78, k), walkOff = smooth(0.74, 1, k);
-      const wx = 340 + smooth(0, 0.5, k) * 430 - walkOff * 460, ph = (k < 0.5 || k > 0.74) ? t * 5 : 0, f = k > 0.72 ? -1 : 1;
-      if (lift < 0.05) { toddler(I, 960, 742, 0.86, { rot: 1.3, closed: k < 0.3, f: -1, arm: 0.2 }); lota(I, 1000, 780, 0.8); }
-      else lota(I, 1000, 780, 0.8);
-      const mouth = wolf(I, wx, 716, 0.98, f, ph, { down: lift < 0.05 ? smooth(0.42, 0.56, k) : 1 - lift * 0.6 });
-      // by the cloth at his waist, the way she would carry a pup: he hangs across her jaws
-      if (lift >= 0.05) { toddler(I, mouth[0] + f * 8, mouth[1] + 8 + Math.sin(t * 5) * 3, 0.74, { rot: f * 1.2, f, closed: true, arm: -0.4, kick: Math.sin(t * 4) * 0.5 }); I.line([[mouth[0] - 22, mouth[1] - 10], [mouth[0], mouth[1] - 2], [mouth[0] + 22, mouth[1] - 10]], 4); }
-    },
+  (P) => {   // she hums to him; the river takes her
+    skyWash(P, C.night, 900, C.indigo);
+    cloudBand(P, 50, C.ink, 0.5, 6);
+    const wl = 580;
+    // her face and one raised arm, the last of her above the water, and him drifting off on the log
+    woman(P, 400, wl - 8, 1.5, 1, { closed: true });
+    { const T = fig(400, wl - 8, 1.5, 1); limb(P, T, [24, 62], [72, 22], [84, -52], 7.5, 5.2, C.flesh, 1.5); }
+    waves(P, wl + 34, 920, C.flood, { a: 0.92, step: 74, dy: 36, ink: 0.62 });
+    P.line([[-10, wl + 44], [280, wl + 26], [620, wl + 46], [980, wl + 28], [1300, wl + 46], [W + 10, wl + 30]], 2.2);
+    log(P, 1190, wl + 16, 280, 36, 0.02);
+    child(P, 1170, wl - 120, 1.04, -1, { closed: true, arm: [[10, 8], [24, 28], [44, 44]] });
+    lota(P, 1310, wl - 38, 0.95);
+    P.shape([[1130, wl - 20], [1176, wl - 24], [1182, wl + 50], [1136, wl + 54]], C.red, 0.95, 1.4, { jit: 0.6, hard: true });
+    rain(P, 80, wl + 60, 140, 0.24, -0.26);
   },
-  { // the den
-    cam: [[800, 480, 1.14], [800, 470, 1.04]],
-    draw(I, x, t) {
-      I.wash([[-30, -30], [1630, -30], [1630, 930], [-30, 930]], C.den, 0.96, 0);
-      // the mouth of the den, with morning outside
-      I.shape([[980, 120], [1240, 100], [1460, 200], [1520, 520], [1500, 660], [1040, 640], [930, 400]], C.dawn, 3.6, 0.95);
-      for (let i = 0; i < 3; i++) tree(I, 1160 + i * 110, 640, 0.76 + i * 0.08, Math.sin(t * 0.8 + i) * 4);
-      I.shape([[-30, 680], [500, 640], [1100, 650], [1630, 690], [1630, 930], [-30, 930]], '#7c6650', 3, 0.97);
-      I.hatch(30, 40, 900, 200, 30, 20, 0.3); I.hatch(40, 280, 700, 480, 34, 22, 0.25);
-      for (let i = 0; i < 9; i++) { const X = 160 + i * 150 + hash(i) * 60, Y = 760 + hash(i + 2) * 70; I.shape(ell(X, Y, 42, 14, hash(i) * 0.6, 7), ['#b8894a', '#a2743c', '#c29a58'][i % 3], 1.6, 0.9); }
-      // the wolf, curled round him, breathing
-      const br = Math.sin(t * 1.3) * 5;
-      I.shape([[290, 760], [340, 650 - br], [520, 586 - br], [730, 590 - br], [880, 660], [900, 760], [700, 800], [420, 800]], C.wolf, 3.4, 0.97);
-      I.hatch(380, 620 - br, 700, 660 - br, 26, -10, 0.35);
-      I.shape([[840, 680], [860, 636], [880, 668], [916, 636], [928, 682], [1000, 716], [1020, 742], [980, 760], [900, 762], [840, 740]], C.wolf, 3.2, 0.98);
-      I.line([[884, 708], [900, 714], [916, 708]], 2.6);
-      I.wash(ell(1012, 736, 10, 8, 0, 6), INK, 1, 0.3);
-      I.shape([[300, 760], [220, 786], [230, 820], [420, 816], [460, 788]], C.wolf, 3, 0.96);
-      // him, tucked in against her, asleep
-      toddler(I, 590, 716 + br * 0.3, 0.96, { rot: 1.35, closed: true, f: -1, arm: -0.2, mouth: 0.15 });
-      for (let i = 0; i < 3; i++) { const n = ((t * 0.5 + i * 0.33) % 1); x.globalAlpha = 1 - n; I.line([[500 + n * 30, 610 - n * 90], [512 + n * 30, 594 - n * 90]], 2); x.globalAlpha = 1; }
-    },
+  (P) => {   // alone on the river at night
+    P.wash([[-10, -10], [W + 10, -10], [W + 10, H + 10], [-10, H + 10]], C.night, 0.96, { jit: 0, hard: true });
+    const moon = Array.from({ length: 18 }, (_, i) => { const a = i / 18 * 6.283; return [1240 + Math.cos(a) * 62, 170 + Math.sin(a) * 62]; });
+    P.wash(moon, C.white, 0.95, { body: true, jit: 0.4 }); P.line([...moon, moon[0]], 1.3, C.ink, { ghost: false });
+    const stars = []; for (let i = 0; i < 70; i++) stars.push([P.r() * W, P.r() * 340]); P.dots(stars, 1.3, C.white, 0.7);
+    hills(P, 440, 46, C.ink, 41, 0.44, false);
+    for (const [x, s] of [[120, 0.5], [290, 0.42], [1400, 0.5], [1530, 0.4], [860, 0.36]]) tree(P, x, 462, s, C.ink);
+    waves(P, 490, 920, C.indigo, { a: 0.7, step: 66, dy: 30, ink: 0.65 });
+    const glint = []; for (let i = 0; i < 26; i++) { const y = 500 + P.r() * 360; P.line([[1240 - 60 - P.r() * 30, y], [1240, y - 3], [1240 + 60 + P.r() * 30, y]], 1.6, C.white, { ghost: false, a: 0.55, dry: 0.3 }); }
+    log(P, 700, 680, 130, 15, 0.02); child(P, 690, 636, 0.42, 1, { closed: true, arm: [[10, 6], [22, 24], [34, 38]] }); lota(P, 760, 660, 0.42);
+  },
+  (P) => {   // dawn on the sandbank: the wolf finds him
+    skyWash(P, C.dusk, 430, C.ochre);
+    const sun = Array.from({ length: 18 }, (_, i) => { const a = i / 18 * 6.283; return [1280 + Math.cos(a) * 64, 300 + Math.sin(a) * 64]; }); P.wash(sun, C.red, 0.6, { jit: 0.4 }); P.line([...sun, sun[0]], 1.2, C.ink, { ghost: false });
+    hills(P, 330, 60, C.green, 51, 0.45); hills(P, 400, 34, C.greenD, 53, 0.45, false);
+    for (const [x, y, s, k] of [[80, 450, 0.8, 0], [240, 440, 0.66, 1], [420, 450, 0.74, 0], [1120, 446, 0.66, 0], [1500, 452, 0.86, 1]]) tree(P, x, y, s, C.greenD, k);
+    waves(P, 440, 560, C.water, { a: 0.65, step: 40, dy: 15, ink: 0.42 });
+    const bank = [[-10, 590], [340, 546], [840, 560], [1320, 548], [W + 10, 590], [W + 10, H + 10], [-10, H + 10]]; P.wash(bank, C.sand, 0.85); P.line(bank.slice(0, 5), 1.7, C.ink, { dry: 0.2 });
+    { const pts = []; for (let i = 0; i < 300; i++) pts.push([P.r() * W, 590 + P.r() * 300]); P.dots(pts, 0.9, C.sepia, 0.42); }
+    log(P, 1290, 700, 250, 32, 0.03);
+    child(P, 930, 770, 0.92, 1, { rot: -1.45, closed: true, arm: [[10, 10], [26, 22], [38, 34]] });
+    lota(P, 1040, 800, 0.84);
+    wolf(P, 470, 672, 1.2, 1, { down: true });
+    for (const [x, y] of [[80, 780], [150, 816], [230, 794], [310, 836]]) P.dots([[x, y], [x + 9, y - 6], [x + 16, y + 1], [x + 8, y + 7], [x + 2, y + 8]], 2.2, C.sepia, 0.6);
+  },
+  (P) => {   // she carries him home
+    skyWash(P, C.dusk, 500, C.ochre);
+    hills(P, 340, 56, C.green, 61, 0.42);
+    // the forest she walks into, tree over tree, and the rock of the den
+    for (const [x, y, s, k] of [[1120, 500, 1.1, 0], [1270, 516, 1.3, 1], [1420, 500, 1.15, 0], [1560, 520, 1.4, 0], [960, 500, 0.9, 1]]) tree(P, x, y, s, C.greenD, k);
+    const gr = [[-10, 650], [500, 616], [1100, 636], [W + 10, 650], [W + 10, H + 10], [-10, H + 10]]; P.wash(gr, C.green, 0.62); P.line(gr.slice(0, 4), 1.7, C.ink, { dry: 0.22 });
+    const rock = [[1170, 720], [1260, 540], [1390, 500], [1520, 530], [1630, 620], [1630, 790], [1180, 790]]; P.wash(rock, C.umber, 0.6); P.line(rock, 2.2, C.ink, { dry: 0.2 }); P.hatch(rock, { gap: 13, ang: 0.8, a: 0.42 });
+    const mouth = [[1300, 790], [1320, 670], [1400, 626], [1490, 660], [1520, 790]]; P.wash(mouth, '#231c15', 1); P.wash(mouth, '#231c15', 0.8, { noEdge: true }); P.line(mouth, 1.8);
+    for (let i = 0; i < 170; i++) { const X = P.r() * W, Y = 660 + P.r() * 240, l = 7 + P.r() * 8; P.line([[X, Y], [X - 1.4, Y - l * 0.6], [X + 2.2, Y - l]], 1, C.ink, { ghost: false, a: 0.5, jit: 0.3 }); }
+    for (const [x, y, s, k] of [[90, 640, 0.94, 0], [250, 626, 0.76, 1]]) tree(P, x, y, s, C.greenD, k);
+    const m = wolf(P, 690, 656, 1.32, 1, {});
+    // held by the cloth at his waist, as she would hold a pup
+    child(P, m[0] - 8, m[1] + 22, 0.86, 1, { rot: 1.02, closed: true, arm: [[8, 8], [14, 30], [20, 52]] });
+    P.line([[m[0] - 34, m[1] - 6], [m[0], m[1] + 2], [m[0] + 30, m[1] - 8]], 3.5);
   },
 ];
 
-export class SketchBook {
-  constructor(canvas) {
-    this.c = canvas; this.x = canvas.getContext('2d', { alpha: false }); this.ink = new Ink(this.x); this.counts = {};
-    this.paper = null; this.resize();
+// ---------------------------------------------------------------------------------------------- the book
+export const PLATE_COUNT = PLATES.length;
+export class Plates {
+  constructor() { this.c = new Array(PLATES.length).fill(null); this.scale = Math.max(matchMedia('(pointer: coarse)').matches ? 0.6 : 0.85, Math.min(1, Math.max(innerWidth, innerHeight) * Math.min(1.5, devicePixelRatio || 1) / W)); this.ms = 0; }
+  // paint one plate (once); nothing is ever drawn on it again
+  paint(i) {
+    if (this.c[i]) return this.c[i];
+    const t0 = performance.now(), P = new Painter(this.scale, 4001 + i * 97);
+    PLATES[i](P); P.finish(i === 5 ? 0.16 : 0.26);
+    P.c.className = 'pro-plate';
+    this.ms += performance.now() - t0;
+    return (this.c[i] = P.c);
   }
-  resize() {
-    const dpr = Math.min(1.5, window.devicePixelRatio || 1), w = this.w = Math.max(320, window.innerWidth), h = this.h = Math.max(240, window.innerHeight);
-    this.c.width = w * dpr; this.c.height = h * dpr; this.dpr = dpr;
-    // paper with a little tooth and fibre
-    const p = this.paper = document.createElement('canvas'); p.width = this.c.width; p.height = this.c.height;
-    const x = p.getContext('2d'); x.fillStyle = PAPER; x.fillRect(0, 0, p.width, p.height);
-    for (let i = 0; i < 5200; i++) { x.fillStyle = i % 2 ? 'rgba(120,92,50,.045)' : 'rgba(255,250,235,.06)'; x.fillRect(Math.random() * p.width, Math.random() * p.height, 1 + Math.random() * 2.4, 1 + Math.random() * 1.6); }
-    x.strokeStyle = 'rgba(110,84,46,.07)'; x.lineWidth = 1; for (let i = 0; i < 260; i++) { const X = Math.random() * p.width, Y = Math.random() * p.height, a = Math.random() * 6.28; x.beginPath(); x.moveTo(X, Y); x.lineTo(X + Math.cos(a) * 16, Y + Math.sin(a) * 16); x.stroke(); }
-    const g = x.createRadialGradient(p.width / 2, p.height / 2, p.height * 0.35, p.width / 2, p.height / 2, p.width * 0.72); g.addColorStop(0, 'rgba(90,60,30,0)'); g.addColorStop(1, 'rgba(90,60,30,.28)'); x.fillStyle = g; x.fillRect(0, 0, p.width, p.height);
-  }
-  // the panel takes the page down to the caption strip, keeping 16:9 where it fits
-  frameRect() {
-    const cap = Math.max(112, this.h * 0.2), m = Math.max(14, Math.min(this.w, this.h) * 0.03), aw = this.w - m * 2, ah = this.h - cap - m;
-    const pw = Math.min(aw, ah * 16 / 9), ph = pw * 9 / 16;
-    return { x: (this.w - pw) / 2, y: m + (ah - ph) / 2, w: pw, h: ph, cap };
-  }
-  // draw panel i, t seconds in, dur seconds long; `seed` picks the line boil
-  render(i, t, dur) {
-    const x = this.x, I = this.ink, P = PANELS[i], k = clamp01(t / dur), R = this.frameRect();
-    x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.globalCompositeOperation = 'source-over';
-    x.drawImage(this.paper, 0, 0);
-    x.scale(this.dpr, this.dpr);
-    // into the frame
-    x.save(); x.beginPath(); x.rect(R.x, R.y, R.w, R.h); x.clip();
-    const e = k * k * (3 - 2 * k), [a, b] = P.cam, cx = a[0] + (b[0] - a[0]) * e, cy = a[1] + (b[1] - a[1]) * e, z = a[2] + (b[2] - a[2]) * e, s = R.w / W * z;
-    x.translate(R.x + R.w / 2, R.y + R.h / 2); x.scale(s, s); x.translate(-cx, -cy);
-    // drawn onto the page: only so many strokes yet, for the first second or so
-    I.n = 0; I.boil = Math.floor(t * 6) % 4 * 13.7;
-    I.limit = t < 1.15 ? Math.floor((this.counts[i] || 0) * Math.pow(t / 1.15, 1.4)) : Infinity;
-    P.draw(I, x, t, k);
-    this.counts[i] = I.n;
-    x.restore();
-    // a rough inked frame
-    const fr = [[R.x, R.y], [R.x + R.w, R.y + 1], [R.x + R.w - 1, R.y + R.h], [R.x + 1, R.y + R.h - 1], [R.x, R.y - 2]];
-    I.n = 1000; I.limit = Infinity; for (let j = 0; j < 4; j++) I.line([fr[j], [(fr[j][0] + fr[j + 1][0]) / 2, (fr[j][1] + fr[j + 1][1]) / 2], fr[j + 1]], 3.4, INK, 1.4);
-    x.setTransform(1, 0, 0, 1, 0, 0);
-  }
-  blank() { const x = this.x; x.setTransform(1, 0, 0, 1, 0, 0); x.drawImage(this.paper, 0, 0); }
+  ready() { return this.c.every(Boolean); }
+  free() { for (const c of this.c) if (c && c.parentNode) c.parentNode.removeChild(c); this.c.fill(null); }
 }

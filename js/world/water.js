@@ -1,7 +1,7 @@
 // Pench river ribbon, Totladoh reservoir and forest waterholes with a flowing, depth-aware water shader
 // (fresnel sky reflection, treeline reflection, sun glint, shoreline foam, monsoon rain ripples).
 import * as THREE from 'three';
-import { G, NOISE_GLSL, ATMOS_GLSL, addGlobals } from '../core/shaderlib.js';
+import { G, NOISE_GLSL, NOISE_LOOKUP, ATMOS_GLSL, addGlobals } from '../core/shaderlib.js';
 import { clamp } from '../core/noise.js';
 import { PAINTED, PU } from '../core/palette.js';
 import { height, riverX, riverY, RIVER_W, RIVER_END_Z, LAKE, LAKE_LEVEL, lakeE, WATERHOLES, HALF, WATER_STATE } from './terrain.js';
@@ -23,6 +23,9 @@ const PAINTED_WATER = {
 };
 const PAINTED_FRAG = /* glsl */`
   ${NOISE_GLSL}
+  #ifdef WATER_LQ
+  ${NOISE_LOOKUP}
+  #endif
   ${ATMOS_GLSL}
   uniform float uTime, uRain, uDay, uSunVis, uFlash, uTreeline, uFlowSpd; uniform vec3 uSunDir, uSunCol, uSkyZen, uSkyHor, uShallow, uDeep, uLeafShade; uniform vec2 uFlow;
   varying vec3 vWP; varying float vDepth; varying vec2 vFD; varying vec2 vRiv;
@@ -36,8 +39,12 @@ const PAINTED_FRAG = /* glsl */`
     vec3 V = normalize(vWP - cameraPosition);
     float NdV = max(-V.y, 0.0);
     vec3 R = reflect(V, vec3(0.0, 1.0, 0.0));
+    #ifdef WATER_LQ
+    float tl = uTreeline * 0.95;
+    #else
     float az = atan(R.z, R.x);
     float tl = uTreeline * (0.8 + 0.3 * vnoise(vec2(az * 4.0, 1.3)));
+    #endif
     vec3 refl = mix(uSkyHor, uSkyZen, smoothstep(0.1, 0.7, R.y));
     refl = mix(refl, mix(uLeafShade, uShallow, 0.35) * 0.8 * light, 1.0 - aaStep(tl, R.y));   // the forest's reflection: a soft green, not a dark slab
     col = mix(col, refl, (0.2 + 0.35 * aaStep(0.5, 1.0 - NdV)) * 0.75);
@@ -184,53 +191,98 @@ function waterMaterial(riseRef, flow, treeline) {
   return m;
 }
 
+// The river and the lake, in tiles. As one mesh each they were drawn whole, some 125,000 and 250,000 triangles, whenever any part of
+// them was in view, however far off. Each tile has a coarse mesh, made at the start, and a fine one, made the first time the camera comes
+// close; a frame draws only the tiles in view, and the fine meshes only near the camera. All of a tile's edges lie flat on the water's
+// surface, so a coarse tile next to a fine one shows no crack.
+const RIVER_ROWS = 128, ROW = 2, LAKE_TILE = 288;
 export class Water {
-  constructor(scene) {
-    this.scene = scene;
+  constructor(scene, q) {
+    this.scene = scene; this.q = q;
     this.riseRiver = G.uWaterRise; // shared
     this.riseLake = { value: 0 }; this.riseHole = { value: 0 };
-    this.mats = [];
+    this.mats = []; this.tiles = []; this.lodT = 0;
     this.buildRiver(); this.buildLake(); this.buildHoles();
+    this.setLean();
   }
+  setLean() { for (const m of this.mats) { const want = !!this.q.lean; if (!!m.defines.WATER_LQ !== want) { if (want) m.defines.WATER_LQ = 1; else delete m.defines.WATER_LQ; m.needsUpdate = true; } } }
+  // a tile, centred at x, z and reaching hx, hz either way: `fine` and `coarse` make its meshes' buffers
+  tile(x, z, hx, hz, mat, fine, coarse) { this.tiles.push({ x, z, hx, hz, mat, fine, f: null, c: this.mesh(coarse(), mat) }); }
   buildRiver() {
-    const pos = [], dep = [], fd = [], idx = [], riv = [];
-    const W2 = RIVER_W + 10, across = 36, step = 2;   // fine enough that per-vertex depth follows the banks
-    let rows = 0, sAlong = 0, prevX = riverX(-HALF);
-    for (let z = -HALF; z <= RIVER_END_Z + 60; z += step) {
-      const cx = riverX(z), y = riverY(z);
-      if (rows) sAlong += Math.hypot(cx - prevX, step); prevX = cx;
-      const dxdz = (riverX(z + 1) - riverX(z - 1)) / 2;
-      const fl = new THREE.Vector2(dxdz, 1).normalize();
-      for (let k = 0; k <= across; k++) {
-        const x = cx - W2 + (2 * W2) * (k / across);
-        pos.push(x, y, z); dep.push(y - height(x, z)); fd.push(fl.x, fl.y);
-        riv.push(sAlong + (x - cx) * fl.x, (x - cx) * fl.y);   // along the centreline, across it
+    const W2 = RIVER_W + 10, rows = [];
+    let sAlong = 0, prevX = riverX(-HALF);
+    for (let z = -HALF; z <= RIVER_END_Z + 60; z += ROW) {
+      const cx = riverX(z);
+      if (rows.length) sAlong += Math.hypot(cx - prevX, ROW); prevX = cx;
+      const fl = new THREE.Vector2((riverX(z + 1) - riverX(z - 1)) / 2, 1).normalize();
+      rows.push({ z, cx, y: riverY(z), s: sAlong, fx: fl.x, fy: fl.y });
+    }
+    const make = (r0, r1, every, across) => {
+      const pos = [], dep = [], fd = [], idx = [], riv = [], use = [];
+      for (let r = r0; r <= r1; r += every) use.push(r);
+      if (use[use.length - 1] !== r1) use.push(r1);
+      for (const r of use) {
+        const R = rows[r];
+        for (let k = 0; k <= across; k++) {
+          const x = R.cx - W2 + (2 * W2) * (k / across);
+          pos.push(x, R.y, R.z); dep.push(R.y - height(x, R.z)); fd.push(R.fx, R.fy);
+          riv.push(R.s + (x - R.cx) * R.fx, (x - R.cx) * R.fy);   // along the centreline, across it
+        }
       }
-      rows++;
+      for (let r = 0; r < use.length - 1; r++) for (let k = 0; k < across; k++) {
+        const a = r * (across + 1) + k, b = a + 1, c = a + across + 1, d = c + 1;
+        idx.push(a, c, b, b, c, d);
+      }
+      return { pos, dep, fd, idx, riv };
+    };
+    const mat = waterMaterial(this.riseRiver, 1.0, 0.58); this.mats.push(mat);
+    for (let r0 = 0; r0 < rows.length - 1; r0 += RIVER_ROWS) {
+      const r1 = Math.min(rows.length - 1, r0 + RIVER_ROWS), M = rows[(r0 + r1) >> 1];
+      let bend = 0; for (let r = r0; r <= r1; r++) bend = Math.max(bend, Math.abs(rows[r].cx - M.cx));
+      // fine enough that per-vertex depth follows the banks
+      this.tile(M.cx, M.z, W2 + bend, (r1 - r0) * ROW / 2, mat, () => (this.q.lean ? make(r0, r1, 2, 18) : make(r0, r1, 1, 36)), () => make(r0, r1, 4, 12));
     }
-    for (let r = 0; r < rows - 1; r++) for (let k = 0; k < across; k++) {
-      const a = r * (across + 1) + k, b = a + 1, c = a + across + 1, d = c + 1;
-      idx.push(a, c, b, b, c, d);
-    }
-    this.river = this.mesh(pos, dep, fd, idx, this.riseRiver, 1.0, 0.58, riv);
   }
   buildLake() {
-    const pos = [], dep = [], fd = [], idx = [];
-    const step = 3, x0 = LAKE.x - LAKE.rx * 1.35, x1 = LAKE.x + LAKE.rx * 1.35, z0 = LAKE.z - LAKE.rz * 1.35, z1 = LAKE.z + LAKE.rz * 1.35;
-    const nx = Math.ceil((x1 - x0) / step), nz = Math.ceil((z1 - z0) / step);
-    const map = new Int32Array((nx + 1) * (nz + 1)).fill(-1);
-    for (let j = 0; j <= nz; j++) for (let i = 0; i <= nx; i++) {
-      const x = x0 + i * step, z = z0 + j * step;
-      if (lakeE(x, z) > 1.3) continue;
-      map[j * (nx + 1) + i] = pos.length / 3;
-      pos.push(x, LAKE_LEVEL, z); dep.push(LAKE_LEVEL - height(x, z)); fd.push(0, 0);
+    const x0 = Math.floor((LAKE.x - LAKE.rx * 1.35) / LAKE_TILE) * LAKE_TILE, x1 = LAKE.x + LAKE.rx * 1.35, z0 = Math.floor((LAKE.z - LAKE.rz * 1.35) / LAKE_TILE) * LAKE_TILE, z1 = LAKE.z + LAKE.rz * 1.35;
+    const make = (tx, tz, step) => {
+      const pos = [], dep = [], fd = [], idx = [], n = Math.round(LAKE_TILE / step), map = new Int32Array((n + 1) * (n + 1)).fill(-1);
+      for (let j = 0; j <= n; j++) for (let i = 0; i <= n; i++) {
+        const x = tx + i * step, z = tz + j * step;
+        if (lakeE(x, z) > 1.3) continue;
+        map[j * (n + 1) + i] = pos.length / 3;
+        pos.push(x, LAKE_LEVEL, z); dep.push(LAKE_LEVEL - height(x, z)); fd.push(0, 0);
+      }
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+        const a = map[j * (n + 1) + i], b = map[j * (n + 1) + i + 1], c = map[(j + 1) * (n + 1) + i], d = map[(j + 1) * (n + 1) + i + 1];
+        if (a < 0 || b < 0 || c < 0 || d < 0) continue;
+        idx.push(a, c, b, b, c, d);
+      }
+      return { pos, dep, fd, idx };
+    };
+    const mat = waterMaterial(this.riseLake, 0.0, 0.09); this.mats.push(mat);
+    for (let tz = z0; tz < z1; tz += LAKE_TILE) for (let tx = x0; tx < x1; tx += LAKE_TILE) {
+      const coarse = make(tx, tz, 16);
+      if (coarse.idx.length) this.tile(tx + LAKE_TILE / 2, tz + LAKE_TILE / 2, LAKE_TILE / 2, LAKE_TILE / 2, mat, () => make(tx, tz, this.q.lean ? 6 : 3), () => coarse);
     }
-    for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
-      const a = map[j * (nx + 1) + i], b = map[j * (nx + 1) + i + 1], c = map[(j + 1) * (nx + 1) + i], d = map[(j + 1) * (nx + 1) + i + 1];
-      if (a < 0 || b < 0 || c < 0 || d < 0) continue;
-      idx.push(a, c, b, b, c, d);
+  }
+  // the fine meshes of the tiles near the camera, one new one per look, a few times a second (and they go again at a new graphics level)
+  applyQuality() { for (const t of this.tiles) if (t.f) { this.scene.remove(t.f); t.f.geometry.dispose(); t.f = null; } this.lodT = 0; this.setLean(); }
+  // in the scene or out of it (out, a frame has one thing less to walk over)
+  put(m, on) { if (on && !m.parent) this.scene.add(m); else if (!on && m.parent) this.scene.remove(m); }
+  lod(cam) {
+    if (--this.lodT > 0) return;
+    this.lodT = 15;
+    let built = false;
+    const R = this.q.waterFine || 300, far = this.q.waterFar || Infinity;
+    for (const t of this.tiles) {
+      // (measured to the tile's edge: to its centre, you could stand at a big tile's corner with the coarse mesh's rough shoreline at your feet)
+      const dx = Math.max(0, Math.abs(t.x - cam.x) - t.hx), dz = Math.max(0, Math.abs(t.z - cam.z) - t.hz), d2 = dx * dx + dz * dz, near = d2 < R * R;
+      if (near && !t.f) { if (built) { this.lodT = 2; this.put(t.c, true); continue; } built = true; t.f = this.mesh(t.fine(), t.mat); }
+      if (t.f) this.put(t.f, near);
+      this.put(t.c, !near && d2 < far * far);
     }
-    this.lake = this.mesh(pos, dep, fd, idx, this.riseLake, 0.0, 0.09);
+    for (const h of this.holes) { const s = h.geometry.boundingSphere, dx = s.center.x - cam.x, dz = s.center.z - cam.z, r = far + s.radius; this.put(h, dx * dx + dz * dz < r * r); }
   }
   buildHoles() {
     this.holes = [];
@@ -247,10 +299,11 @@ export class Water {
         const a = 1 + (r - 1) * ring + k, b = 1 + (r - 1) * ring + (k + 1) % ring, c = 1 + r * ring + k, d = 1 + r * ring + (k + 1) % ring;
         idx.push(a, b, c, b, d, c);
       }
-      this.holes.push(this.mesh(pos, dep, fd, idx, this.riseHole, 0, clamp(14 / (w.r + 6), 0.25, 0.6)));
+      const mat = waterMaterial(this.riseHole, 0, clamp(14 / (w.r + 6), 0.25, 0.6)); this.mats.push(mat);
+      this.holes.push(this.mesh({ pos, dep, fd, idx }, mat));
     }
   }
-  mesh(pos, dep, fd, idx, rise, flow, treeline = 0.3, riv = null) {
+  mesh({ pos, dep, fd, idx, riv = null }, mat) {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.setAttribute('aDepth', new THREE.Float32BufferAttribute(dep, 1));
@@ -258,9 +311,7 @@ export class Water {
     if (!riv) { riv = []; for (let i = 0; i < pos.length; i += 3) riv.push(pos[i + 2], pos[i]); }   // still water: world coordinates
     g.setAttribute('aRiver', new THREE.Float32BufferAttribute(riv, 2));
     g.setIndex(idx); g.computeBoundingSphere();
-    const mat = waterMaterial(rise, flow, treeline);
-    this.mats.push(mat);
-    const m = new THREE.Mesh(g, mat); m.renderOrder = 2; m.frustumCulled = true;
+    const m = new THREE.Mesh(g, mat); m.renderOrder = 2; m.frustumCulled = true; m.matrixAutoUpdate = false;
     this.scene.add(m); return m;
   }
   setSeason(season) {
@@ -275,7 +326,8 @@ export class Water {
       m.uniforms.uFlowSpd.value = { winter: 0.5, summer: 0.25, monsoon: 2.2, post: 0.9 }[season] ?? 0.5;   // m/s: clear and slow in winter, a spate in the rains
     }
   }
-  update(sky, rain) {
+  update(sky, rain, cam) {
+    this.lod(cam.position);
     this.riseLake.value = G.uWaterRise.value * 0.6;
     this.riseHole.value = WATER_STATE.holeOffset;
     for (const m of this.mats) {

@@ -42,7 +42,7 @@ export class VineSystem {
       this.stems.setMatrixAt(n, _m); this.leaves.setMatrixAt(n, _m);
       n++;
     }
-    this.stems.count = this.leaves.count = n;
-    this.stems.instanceMatrix.needsUpdate = this.leaves.instanceMatrix.needsUpdate = true;
+    this.stems.count = this.leaves.count = n; this.stems.visible = this.leaves.visible = n > 0;
+    for (const m of [this.stems, this.leaves]) { const A = m.instanceMatrix; A.clearUpdateRanges(); if (n) { A.addUpdateRange(0, n * 16); A.needsUpdate = true; } }
   }
 }

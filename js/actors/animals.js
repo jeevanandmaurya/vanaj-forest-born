@@ -398,9 +398,19 @@ export class Animal {
     this.carcassHits = 0; this.lastHitBy = null;
     this.spoke = 0; this.lookAt = null;
     this.feedT = 0; this.scripted = null;
-    this.shadowOn = true;
+    this.shadowOn = true; this.shown = true; this.inkOn = true; this.lodAcc = Math.random() * 0.25; this.animAcc = 0; this.animStep = 0;
     this.root.rotation.y = this.yaw;
     this.radius = this.d.radius * this.scale;
+  }
+  // the outline shells, and the meshes of the body proper
+  // the small parts of a model made of many (a boar is 25, plus their outlines): beyond a little way off they are a few pixels, and a draw call each
+  get smallParts() { if (!this._small) { this._small = []; for (const m of this.meshes) { if (m.userData.ink || m.isSkinnedMesh) continue; const G = m.geometry; if (!G.boundingSphere) G.computeBoundingSphere(); if (G.boundingSphere.radius < 0.15) this._small.push(m); } } return this._small; }
+  get inks() { if (!this._inks) { this._inks = []; this.root.traverse((o) => { if (o.userData.ink) this._inks.push(o); }); } return this._inks; }
+  // Pose the body, if anyone can see it, and no oftener than this far from the camera it needs. The time saved up goes into the next pose.
+  pose(dt, W) {
+    this.animAcc += dt;
+    if (!this.shown || this.animAcc < this.animStep) return;
+    this.animate(Math.min(0.5, this.animAcc), W); this.animAcc = 0;
   }
   get alive() { return !this.dead; }
   dist2(p) { const dx = p.x - this.pos.x, dz = p.z - this.pos.z; return dx * dx + dz * dz; }
@@ -542,7 +552,7 @@ export class Animal {
       // near the player, animals move through the physics world (sliding round trunks, rocks and walls, and solid
       // to the player); further off, the cheap circle tests
       let blocked;
-      if (W.phys && this.dist2(W.player.pos) < 45 * 45 && !this.air) blocked = W.phys.moveActor(this, x0, z0);
+      if (W.phys && this.dist2(W.player.pos) < W.actorR2 && !this.air) blocked = W.phys.moveActor(this, x0, z0);
       else blocked = (W.veg ? W.veg.collide(this.pos, this.radius * 0.6) : false) | (W.props && W.props.collide ? W.props.collide(this.pos, this.radius * 0.7) : false);
       // slide round the obstacle instead of grinding into it
       if (blocked && this.speed > 0.3 && !(this.detourT > 0)) this.sidestep(W, true);
@@ -576,7 +586,7 @@ export class Animal {
       // shot out of a tree, it comes down
       if (this.tm || this.perch || this.hop) { this.tm = null; this.perch = null; this.hop = null; this.runTo = null; this.fallV = 0; this.anim.climb = 0; this.anim.sit = 0; this.anim.pounce = 0; }
       if (this.fallV !== undefined && this.fallV !== null) { this.fallV += 18 * dt; this.pos.y -= this.fallV * dt; const gy = groundHeight(this.pos.x, this.pos.z); if (this.pos.y <= gy) { this.pos.y = gy; this.fallV = null; W.audio.impact('wood', this.pos, 0.3); } }
-      this.deadT += dt; this.bleedOut(dt, W); this.animate(dt, W); return;
+      this.deadT += dt; this.bleedOut(dt, W); this.pose(dt, W); return;
     }
     this.alarmCD -= dt; this.attackCD -= dt; this.timer -= dt; this.stateT += dt;
     // bleeding
@@ -589,7 +599,7 @@ export class Animal {
     if (this.scripted) { this.scripted(dt, W, this); }
     else this.think(dt, W);
     this.integrate(dt, W);
-    this.animate(dt, W);
+    this.pose(dt, W);
   }
   bleedOut(dt, W) { if (this.deadT < 6 && Math.random() < dt * 0.8) W.fx.decal(this.pos.x + (Math.random() - 0.5) * this.d.L * 0.5, this.pos.z + (Math.random() - 0.5) * this.d.L * 0.5, 0.5 + this.deadT * 0.15); }
 
@@ -1331,9 +1341,10 @@ class Group {
 }
 
 // ------------------------------------------------------------------------------------------------ ecosystem
+const _view = new THREE.Frustum(), _vm = new THREE.Matrix4(), _vs = new THREE.Sphere();
 export class Ecosystem {
-  constructor(scene) {
-    this.scene = scene; this.animals = []; this.groups = []; this.spawnT = 0;
+  constructor(scene, q) {
+    this.scene = scene; this.q = q; this.animals = []; this.groups = []; this.spawnT = 0;
     this.enabled = true; this.density = 1;
     this.blocked = new Set(); // species not to spawn (story)
   }
@@ -1402,18 +1413,34 @@ export class Ecosystem {
     else if (sp === 'peafowl') this.spawnGroup('peafowl', c, 1 + Math.floor(Math.random() * 3));
     else this.spawnOne(sp, c, { homeR: 200, aggro: sp === 'leopard' ? 0.15 : sp === 'tiger' ? 0.06 : 0 });
   }
+  // is a sphere in the camera's view? (as of the last frame drawn; also used for the villagers)
+  inView(p, r) { _vs.center.copy(p); _vs.center.y += 1; _vs.radius = r; return _view.intersectsSphere(_vs); }
+  // Each animal costs in proportion to how much anyone can tell. Thirty-odd animals are about at any time, nearly all of them out of sight
+  // in the trees, and each is some sixty objects to walk through every frame, a skeleton to pose, and a dozen draw calls.
+  // An animal not in view is taken out of the scene altogether: it goes on living, and is posed again when it comes back. Further off, what
+  // it thinks and how it stands are worked out less often, and it loses first its outline and then its shadow.
   update(dt, W) {
     this.autoSpawn(W, dt);
     for (const g of this.groups) g.update(dt);
-    const P = W.player.pos;
+    const P = W.player.pos, q = this.q, cam = W.camera, C = cam.position;
+    _view.setFromProjectionMatrix(_vm.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+    const nearR2 = q.aiNear * q.aiNear, midR2 = q.aiMid * q.aiMid, drawR2 = q.animalDraw * q.animalDraw, inkR2 = q.inkDraw * q.inkDraw, shadowR2 = q.animalShadow * q.animalShadow, st = q.animStep;
     for (const a of this.animals) {
-      const d2 = a.dist2(P);
-      // LOD update rate
-      if (d2 > 200 * 200) { a.lodAcc = (a.lodAcc || 0) + dt; if (a.lodAcc < 0.25) continue; a.update(a.lodAcc, W); a.lodAcc = 0; }
-      else a.update(dt, W);
-      const sh = d2 < 55 * 55;
-      if (sh !== a.shadowOn) { a.shadowOn = sh; for (const m of a.meshes) m.castShadow = sh; }
-      a.root.visible = d2 < 420 * 420;
+      const d2 = a.dist2(P), cd2 = a.dist2(C);
+      // what can be seen (anything right beside the camera stays, for the shadow it may cast into the view)
+      const show = cd2 < drawR2 && (cd2 < 144 || this.inView(a.pos, (a.d.L || 2) * a.scale + 2));
+      // (posed the moment it comes back: never yet posed, it would show its model's default stance for a few frames)
+      if (show !== a.shown) { a.shown = show; if (show) { this.scene.add(a.root); a.animAcc = 1; a.pose(0, W); } else this.scene.remove(a.root); }
+      if (show) {
+        const ink = cd2 < inkR2; if (ink !== a.inkOn) { a.inkOn = ink; for (const h of a.inks) h.visible = ink; }
+        const far = q.lean && cd2 > 900; if (far !== !!a.farOn) { a.farOn = far; for (const m of a.smallParts) m.visible = !far; }
+        const sh = d2 < shadowR2; if (sh !== a.shadowOn) { a.shadowOn = sh; for (const m of a.meshes) if (!m.userData.ink) m.castShadow = sh; }
+        a.animStep = cd2 < 400 ? 0 : cd2 < 2500 ? st : st * 2;
+      }
+      // how often it thinks: one that is after the player or is in a scene of the story, always; otherwise by distance
+      const every = d2 < nearR2 || a.companion || a.scripted || a.target === 'player' ? 0 : d2 < midR2 ? 0.066 : d2 < 40000 ? 0.133 : 0.25;
+      a.lodAcc += dt;
+      if (a.lodAcc >= every) { a.update(a.lodAcc, W); a.lodAcc = 0; }
     }
     this.separate(P);
   }

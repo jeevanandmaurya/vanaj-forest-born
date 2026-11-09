@@ -63,13 +63,13 @@ class Particles {
       ac[o] = q.r; ac[o + 1] = q.g; ac[o + 2] = q.b; ac[o + 3] = a;
     }
     P.length = w;
-    this.geo.instanceCount = w;
-    this.aPos.needsUpdate = true; this.aCol.needsUpdate = true;
+    this.geo.instanceCount = w; this.mesh.visible = w > 0;   // (nothing burning or flying: no draw call, and nothing to upload)
+    if (w) { this.aPos.needsUpdate = true; this.aCol.needsUpdate = true; }
   }
 }
 
 export class FX {
-  constructor(scene, T) {
+  constructor(scene, T, q) {
     this.scene = scene; this.T = T;
     this.add = new Particles(scene, 900, true);
     this.alpha = new Particles(scene, 1400, false);
@@ -83,10 +83,17 @@ export class FX {
     if (PAINTED) toonify(this.decals, { outline: 0 });
     this.fires = [];
     this.lights = [];
-    for (let i = 0; i < 3; i++) { const l = new THREE.PointLight(0xff8a3a, 0, 22, 1.6); l.castShadow = false; scene.add(l); this.lights.push(l); }
+    this.level = q; this.applyQuality();
     this.buildFireflies(); this.buildLeaves();
     this.fireflyAmt = 0; this.leafAmt = 0;
     this.tmpN = new THREE.Vector3(); this.m4 = new THREE.Matrix4(); this.q = new THREE.Quaternion();
+  }
+  // The lights the fires can use (the nearest fires get them). Every pixel of every lit surface pays for each light there is, burning or not,
+  // so a lean level has one.
+  applyQuality() {
+    const want = this.level.fireLights;
+    while (this.lights.length > want) this.scene.remove(this.lights.pop());
+    while (this.lights.length < want) { const l = new THREE.PointLight(0xff8a3a, 0, 22, 1.6); l.castShadow = false; this.scene.add(l); this.lights.push(l); }
   }
   // --- blood ---
   blood(pos, dir, amount = 1, big = false) {
@@ -183,6 +190,7 @@ export class FX {
     const ffTarget = night * (season === 'post' ? 1 : season === 'monsoon' ? (raining ? 0.2 : 0.8) : season === 'summer' ? 0.25 : 0.05);
     this.fireflyAmt += (ffTarget - this.fireflyAmt) * Math.min(1, dt * 0.5);
     this.ffU.uT.value += dt; this.ffU.uAmt.value = this.fireflyAmt;
+    this.ffMesh.visible = this.fireflyAmt > 0.02;
     if (this.fireflyAmt > 0.02) {
       const arr = this.ffMesh.geometry.attributes.position.array;
       for (let i = 0; i < this.ff.length; i++) {

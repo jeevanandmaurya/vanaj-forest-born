@@ -5,20 +5,27 @@
 const rand = (a, b) => a + Math.random() * (b - a);
 
 export class AudioEngine {
-  constructor() { this.ctx = null; this.ready = false; this.listener = { x: 0, y: 0, z: 0 }; this.vol = { master: 0.9, music: 0.7, sfx: 1, amb: 1 }; }
+  // lite (phones): the audio thread has to finish each block before the speaker needs it, on a CPU the game and the browser are already
+  // filling, and when it is late the music breaks up. So on a phone it gets a bigger buffer to fall back on ('playback' latency: sounds come
+  // some 100 ms later, which is hard to notice at this frame rate, where a stutter is not) and less to do: half the sample rate halves
+  // the work of every node (12 kHz of treble is all a phone's speaker has anyway), no HRTF panning, and a shorter reverb.
+  constructor(o = {}) { this.ctx = null; this.ready = false; this.lite = !!o.lite; this.listener = { x: 0, y: 0, z: 0 }; this.vol = { master: 0.9, music: 0.7, sfx: 1, amb: 1 }; this.voices = []; this.irs = {}; }
   init() {
     if (this.ctx) return;
     const C = window.AudioContext || window.webkitAudioContext;
     if (!C) return;
-    const ctx = this.ctx = new C({ latencyHint: 'interactive' });
+    let ctx;
+    if (this.lite) { try { ctx = new C({ latencyHint: 'playback', sampleRate: 24000 }); } catch (e) { ctx = new C({ latencyHint: 'playback' }); } }
+    else ctx = new C({ latencyHint: 'interactive' });
+    this.ctx = ctx; this.top = Math.min(20000, ctx.sampleRate * 0.45);   // the highest a filter can be set
     this.master = ctx.createGain(); this.master.gain.value = this.vol.master;
-    this.lp = ctx.createBiquadFilter(); this.lp.type = 'lowpass'; this.lp.frequency.value = 20000;
+    this.lp = ctx.createBiquadFilter(); this.lp.type = 'lowpass'; this.lp.frequency.value = this.top;
     this.comp = ctx.createDynamicsCompressor(); this.comp.threshold.value = -14; this.comp.ratio.value = 3; this.comp.attack.value = 0.01; this.comp.release.value = 0.3;
     this.master.connect(this.lp); this.lp.connect(this.comp); this.comp.connect(ctx.destination);
     this.amb = ctx.createGain(); this.amb.connect(this.master);
     this.sfx = ctx.createGain(); this.sfx.connect(this.master);
     this.music = ctx.createGain(); this.music.gain.value = this.vol.music; this.music.connect(this.master);
-    this.verb = ctx.createConvolver(); this.verb.buffer = this.makeIR(2.6, 0.55, 0.35);
+    this.verb = ctx.createConvolver(); this.verb.buffer = this.ir('forest');
     this.verbOut = ctx.createGain(); this.verbOut.gain.value = 0.9; this.verb.connect(this.verbOut); this.verbOut.connect(this.master);
     this.verbSend = ctx.createGain(); this.verbSend.gain.value = 1; this.verbSend.connect(this.verb);
     // the world's own reverb send, apart from the music's, so the world can be silenced whole on the main menu
@@ -70,35 +77,49 @@ export class AudioEngine {
         // early reflections (tree trunks)
         if (i < ctx.sampleRate * 0.12 && Math.random() < 0.002) v += (Math.random() - 0.5) * 3 * Math.exp(-t * 12);
         lp += (v - lp) * (1 - dark * Math.min(1, t * 1.5 + 0.2));
-        d[i] = lp * 0.6;
+        d[i] = lp * 0.6 * Math.min(1, (n - i) / (n * 0.25));   // (the last quarter fades, or a short tail ends in a thump)
       }
     }
     return b;
   }
+  // each room's reverb, made once (walking in and out of the cave made a new one each time, all of it on the main thread)
+  ir(kind) { return this.irs[kind] || (this.irs[kind] = kind === 'cave' ? this.makeIR(this.lite ? 1.1 : 1.6, 0.4, 0.15) : this.makeIR(this.lite ? 1.3 : 2.6, 0.55, 0.35)); }
   // ------------------------------------------------------------------ routing helpers
   spatial(pos, gain = 1, opts = {}) {
     const ctx = this.ctx;
     const g = ctx.createGain(); g.gain.value = gain;
     const L = this.listener;
     const d = pos ? Math.hypot(pos.x - L.x, (pos.y || L.y) - L.y, pos.z - L.z) : 0;
-    const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = Math.max(900, 18000 * Math.exp(-d / (opts.absorb || 320)));
+    const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = Math.min(this.top, Math.max(900, 18000 * Math.exp(-d / (opts.absorb || 320))));
     g.connect(f);
-    let out = f;
+    let out = f, p = null;
     if (pos) {
-      const p = ctx.createPanner(); p.panningModel = d < 60 ? 'HRTF' : 'equalpower'; p.distanceModel = 'inverse';
+      p = ctx.createPanner(); p.panningModel = d < 60 && !this.lite ? 'HRTF' : 'equalpower'; p.distanceModel = 'inverse';
       p.refDistance = opts.ref || 5; p.maxDistance = 3000; p.rolloffFactor = opts.roll ?? 1;
       p.positionX.value = pos.x; p.positionY.value = pos.y ?? L.y; p.positionZ.value = pos.z;
       f.connect(p); out = p;
     }
     out.connect(opts.bus || this.sfx);
     const send = ctx.createGain(); send.gain.value = opts.verb ?? 0.35; out.connect(send); send.connect(this.worldVerb);
+    this.voices.push({ g, nodes: p ? [g, f, p, send] : [g, f, send], t: ctx.currentTime });
     return g;
+  }
+  // A sound that has ended still sits in the graph, and the audio thread visits its nodes every block, until the garbage collector happens
+  // to run. A cricket chirp every fraction of a second and a footstep every stride add up to a graph that grows and grows. So each sound
+  // notes when it ends (played(), below), and every couple of seconds those that are over are cut off from the output, which takes
+  // everything upstream of them out of the graph as well. (20 s for one that never said: nothing lasts as long.)
+  played(out, end) { out._end = Math.max(out._end || 0, end + 0.1); }
+  sweep(t) {
+    const V = this.voices; let w = 0;
+    for (const v of V) { if (t > (v.g._end ?? v.t + 20) + 0.3) { for (const n of v.nodes) n.disconnect(); } else V[w++] = v; }
+    V.length = w;
   }
   tone(out, t, o) {
     const ctx = this.ctx;
     const osc = ctx.createOscillator(); osc.type = o.type || 'sine';
     const g = ctx.createGain(); g.gain.value = 0;
     const dur = o.dur || 0.2, at = o.a ?? 0.01, rl = o.r ?? dur * 0.5, pk = o.g ?? 0.5;
+    this.played(out, t + dur);
     osc.frequency.setValueAtTime(o.f0, t);
     if (o.pts) { for (const [tt, ff] of o.pts) osc.frequency.exponentialRampToValueAtTime(Math.max(20, ff), t + tt); }
     else if (o.f1) osc.frequency.exponentialRampToValueAtTime(Math.max(20, o.f1), t + dur);
@@ -115,6 +136,7 @@ export class AudioEngine {
   }
   formant(out, t, o) { // voice-like: saw through parallel formant bandpasses
     const ctx = this.ctx;
+    this.played(out, t + o.dur);
     const osc = ctx.createOscillator(); osc.type = 'sawtooth';
     osc.frequency.setValueAtTime(o.f0, t);
     if (o.pts) for (const [tt, ff] of o.pts) osc.frequency.exponentialRampToValueAtTime(ff, t + tt);
@@ -130,6 +152,7 @@ export class AudioEngine {
   }
   noiseBurst(out, t, o) {
     const ctx = this.ctx;
+    this.played(out, t + o.dur);
     const n = ctx.createBufferSource(); n.buffer = this.noise[o.color || 'white'];
     const f = ctx.createBiquadFilter(); f.type = o.ft || 'bandpass'; f.frequency.setValueAtTime(o.f, t); f.Q.value = o.q ?? 1;
     if (o.f1) f.frequency.exponentialRampToValueAtTime(o.f1, t + o.dur);
@@ -143,7 +166,20 @@ export class AudioEngine {
     const ctx = this.ctx, s = ctx.createBufferSource(); s.buffer = this.noise[color]; s.loop = true;
     let n = s; for (const fl of filters) { const f = ctx.createBiquadFilter(); f.type = fl[0]; f.frequency.value = fl[1]; f.Q.value = fl[2] ?? 0.7; n.connect(f); n = f; }
     const g = ctx.createGain(); g.gain.value = gain; n.connect(g); g.connect(bus || this.amb); s.start(0, Math.random() * 3);
-    return g;
+    return { g, tail: g, bus: bus || this.amb, on: true, level: -1, off: 0 };
+  }
+  // A bed's level. A silent bed still costs its noise source and its filters, block after block, unless it is cut off from the output (nothing
+  // upstream of a disconnected node is worked out), so once it has faded out it is. Most of them are silent most of the time: rain, river,
+  // fire, underwater. And a level that has not really changed queues no change for the audio thread.
+  bed(b, level, t, tc) {
+    if (level < 0.0005) {
+      if (!b.on) return;
+      if (b.level !== 0) { b.level = 0; b.g.gain.setTargetAtTime(0, t, tc); b.off = t + tc * 6; }
+      else if (t > b.off) { b.tail.disconnect(); b.on = false; }
+      return;
+    }
+    if (!b.on) { b.tail.connect(b.bus); b.on = true; b.level = 0; }
+    if (Math.abs(level - b.level) > b.level * 0.02 + 0.0002) { b.level = level; b.g.gain.setTargetAtTime(level, t, tc); }
   }
   buildAmbience() {
     const ctx = this.ctx;
@@ -164,7 +200,7 @@ export class AudioEngine {
       const g = ctx.createGain(); g.gain.value = 0;
       const p = ctx.createStereoPanner(); p.pan.value = (i - 1) * 0.7;
       s.connect(f); f.connect(am); am.connect(g); g.connect(p); p.connect(this.amb); s.start(0, Math.random() * 3);
-      this.cicadas.push({ g, phase: Math.random() * 10 });
+      this.cicadas.push({ b: { g, tail: p, bus: this.amb, on: true, level: -1, off: 0 }, phase: Math.random() * 10 });
     }
     // fire crackle bed (gain set by nearest fire)
     this.fireG = this.loopNoise('brown', [['lowpass', 500]], 0, this.sfx);
@@ -181,9 +217,10 @@ export class AudioEngine {
     const f = cam.getWorldDirection(this._f || (this._f = new cam.position.constructor()));
     const t = this.ctx.currentTime;
     if (L.positionX) {
-      L.positionX.setTargetAtTime(p.x, t, 0.02); L.positionY.setTargetAtTime(p.y, t, 0.02); L.positionZ.setTargetAtTime(p.z, t, 0.02);
-      L.forwardX.setTargetAtTime(f.x, t, 0.02); L.forwardY.setTargetAtTime(f.y, t, 0.02); L.forwardZ.setTargetAtTime(f.z, t, 0.02);
-      L.upX.value = 0; L.upY.value = 1; L.upZ.value = 0;
+      // (a listener gliding between positions makes every panner work out its angle for every sample, not once a block)
+      if (this.lite) { L.positionX.value = p.x; L.positionY.value = p.y; L.positionZ.value = p.z; L.forwardX.value = f.x; L.forwardY.value = f.y; L.forwardZ.value = f.z; }
+      else { L.positionX.setTargetAtTime(p.x, t, 0.05); L.positionY.setTargetAtTime(p.y, t, 0.05); L.positionZ.setTargetAtTime(p.z, t, 0.05); L.forwardX.setTargetAtTime(f.x, t, 0.05); L.forwardY.setTargetAtTime(f.y, t, 0.05); L.forwardZ.setTargetAtTime(f.z, t, 0.05); }
+      if (!this._upSet) { this._upSet = true; L.upX.value = 0; L.upY.value = 1; L.upZ.value = 0; }
     } else { L.setPosition(p.x, p.y, p.z); L.setOrientation(f.x, f.y, f.z, 0, 1, 0); }
   }
   update(dt, s) {
@@ -195,38 +232,41 @@ export class AudioEngine {
     const gust = 0.6 + 0.4 * Math.sin(t * 0.37) * Math.sin(t * 0.13 + 1);
     // wind comes and goes in gusts over a near-silent floor (a constant bed read as hiss)
     const g2 = gust * gust;
-    this.windG.gain.setTargetAtTime(0.012 + st.wind * 0.13 * g2, t, k);
-    this.leavesG.gain.setTargetAtTime((0.003 + st.wind * 0.03 * g2) * (st.season === 'summer' ? 1.4 : 1), t, k);
-    this.riverG.gain.setTargetAtTime(st.water * 0.32, t, k);
-    this.babbleG.gain.setTargetAtTime(st.water * 0.07, t, k);
-    this.rainG.gain.setTargetAtTime(st.rain * 0.22, t, k * 2);
-    this.rainLeafG.gain.setTargetAtTime(st.rain * 0.08, t, k * 2);
-    this.rainLowG.gain.setTargetAtTime(st.rain * st.rain * 0.4, t, k * 2);
+    this.bed(this.windG, 0.012 + st.wind * 0.13 * g2, t, k);
+    this.bed(this.leavesG, (0.003 + st.wind * 0.03 * g2) * (st.season === 'summer' ? 1.4 : 1), t, k);
+    this.bed(this.riverG, st.water * 0.32, t, k);
+    this.bed(this.babbleG, st.water * 0.07, t, k);
+    this.bed(this.rainG, st.rain * 0.22, t, k * 2);
+    this.bed(this.rainLeafG, st.rain * 0.08, t, k * 2);
+    this.bed(this.rainLowG, st.rain * st.rain * 0.4, t, k * 2);
     // cicadas: hot day (summer strongest, monsoon breaks)
     const cic = (st.season === 'summer' ? 1 : st.season === 'monsoon' ? 0.55 : st.season === 'post' ? 0.3 : 0.12) * (h > 9 && h < 17.5 ? 1 : h > 7.5 && h < 19 ? 0.35 : 0) * (1 - st.rain);
-    for (const c of this.cicadas) { c.phase += dt * 0.18; const sw = Math.max(0, Math.sin(c.phase)) ** 0.6; c.g.gain.setTargetAtTime(cic * 0.05 * sw, t, 0.6); }
+    for (const c of this.cicadas) { c.phase += dt * 0.18; const sw = Math.max(0, Math.sin(c.phase)) ** 0.6; this.bed(c.b, cic * 0.05 * sw, t, 0.6); }
     // fire
-    this.fireG.gain.setTargetAtTime(this.fireLevel * 0.12, t, 0.2);
+    this.bed(this.fireG, this.fireLevel * 0.12, t, 0.2);
     this.fireCrackT -= dt;
     if (this.fireLevel > 0.05 && this.fireCrackT <= 0) { this.fireCrackT = rand(0.03, 0.35); const o = this.spatial(null, this.fireLevel * 0.6); this.noiseBurst(o, t, { ft: 'highpass', f: rand(2000, 5000), dur: rand(0.005, 0.03), g: rand(0.2, 0.8) }); }
     // breath: separate breaths in and out once winded, faster as stamina runs out (not a pulsing noise bed)
     this.breathT = (this.breathT || 0) - dt;
     if (this.breathLevel > 0.3 && this.breathT <= 0) { this.breathT = 1.25 - this.breathLevel * 0.6; this.breath(this.breathLevel); }
     if (this.heartRate > 0) { this.heartT -= dt; if (this.heartT <= 0) { this.heartT = 60 / this.heartRate; const o = this.spatial(null, 0.5 * Math.min(1, this.heartRate / 140)); this.tone(o, t, { f0: 58, f1: 40, dur: 0.12, g: 0.9 }); this.tone(o, t + 0.17, { f0: 52, f1: 38, dur: 0.1, g: 0.6 }); } }
-    this.underG.gain.setTargetAtTime(st.under * 0.3, t, 0.1);
-    this.lp.frequency.setTargetAtTime(st.under ? 450 : 20000, t, 0.08);
+    this.bed(this.underG, st.under * 0.3, t, 0.1);
+    if (st.under !== this._under) { this._under = st.under; this.lp.frequency.setTargetAtTime(st.under ? 450 : this.top, t, 0.08); }
     // bird & insect events
     this.scheduleNature(dt);
+    if (t > (this._sweepT || 0)) { this._sweepT = t + 2; this.sweep(t); }
   }
   // ------------------------------------------------------------------ nature events
   randomPos(minD, maxD, up = 8) { const a = Math.random() * 6.28, d = rand(minD, maxD); const L = this.listener; return { x: L.x + Math.cos(a) * d, y: L.y + rand(2, up), z: L.z + Math.sin(a) * d }; }
   scheduleNature(dt) {
     const st = this.state, h = st.hour, rain = st.rain, s = st.season;
+    // (a phone's audio thread can't take every voice of the forest at once: the music comes first, and the forest thins out around it)
+    const lite = this.lite ? 2.5 : 1, busy = this.lite && this.voices.length > 14;
     // crickets (night)
     const nightK = st.night;
     this.cricketT -= dt;
-    if (nightK > 0.3 && this.cricketT <= 0) {
-      this.cricketT = rand(0.12, 0.5) / (s === 'winter' ? 0.5 : 1);
+    if (nightK > 0.3 && this.cricketT <= 0 && !busy) {
+      this.cricketT = rand(0.12, 0.5) / (s === 'winter' ? 0.5 : 1) * lite;
       const p = this.randomPos(4, 40, 1), t = this.ctx.currentTime;
       const o = this.spatial(p, 0.09 * nightK * (1 - rain * 0.6), { verb: 0.1, bus: this.amb });
       const f = rand(3900, 4900), n = 3 + Math.floor(rand(0, 3));
@@ -234,8 +274,8 @@ export class AudioEngine {
     }
     // frogs (monsoon nights near water or in rain)
     this.frogT -= dt;
-    if (s === 'monsoon' && (nightK > 0.3 || rain > 0.3) && this.frogT <= 0) {
-      this.frogT = rand(0.2, 1.2);
+    if (s === 'monsoon' && (nightK > 0.3 || rain > 0.3) && this.frogT <= 0 && !busy) {
+      this.frogT = rand(0.2, 1.2) * lite;
       const p = this.randomPos(8, 60, 0.5), t = this.ctx.currentTime;
       const o = this.spatial(p, 0.12, { verb: 0.2, bus: this.amb });
       const f = rand(250, 600), n = 2 + Math.floor(rand(0, 5));
@@ -243,7 +283,7 @@ export class AudioEngine {
     }
     // birds & far calls
     this.birdT -= dt * (1 - rain * 0.8);
-    if (this.birdT <= 0) {
+    if (this.birdT <= 0 && !busy) {
       this.birdT = rand(1.5, 6) * (nightK > 0.5 ? 2.2 : 1);
       const dawn = h > 5 && h < 8.5, dusk = h > 17 && h < 19.5, night = nightK > 0.5;
       const opts = [];
@@ -439,6 +479,7 @@ export class AudioEngine {
     const L = Math.floor(sr / freq), buf = new Float32Array(L); for (let i = 0; i < L; i++) buf[i] = Math.random() * 2 - 1;
     let idx = 0; for (let i = 0; i < N; i++) { const a = buf[idx], c = buf[(idx + 1) % L]; buf[idx] = (a + c) * 0.5 * 0.994; d[i] = a; idx = (idx + 1) % L; }
     const s = ctx.createBufferSource(); s.buffer = b; const o = this.spatial(null, g); s.connect(o); s.start();
+    this.played(o, ctx.currentTime + dur);
     this.noiseBurst(o, ctx.currentTime, { f: 2000, q: 1, dur: 0.03, g: 0.5 });
   }
   bowDraw() { if (!this.ready) return; const t = this.ctx.currentTime, o = this.spatial(null, 0.25); this.noiseBurst(o, t, { f: 400, f1: 1200, q: 4, dur: 0.6, a: 0.3, g: 0.3, color: 'pink' }); }
@@ -475,5 +516,5 @@ export class AudioEngine {
   whistle() { if (!this.ready) return; const t = this.ctx.currentTime, o = this.spatial(null, 0.5, { verb: 0.5 }); for (let r = 0; r < 2; r++) this.tone(o, t + r * 0.4, { f0: 1250, f1: 1420, dur: 0.26, a: 0.03, g: 0.3, vib: [8, 12] }); }
   bees(pos, level) { if (!this.ready || level <= 0) return; const t = this.ctx.currentTime, o = this.spatial(pos, level * 0.5); for (let i = 0; i < 4; i++) this.tone(o, t, { f0: rand(190, 250), dur: 0.5, a: 0.1, g: 0.2, type: 'sawtooth', vib: [rand(5, 13), 12], filt: [['bandpass', 500, 1.5]] }); }
   ui(kind) { if (!this.ready) return; const t = this.ctx.currentTime, o = this.spatial(null, 0.25, { verb: 0.05 }); if (kind === 'open') this.noiseBurst(o, t, { f: 1200, f1: 3000, q: 1, dur: 0.12, g: 0.3 }); else this.tone(o, t, { f0: 880, dur: 0.06, g: 0.15, type: 'triangle' }); }
-  setReverb(kind) { if (!this.ready || this._rv === kind) return; this._rv = kind; this.verb.buffer = kind === 'cave' ? this.makeIR(1.6, 0.4, 0.15) : this.makeIR(2.6, 0.55, 0.35); }
+  setReverb(kind) { if (!this.ready || this._rv === kind) return; if (!this._rv && kind === 'forest') { this._rv = kind; return; } this._rv = kind; this.verb.buffer = this.ir(kind); }
 }

@@ -135,7 +135,7 @@ export class Pickups {
   update(p, force) {
     if (!force && this.last.distanceToSquared(p) < 16) return;
     this.last.copy(p);
-    const S = 16, R = 3, pcx = Math.floor(p.x / S), pcz = Math.floor(p.z / S);
+    const S = 16, R = this.R || 3, pcx = Math.floor(p.x / S), pcz = Math.floor(p.z / S);
     const counts = {}; for (const k of TYPES) counts[k] = 0;
     this.active.length = 0;
     const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), v = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
@@ -152,7 +152,8 @@ export class Pickups {
         this.active.push({ id, type: o.type, x: o.x, y: o.y, z: o.z });
       });
     }
-    for (const k of TYPES) { this.meshes[k].count = counts[k]; this.meshes[k].instanceMatrix.needsUpdate = true; }
+    // (a kind with nothing on the ground here is no draw call)
+    for (const k of TYPES) { const m = this.meshes[k], A = m.instanceMatrix, n = counts[k]; m.count = n; m.visible = n > 0; A.clearUpdateRanges(); if (n) { A.addUpdateRange(0, n * 16); A.needsUpdate = true; } }
     if (this.cells.size > 2000) this.cells.clear();
   }
   // the best thing to pick up, measured from where he stands (not from the camera, which is 3 m behind him in third
