@@ -228,6 +228,37 @@ function applyStyle(shapes, st) {
     if (p.t === SPH) p.r1 *= k; else if (p.t === ELL) { p.rx *= k; p.ry *= k; p.rz *= k; } else { p.r1 *= k; p.r2 *= k; }
   }
 }
+// Sculpting a body is seconds of work and gives the same answer every time, so the answer is kept in the browser's own
+// storage (IndexedDB) after the first visit and read back on the next. The key is the shapes that went in, the detail,
+// and a fingerprint of this file's own code: change how bodies are made and the old ones are simply not found.
+const mem = new Map(); let store = null;
+const hash = (s) => { let a = 2166136261, b = 5381; for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); a = Math.imul(a ^ c, 16777619); b = (Math.imul(b, 33) + c) | 0; } return (a >>> 0).toString(36) + (b >>> 0).toString(36); };
+let CODE = '';
+export function loadSculptCache() {
+  CODE = hash([dist, field, bodyShapes, polygonize, applyStyle, sculptBody].map(String).join(''));
+  return new Promise((done) => {
+    try {
+      const rq = indexedDB.open('vanaj-cache', 1);
+      rq.onupgradeneeded = () => rq.result.createObjectStore('geo');
+      rq.onerror = () => done(0);
+      rq.onsuccess = () => {
+        store = rq.result;
+        const tx = store.transaction('geo', 'readwrite'), os = tx.objectStore('geo'), cur = os.openCursor();
+        cur.onsuccess = () => { const c = cur.result; if (!c) return; if (String(c.key).startsWith(CODE + ':')) mem.set(c.key, c.value); else c.delete(); c.continue(); };   // (bodies from older code are thrown out)
+        tx.oncomplete = () => done(mem.size); tx.onerror = tx.onabort = () => done(0);
+      };
+    } catch (e) { done(0); }
+  });
+}
+const keep = (key, v) => { mem.set(key, v); if (store) try { store.transaction('geo', 'readwrite').objectStore('geo').put(v, key); } catch (e) { /* storage full or refused: it is only a cache */ } };
+function geometryOf(v) {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(v.pos, 3)); g.setAttribute('normal', new THREE.BufferAttribute(v.nor, 3));
+  g.setAttribute('skinIndex', new THREE.BufferAttribute(v.si, 4)); g.setAttribute('skinWeight', new THREE.BufferAttribute(v.sw, 4));
+  g.setIndex(new THREE.BufferAttribute(v.idx, 1));
+  g.computeBoundingBox(); g.computeBoundingSphere();
+  return g;
+}
 export function sculptBody(skeleton, detail = 1, style = {}) {
   const t0 = performance.now();
   const bones = skeleton.bones, bi = new Map(bones.map((b, i) => [b.name, i]));
@@ -235,6 +266,8 @@ export function sculptBody(skeleton, detail = 1, style = {}) {
   const P = (n) => bind[bi.get(n)].clone();
   const { shapes, eyes, face, paint, cranium } = bodyShapes(P, style);
   applyStyle(shapes, style);
+  const key = CODE + ':' + detail + ':' + hash(JSON.stringify(shapes) + bones.length);
+  { const hit = CODE && mem.get(key); if (hit) { const g = geometryOf(hit); g.userData.sculpt = { ms: Math.round(performance.now() - t0), verts: hit.pos.length / 3, tris: hit.idx.length / 3, cached: true }; return { geometry: g, eyes, face, paint, cranium }; } }
   for (const p of shapes) {
     let lo, hi;
     if (p.t === SPH) { lo = [p.ax - p.r1, p.ay - p.r1, p.az - p.r1]; hi = [p.ax + p.r1, p.ay + p.r1, p.az + p.r1]; }
@@ -298,11 +331,9 @@ export function sculptBody(skeleton, detail = 1, style = {}) {
   }
   // the odd triangle still folded on itself: turn it to face out, so it can't show as a hole
   for (let i = 0; i < idx.length; i += 3) if (facing(idx[i], idx[i + 1], idx[i + 2]) < 0) { const t = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = t; }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
-  g.setAttribute('skinIndex', new THREE.BufferAttribute(si, 4)); g.setAttribute('skinWeight', new THREE.BufferAttribute(sw, 4));
-  g.setIndex(n > 65535 ? new THREE.BufferAttribute(new Uint32Array(idx), 1) : new THREE.BufferAttribute(new Uint16Array(idx), 1));
-  g.computeBoundingBox(); g.computeBoundingSphere();
+  const made = { pos, nor, si, sw, idx: n > 65535 ? new Uint32Array(idx) : new Uint16Array(idx) };
+  const g = geometryOf(made);
+  if (CODE) keep(key, made);
   g.userData.sculpt = { ms: Math.round(performance.now() - t0), verts: n, tris: idx.length / 3 };
   return { geometry: g, eyes, face, paint, cranium };
 }

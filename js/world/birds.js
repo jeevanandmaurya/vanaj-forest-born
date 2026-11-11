@@ -69,6 +69,8 @@ export class Birds {
     const f = { kind, K, birds, state: 'ground', t: 0, home: center.clone(), dest: null };
     this.flocks.push(f); return f;
   }
+  // every flock on the ground within r of a point goes up (a hunter is moving there)
+  scare(at, r) { for (const f of this.flocks) if (f.home && !f.air && f.kind !== 'vulture' && (f.home.x - at.x) ** 2 + (f.home.z - at.z) ** 2 < r * r) this.flush(f, at); }
   flush(f, from) {
     if (f.state !== 'ground') return;
     f.state = 'fly'; f.t = 0;

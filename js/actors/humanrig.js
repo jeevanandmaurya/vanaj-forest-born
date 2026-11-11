@@ -380,7 +380,9 @@ function hairMat(color) {
 // The clips animate every bone's position and scale, so the skeleton itself is left as it is.
 const BUILDS = {
   // Vanaj at fifteen: lean and wiry from running and climbing every day, not filled out yet; head a touch large
-  teen: { head: 1.07, neck: 0.84, chest: [0.86, 0.83], waist: [0.85, 0.85], hips: [0.87, 0.88], clav: 0.86, upper_arm: 0.83, forearm: 0.86, hand: 0.94, thigh: 0.85, shin: 0.87, foot: 0.94, girth: 0.87 },
+  // (drawn, not measured: the head a good deal larger and the limbs sturdier than a real boy's, so he reads as a character at the size he
+  // is on a phone, where the true proportions made a stick figure)
+  teen: { head: 1.2, neck: 0.92, chest: [0.95, 0.92], waist: [0.9, 0.9], hips: [0.94, 0.94], clav: 0.9, upper_arm: 1.0, forearm: 1.04, hand: 1.06, thigh: 1.0, shin: 1.04, foot: 1.06, girth: 0.95 },
   // a village boy of eleven or twelve
   child: { head: 1.13, neck: 0.84, chest: [0.86, 0.84], waist: [0.86, 0.88], hips: [0.86, 0.88], clav: 0.86, upper_arm: 0.8, forearm: 0.83, hand: 0.9, thigh: 0.82, shin: 0.84, foot: 0.9, girth: 0.86 },
 };
@@ -769,7 +771,11 @@ function legPass(h, R, dt, a, stride, spd) {
     if (inStance && !L.lock) { L.lock = true; L.wx = g.x; L.wz = g.z; }
     if (!inStance) L.lock = false;
     if (L.lock) { const lw = sstep(0, 0.045, fp) * (1 - sstep(duty - 0.07, duty, fp)); g.x += (L.wx - g.x) * lw; g.z += (L.wz - g.z) * lw; }
-    ik2(th, sh, ft, g);
+    // The knee bends forward. (Left to bend the way the clip had it, the run threw both knees out to the sides: the solver kept
+    // whatever sideways lean the clip's thigh had and built on it. Most of that sideways part is taken out here.)
+    { const kn = _ik.n; th.getWorldPosition(_ik.H); sh.getWorldPosition(_ik.K); kn.subVectors(_ik.K, _ik.H);
+      _ik.x.setFromMatrixColumn(root.matrixWorld, 0).normalize(); kn.addScaledVector(_ik.x, -0.85 * kn.dot(_ik.x));
+      ik2(th, sh, ft, g, kn); }
     // the sole follows the ground while the foot is down, and the clip's foot swing while it is up
     const plant = (1 - sstep(0.03, 0.16, lift)) * w;
     const e = 0.14, gx = a.ground ? a.ground(tx + e, tz) - a.ground(tx - e, tz) : 0, gz = a.ground ? a.ground(tx, tz + e) - a.ground(tx, tz - e) : 0;

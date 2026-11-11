@@ -38,7 +38,7 @@ const hz = (semi, oct = 0) => SA * Math.pow(2, semi / 12 + oct);
 export class Music {
   constructor(audio) {
     this.a = audio; this.ctx = audio.ctx; this.out = audio.music;
-    this.mode = 'silence'; this.session = null; this.nextSession = 25; this.combat = 0; this.combatOn = false;
+    this.mode = 'silence'; this.session = null; this.nextSession = 90; this.combat = 0; this.combatOn = false;
     this.buffers = {}; this.raga = 'bilawal'; this.alapLevel = 0;
     this.tanG = this.ctx.createGain(); this.tanG.gain.value = 0; this.tanG.connect(this.out);
     const tsend = this.ctx.createGain(); tsend.gain.value = 0.5; this.tanG.connect(tsend); tsend.connect(audio.verbSend);
@@ -317,7 +317,7 @@ export class Music {
     if (!this.titleBus) return;
     this.titleBus.stop(fade); this.titleBus = null;
     this.tanG.gain.setTargetAtTime(0, this.ctx.currentTime, fade * 0.4);
-    this.nextSession = 25;
+    this.nextSession = 90;   // (the forest has the first minute and a half to itself)
   }
   setCombat(level) { this.combat = level; }
   update(dt, hour, season, opts = {}) {
@@ -325,7 +325,7 @@ export class Music {
     const raga = ragaForTime(hour, season);
     // combat percussion
     const wantCombat = this.combat > 0.05;
-    if (wantCombat && !this.combatOn) { this.combatOn = true; this.beat = 0; this.beatT = t + 0.05; this.drG.gain.setTargetAtTime(0.55, t, 0.3); this.tanG.gain.setTargetAtTime(0.35, t, 0.5); }
+    if (wantCombat && !this.combatOn) { this.combatOn = true; this.beat = 0; this.beatT = t + 0.05; this.drG.gain.setTargetAtTime(0.38, t, 0.3); this.tanG.gain.setTargetAtTime(0.22, t, 0.5); }
     if (!wantCombat && this.combatOn) {
       this.combatOn = false;
       // tihai: a phrase played three times landing on sam
@@ -354,32 +354,37 @@ export class Music {
       this.raga = raga; this.tanpuraAhead(t, 1.25);
       return;
     }
-    // exploration sessions: long silences, then an alap over tanpura
+    // Exploration: mostly the forest's own sound. Every five to nine minutes a short alap over the tanpura, and it keeps to the hours
+    // that suit it: it comes sooner at first light, at dusk and when the rain has just stopped, and never in the hush of noon, in
+    // rain, or while the forest is alarmed (js/sim/forest.js). A hunter turning up ends one that has begun.
+    const fs = opts.forest || 'morning', fits = fs === 'dawn' || fs === 'evening' || fs === 'afterRain' || fs === 'morning' || fs === 'night';
+    if (fs !== this.lastForest) { if ((fs === 'dawn' || fs === 'evening' || fs === 'afterRain') && !this.session) this.nextSession = Math.min(this.nextSession, 12 + Math.random() * 20); this.lastForest = fs; }
     if (!this.session) {
       if (opts.suppress) return;
       this.nextSession -= dt;
-      if (this.nextSession <= 0 && t > this.flBusyUntil) {
+      if (this.nextSession <= 0 && t > this.flBusyUntil && fits) {
         this.raga = raga;
-        this.session = { start: t, end: t + 70 + Math.random() * 50, nextPhrase: t + 7, level: 0, inst: (hour > 21 || hour < 4) && Math.random() < 0.35 ? 'bana' : 'flute' };
-        this.tanG.gain.cancelScheduledValues(t); this.tanG.gain.setTargetAtTime(0.42, t, 2.5);
+        this.session = { start: t, end: t + 45 + Math.random() * 30, nextPhrase: t + 8, level: 0, inst: (hour > 21 || hour < 4) && Math.random() < 0.35 ? 'bana' : 'flute' };
+        this.tanG.gain.cancelScheduledValues(t); this.tanG.gain.setTargetAtTime(0.24, t, 3.5);
         this.lastSemi = 0;
       }
       return;
     }
     const S = this.session;
     this.tanpuraAhead(t, 1.2, 0.15);
+    if (fs === 'alarm' || fs === 'hush') S.end = Math.min(S.end, t);   // (the music gives way at once)
     if (t > S.end) {
       if (t > S.nextPhrase) { // closing: descend to Sa
         this.tanG.gain.setTargetAtTime(0, t + 2, 3);
-        this.session = null; this.nextSession = 120 + Math.random() * 160; return;
+        this.session = null; this.nextSession = 300 + Math.random() * 240; return;
       }
       return;
     }
-    if (t >= S.nextPhrase && !opts.suppress) {
+    if (t >= S.nextPhrase && !opts.suppress && !opts.talking) {   // (never over someone speaking)
       S.level = Math.min(1, (t - S.start) / (S.end - S.start) * 1.3);
       const notes = this.makeAlap(this.raga, S.level);
-      const end = S.inst === 'bana' ? this.banaPhrase(notes, t + 0.05, { oct: 0, gain: 0.07 }) : this.flutePhrase(notes, t + 0.05, { gain: 0.15 });
-      S.nextPhrase = end + 1.5 + Math.random() * 3.5;
+      const end = S.inst === 'bana' ? this.banaPhrase(notes, t + 0.05, { oct: 0, gain: 0.048 }) : this.flutePhrase(notes, t + 0.05, { gain: 0.1 });
+      S.nextPhrase = end + 4 + Math.random() * 5;
     }
   }
 }

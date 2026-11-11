@@ -272,6 +272,18 @@ export class Canopy {
     this.scan(false);
     const cam = g.camera; cam.getWorldDirection(_d); const fwd = _d.setY(0).normalize().clone(), right = new THREE.Vector3(-fwd.z, 0, fwd.x);
     const iz = (k.KeyW ? 1 : 0) - (k.KeyS ? 1 : 0), ix = (k.KeyD ? 1 : 0) - (k.KeyA ? 1 : 0);
+    // Hanging, the stick means a direction in the world, fixed when the thumb goes down, until it lifts. It used to be read against the
+    // camera every frame, and the camera follows the way he faces, which follows the swing: so pushing a little to one side turned the
+    // swing, which turned the camera, which turned what "to one side" meant, and he went round and round. Caught at speed with the
+    // stick already forward, forward is the way he was flying: the swing carries the jump on.
+    if (this.mode === 'hang' || this.mode === 'rope') {
+      if ((iz !== 0 || ix !== 0) && !this.pushF) {
+        const sp = Math.hypot(this.vel.x, this.vel.z);
+        this.pushF = sp > 2 && iz > 0 ? new THREE.Vector3(this.vel.x / sp, 0, this.vel.z / sp) : fwd.clone();
+        this.pushR = new THREE.Vector3(-this.pushF.z, 0, this.pushF.x);
+      } else if (iz === 0 && ix === 0) this.pushF = null;
+      if (this.pushF) { fwd.copy(this.pushF); right.copy(this.pushR); }
+    } else this.pushF = null;
     const pose = this.pose; pose.mode = this.mode; pose.vel.copy(this.vel); this.prompt = null;
     this.heldT = this.mode === 'hang' ? this.heldT + dt : 0;
     // the stick, as his legs take it: where he is throwing his weight on a rope or a root (Shift is the hands climbing, and the legs follow those)

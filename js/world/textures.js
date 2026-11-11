@@ -691,21 +691,23 @@ function scanBark(kind) {
   return { map: set(L.load(`lib/textures/bark/${kind}_color_1k.jpg`), true), normal: set(L.load(`lib/textures/bark/${kind}_normal_1k.jpg`), false) };
 }
 
+// Every texture is made the first time something asks for it, not all of them up front. The painted look never touches
+// most of these (the photographed barks, the ground atlas and soils of the old realistic look), so they are never made
+// or downloaded at all, and loading no longer spends seconds on them.
+const lazy = (o, k, make) => Object.defineProperty(o, k, { enumerable: true, configurable: true, get() { const v = make(); Object.defineProperty(o, k, { value: v, enumerable: true, writable: true, configurable: true }); return v; } });
 export function buildTextures() {
   const T = {};
-  T.groundAtlas = makeGroundAtlas();
-  T.scan = { oak: scanBark('oak'), pine: scanBark('pine'), willow: scanBark('willow'), birch: scanBark('birch') };
-  T.litter = makeLitter(); T.litterMoist = makeLitterMoist(); T.redSoil = makeRedSoil(); T.blackSoil = makeBlackSoil(); T.soil = makeSoil(); T.grassGround = makeGrassGround(); T.rock = makeRock(); T.sand = makeSand();
+  lazy(T, 'groundAtlas', makeGroundAtlas);
+  T.scan = {}; for (const k of ['oak', 'pine', 'willow', 'birch']) lazy(T.scan, k, () => scanBark(k));
+  for (const [k, f] of [['litter', makeLitter], ['litterMoist', makeLitterMoist], ['redSoil', makeRedSoil], ['blackSoil', makeBlackSoil], ['soil', makeSoil], ['grassGround', makeGrassGround], ['rock', makeRock], ['sand', makeSand],
+    ['cave', makeCavePaintings], ['wall', makeWall], ['roof', makeRoof], ['thatch', makeThatch], ['stump', makeStumpTop], ['blood', makeBlood], ['soft', makeSoft], ['ragCloth', makeRagCloth]]) lazy(T, k, f);
   T.bark = {};
-  for (const k of ['teak', 'kulu', 'saja', 'mahua', 'bamboo', 'banyan', 'arjun', 'palash', 'generic']) T.bark[k] = makeBark(k);
-  T.bark.rock = T.rock;
+  for (const k of ['teak', 'kulu', 'saja', 'mahua', 'bamboo', 'banyan', 'arjun', 'palash', 'generic']) lazy(T.bark, k, () => makeBark(k));
+  lazy(T.bark, 'rock', () => T.rock);
   T.leaf = {};
-  for (const k of ['teak', 'mahua', 'kulu', 'palash', 'bamboo', 'banyan', 'lantana', 'small']) T.leaf[k] = leafCard(k);
-  T.leaf.palashFlower = leafCard('palash', true);
-  T.leaf.mahuaFlower = leafCard('mahua', true);
-  T.cave = makeCavePaintings(); T.wall = makeWall(); T.roof = makeRoof(); T.thatch = makeThatch();
-  T.stump = makeStumpTop(); T.blood = makeBlood(); T.soft = makeSoft();
-  T.ragCloth = makeRagCloth();
-  T.clothRed = makeCloth('#9c2a1e'); T.clothKhaki = makeCloth('#8a7a52'); T.clothWhite = makeCloth('#d8d0bc'); T.clothBark = makeCloth('#6a5034');
+  for (const k of ['teak', 'mahua', 'kulu', 'palash', 'bamboo', 'banyan', 'lantana', 'small']) lazy(T.leaf, k, () => leafCard(k));
+  lazy(T.leaf, 'palashFlower', () => leafCard('palash', true));
+  lazy(T.leaf, 'mahuaFlower', () => leafCard('mahua', true));
+  for (const [k, c] of [['clothRed', '#9c2a1e'], ['clothKhaki', '#8a7a52'], ['clothWhite', '#d8d0bc'], ['clothBark', '#6a5034']]) lazy(T, k, () => makeCloth(c));
   return T;
 }

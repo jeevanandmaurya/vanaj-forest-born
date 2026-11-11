@@ -23,7 +23,7 @@ export class GroundAO {
     ctx.globalCompositeOperation = 'lighter';
     const disc = (x, z, r, col, inner = 0) => {
       const cx = (x - rect.x0) * k, cy = (z - rect.z0) * k, rr = Math.max(1.2, r * k);
-      if (cx < -rr || cy < -rr || cx > P + rr || cy > P + rr) return;
+      if (!Number.isFinite(cx + cy + rr) || cx < -rr || cy < -rr || cx > P + rr || cy > P + rr) return;   // (a tree not yet placed has no numbers: it shades nothing)
       const g = ctx.createRadialGradient(cx, cy, rr * inner, cx, cy, rr);
       g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, rr, 0, 6.2832); ctx.fill();

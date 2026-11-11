@@ -204,6 +204,9 @@ export class SkySystem {
     // direct light: the sun while it is up, then the moon
     this.sun.color.copy(p.sun);
     this.sun.intensity = el >= -0.05 ? p.sunI * smoothstep(-0.05, 0.08, el) * dim : p.sunI * smoothstep(0.0, 0.25, md.y) * (1 - cov * 0.8);
+    // a low sun throws every twig's shadow thirty metres across the floor, as hard stripes: early and late the shadows are painted
+    // lighter, the way long shadows are, and they come to full strength as the sun climbs
+    this.sun.shadow.intensity = el >= -0.05 ? 0.42 + 0.58 * smoothstep(0.16, 0.6, el) : 0.7;
     G.uSunCol.value.copy(p.sun).multiplyScalar(this.day * dim);
     // shade is the sky's own colour with warm bounce from below, at about half the brightness of full sun so
     // shadows read as a cool mid-tone; half-desaturated, since a saturated blue light turns warm ground maroon

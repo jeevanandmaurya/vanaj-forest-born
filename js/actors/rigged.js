@@ -136,12 +136,13 @@ export function makeRigged(sp, male) {
 }
 
 const ONCE = new Set(['Death', 'Attack_Headbutt', 'Attack_Kick', 'Attack', 'Idle_HitReact1', 'Idle_HitReact2', 'Jump_toIdle', 'Jump_ToIdle', 'Gallop_Jump']);
-export function playClip(rig, name, fade = 0.25, timeScale = 1) {
+export function playClip(rig, name, fade = 0.25, timeScale = 1, atEnd = false) {
   const a = rig.actions[name] || rig.actions.Idle; if (!a) return;
   a.timeScale = timeScale;
   if (rig.curName === name) return;
   if (ONCE.has(name)) { a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; } else a.setLoop(THREE.LoopRepeat, Infinity);
   a.reset().setEffectiveWeight(1).play();
+  if (atEnd) a.time = a.getClip().duration;   // straight to its last pose (lying down to rest, not falling)
   if (rig.cur) rig.cur.crossFadeTo(a, fade, false);
   rig.cur = a; rig.curName = name;
 }

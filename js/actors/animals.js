@@ -1,6 +1,8 @@
 // Wildlife of Pench: procedural rigs + coat shaders, gaits, and behaviour AI for tiger, leopard, dhole,
 // Indian wolf, sloth bear, gaur, sambar, chital, wild boar, grey langur, peafowl, mugger, village cattle & dogs.
 // Herds, packs and troops; perception (sight/hearing/stealth); alarm-call network; bonding; companions; carcasses.
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import { Mind } from '../sim/mind.js';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { patch, NOISE_GLSL } from '../core/shaderlib.js';
@@ -194,19 +196,58 @@ export const DEF = {
 };
 
 // ------------------------------------------------------------------------------------------------ rig builders
+// One animal, one mesh. The builders below make an animal as a kit of some twenty-five pieces hung on joints, and
+// each piece was a draw call: once for itself, once for its ink outline and once into the shadow map, so a boar was
+// seventy-odd calls, and forty animals were most of a frame's. Here the kit is welded into a single skinned mesh: the
+// joints become bones, every vertex is stamped with the one bone its piece hung from, and the graphics card moves the
+// lot in one call. Each vertex follows its bone completely, so the shape and the motion are exactly what they were.
+// The coat is one mesh; eyes, horn and claw are a second, coloured by vertex. (A named piece, an ear, gets a bone of
+// its own, so it can still be turned or shrunk by itself.)
+let bitsMat = null;
 function finalizeTemplate(root, L) {
-  mergeByMaterial(root);
   root.updateMatrixWorld(true);
-  const inv = new THREE.Matrix4().copy(root.matrixWorld).invert();
-  const m = new THREE.Matrix4(), v = new THREE.Vector3();
-  root.traverse((o) => {
-    if (!o.isMesh) return;
-    m.multiplyMatrices(inv, o.matrixWorld);
-    const p = o.geometry.attributes.position, a = new Float32Array(p.count * 3);
-    for (let i = 0; i < p.count; i++) { v.fromBufferAttribute(p, i).applyMatrix4(m).multiplyScalar(1 / L); a[i * 3] = v.x; a[i * 3 + 1] = v.y; a[i * 3 + 2] = v.z; }
-    o.geometry.setAttribute('aRest', new THREE.BufferAttribute(a, 3));
-    o.castShadow = true; o.receiveShadow = true;
-  });
+  const bones = [], coat = { pos: [], nor: [], bi: [], col: [], mat: null }, bits = { pos: [], nor: [], bi: [], col: [] };
+  const v = new THREE.Vector3(), nm = new THREE.Matrix3();
+  const take = (mesh, bone) => {
+    const isCoat = mesh.material !== eyeMat && mesh.material !== hornMat && mesh.material !== clawMat, out = isCoat ? coat : bits;
+    if (isCoat) coat.mat = mesh.material;
+    const g = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry, P = g.attributes.position, N = g.attributes.normal, c = mesh.material.color;
+    nm.getNormalMatrix(mesh.matrixWorld);
+    for (let i = 0; i < P.count; i++) {
+      v.fromBufferAttribute(P, i).applyMatrix4(mesh.matrixWorld); out.pos.push(v.x, v.y, v.z);
+      v.fromBufferAttribute(N, i).applyMatrix3(nm).normalize(); out.nor.push(v.x, v.y, v.z);
+      out.bi.push(bone); out.col.push(c.r, c.g, c.b);
+    }
+  };
+  // the joints, as bones in the same tree; the pieces on each, into the weld
+  const walk = (src, dst, bone) => {
+    for (const c of src.children) {
+      if (c.isMesh && !c.name) { take(c, bone); continue; }
+      const b = new THREE.Bone(); b.name = c.name; b.position.copy(c.position); b.quaternion.copy(c.quaternion); b.scale.copy(c.scale);
+      dst.add(b); bones.push(b);
+      if (c.isMesh) take(c, bones.length - 1);
+      walk(c, b, bones.length - 1);
+    }
+  };
+  const rig = new THREE.Group(); walk(root, rig, 0);
+  root.clear(); for (const c of [...rig.children]) root.add(c);
+  root.updateMatrixWorld(true);
+  const skeleton = new THREE.Skeleton(bones);
+  const weld = (o, mat) => {
+    if (!o.pos.length) return;
+    const n = o.pos.length / 3, g = new THREE.BufferGeometry(), si = new Uint16Array(n * 4), sw = new Float32Array(n * 4), rest = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { si[i * 4] = o.bi[i]; sw[i * 4] = 1; rest[i * 3] = o.pos[i * 3] / L; rest[i * 3 + 1] = o.pos[i * 3 + 1] / L; rest[i * 3 + 2] = o.pos[i * 3 + 2] / L; }
+    g.setAttribute('position', new THREE.Float32BufferAttribute(o.pos, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(o.nor, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
+    g.setAttribute('skinIndex', new THREE.BufferAttribute(si, 4)); g.setAttribute('skinWeight', new THREE.BufferAttribute(sw, 4));
+    g.setAttribute('aRest', new THREE.BufferAttribute(rest, 3));
+    if (mat.vertexColors) g.setAttribute('color', new THREE.Float32BufferAttribute(o.col, 3));
+    const m = new THREE.SkinnedMesh(g, mat); m.castShadow = true; m.receiveShadow = true; m.frustumCulled = false;
+    root.add(m); m.bind(skeleton);
+  };
+  weld(coat, coat.mat);
+  if (!bitsMat) bitsMat = PAINTED ? toon({ vertexColors: true, rim: 0.3, key: 'bits' }) : new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.4 });
+  weld(bits, bitsMat);
 }
 
 function buildQuad(d) {
@@ -371,7 +412,7 @@ export class Animal {
       this.root = this.rig.root; this.J = this.rig.J; this.meshes = this.rig.meshes;
       if (!this.male) this.rig.inst.traverse((o) => { if (o.isMesh && /Horn/i.test(o.name)) o.visible = false; });
     } else {
-      this.root = getTemplate(species).clone(true);
+      this.root = SkeletonUtils.clone(getTemplate(species));
       this.J = {}; this.root.traverse((o) => { if (o.name) this.J[o.name] = o; });
       this.meshes = []; this.root.traverse((o) => { if (o.isMesh) this.meshes.push(o); });
     }
@@ -393,7 +434,7 @@ export class Animal {
     this.air = 0; this.vy = 0;
     this.scale = opts.scale || (0.9 + Math.random() * 0.2) * (this.male ? 1.05 : 0.95);
     this.root.scale.setScalar(this.scale);
-    if (this.d.antlers && !this.male) { const a = this.J.antL, b = this.J.antR; if (a) a.visible = false; if (b) b.visible = false; }
+    if (this.d.antlers && !this.male) { const a = this.J.antL, b = this.J.antR; if (a) a.scale.setScalar(1e-4); if (b) b.scale.setScalar(1e-4); }
     this.perch = null; this.hop = null;
     this.carcassHits = 0; this.lastHitBy = null;
     this.spoke = 0; this.lookAt = null;
@@ -401,6 +442,7 @@ export class Animal {
     this.shadowOn = true; this.shown = true; this.inkOn = true; this.lodAcc = Math.random() * 0.25; this.animAcc = 0; this.animStep = 0;
     this.root.rotation.y = this.yaw;
     this.radius = this.d.radius * this.scale;
+    this.mind = new Mind(this);
   }
   // the outline shells, and the meshes of the body proper
   // the small parts of a model made of many (a boar is 25, plus their outlines): beyond a little way off they are a few pixels, and a draw call each
@@ -419,25 +461,23 @@ export class Animal {
   bodyPos(out) { (this.J.body || this.root).getWorldPosition(out); return out; }
 
   // --------------------------------------------------------------------------- damage & death
+  // A blow costs an animal its nerve, not its life: at nothing left it turns and runs, and is not seen again that day.
+  // (All ages: nothing bleeds, nothing is killed by the player, and nothing lies dead in the grass.)
   takeDamage(dmg, hitPos, dir, W, opts = {}) {
     if (this.rig) this.hitT = 0.45;
-    if (this.dead) { // mutilating a carcass
-      W.fx.blood(hitPos, dir, 0.6); this.carcassHits++; return 0;
-    }
-    let zone = 'body', mul = 1;
+    if (this.dead || this.routed) return 0;
+    let mul = 1;
     const hp = this.headPos(tmp1);
-    if (hitPos && hitPos.distanceTo(hp) < 0.45 * this.scale * (this.d.L / 1.5)) { zone = 'head'; mul = 2.0; }
-    else if (hitPos && hitPos.y < this.pos.y + this.d.H * 0.4 * this.scale) { zone = 'legs'; mul = 0.75; this.limp = Math.min(1, (this.limp || 0) + 0.35); }
-    if (opts.sneak) mul *= 2.5;
+    if (hitPos && hitPos.distanceTo(hp) < 0.45 * this.scale * (this.d.L / 1.5)) mul = 1.6;
+    else if (hitPos && hitPos.y < this.pos.y + this.d.H * 0.4 * this.scale) mul = 0.8;
     const d = dmg * mul;
     this.hp -= d;
-    this.bleed = Math.min(6, this.bleed + d * 0.04 * (opts.bleed || 1));
     this.stagger = Math.min(0.6, 0.15 + d / this.maxHp * 2);
     W.fx.blood(hitPos || this.bodyPos(tmp2), dir, Math.min(2, 0.5 + d / 25), d > 30);
-    if (Math.random() < 0.5) W.fx.decal(this.pos.x + (Math.random() - 0.5), this.pos.z + (Math.random() - 0.5), 0.3 + Math.random() * 0.4);
     this.lastHitBy = opts.by || 'player';
     W.audio.animal(this.d.voice, 'pain', this.pos, { big: d > 25 });
-    if (this.hp <= 0) { this.die(W, opts); return d; }
+    if (W.onHit) W.onHit(this, this.lastHitBy, d);
+    if (this.hp <= 0) { this.hp = 1; this.beaten(W, opts); return d; }
     this.react(W, opts.by === 'companion' ? 'companion' : 'player');
     return d;
   }
@@ -451,31 +491,26 @@ export class Animal {
     this.aggro = 1;
     if (this.state !== 'attack' && this.state !== 'pounce') this.setState('charge', 0);
   }
+  // Nerve gone. A scene of the story can take this over (onBeaten returns true); a companion sits out a while and
+  // gets its breath back; anything else runs for it and leaves.
+  beaten(W, opts = {}) {
+    if (this.onBeaten && this.onBeaten(this, opts)) return;
+    if (this.companion) { this.winded = 9; this.target = null; this.command = null; W.audio.animal(this.d.voice, 'whine', this.pos); return; }
+    const by = opts.by || this.lastHitBy, src = by === 'player' || by === 'companion' ? W.player.pos : this.pos;
+    this.routed = true; this.aggro = 0; this.target = null; this.command = null; this.crouch = 0;
+    this.threat = src.clone(); this.limp = Math.max(this.limp || 0, 0.15);
+    this.anim.graze = 0; this.anim.lie = 0; this.anim.sit = 0; this.anim.rear = 0;
+    this.setState('routed', 40);
+    if (W.onRout) W.onRout(this, by);
+  }
+  // Only the story lets anything die, and quietly: it lies down and does not get up.
   die(W, opts = {}) {
     this.dead = true; this.hp = 0; this.state = 'dead'; this.deadT = 0;
     this.rollDir = Math.random() < 0.5 ? 1 : -1;
-    W.audio.animal(this.d.voice, 'death', this.pos);
-    W.fx.decal(this.pos.x, this.pos.z, 1.2 + this.d.L * 0.4);
+    if (!opts.quiet) W.audio.animal(this.d.voice, 'whine', this.pos);
     if (W.onKill) W.onKill(this, opts.by || this.lastHitBy);
-    if (W.onDeath && this.d.L > 0.9) W.onDeath(this);
   }
-  harvest(W) {
-    if (!this.dead || this.harvested) return null;
-    this.harvested = true;
-    const flay = coatMaterial('flayed');
-    for (const m of this.meshes) { if (m.material !== eyeMat && m.material !== hornMat && m.material !== clawMat) m.material = flay; }
-    W.fx.blood(this.bodyPos(tmp1), new THREE.Vector3(0, 1, 0), 2, true);
-    W.fx.decal(this.pos.x, this.pos.z, 1.6 + this.d.L * 0.5);
-    const m = this.d.mass;
-    const loot = { meat_raw: Math.max(1, Math.round(m / 25)) };
-    if (m > 12) loot.hide = 1;
-    loot.bone = Math.max(1, Math.round(m / 60));
-    if (m > 12) loot.sinew = 1;
-    if (this.sp === 'peafowl') { loot.feather = 4; loot.meat_raw = 1; delete loot.hide; delete loot.sinew; }
-    if (this.sp === 'tiger' || this.sp === 'leopard') loot.claw = 2;
-    if (this.sp === 'boar') loot.tusk = 1;
-    return loot;
-  }
+  harvest() { return null; }
   // --------------------------------------------------------------------------- perception
   perceivePlayer(W, dt) {
     const P = W.player;
@@ -552,7 +587,9 @@ export class Animal {
       // near the player, animals move through the physics world (sliding round trunks, rocks and walls, and solid
       // to the player); further off, the cheap circle tests
       let blocked;
-      if (W.phys && this.dist2(W.player.pos) < W.actorR2 && !this.air) blocked = W.phys.moveActor(this, x0, z0);
+      // (one standing still asks the physics nothing: on a phone each such question was a third of a millisecond, for no movement)
+      if (this.speed < 0.02 && !this.stagger) { blocked = false; if (W.phys) W.phys.touch(this); }
+      else if (W.phys && this.dist2(W.player.pos) < W.actorR2 && !this.air) blocked = W.phys.moveActor(this, x0, z0);
       else blocked = (W.veg ? W.veg.collide(this.pos, this.radius * 0.6) : false) | (W.props && W.props.collide ? W.props.collide(this.pos, this.radius * 0.7) : false);
       // slide round the obstacle instead of grinding into it
       if (blocked && this.speed > 0.3 && !(this.detourT > 0)) this.sidestep(W, true);
@@ -586,25 +623,19 @@ export class Animal {
       // shot out of a tree, it comes down
       if (this.tm || this.perch || this.hop) { this.tm = null; this.perch = null; this.hop = null; this.runTo = null; this.fallV = 0; this.anim.climb = 0; this.anim.sit = 0; this.anim.pounce = 0; }
       if (this.fallV !== undefined && this.fallV !== null) { this.fallV += 18 * dt; this.pos.y -= this.fallV * dt; const gy = groundHeight(this.pos.x, this.pos.z); if (this.pos.y <= gy) { this.pos.y = gy; this.fallV = null; W.audio.impact('wood', this.pos, 0.3); } }
-      this.deadT += dt; this.bleedOut(dt, W); this.pose(dt, W); return;
+      this.deadT += dt; this.pose(dt, W); return;
     }
     this.alarmCD -= dt; this.attackCD -= dt; this.timer -= dt; this.stateT += dt;
-    // bleeding
-    if (this.bleed > 0) {
-      this.hp -= this.bleed * dt * 1.2; this.bleed = Math.max(0, this.bleed - dt * 0.12);
-      this.bleedDrop += this.speed * dt + dt * 0.3;
-      if (this.bleedDrop > 1.6) { this.bleedDrop = 0; W.fx.decal(this.pos.x + (Math.random() - 0.5) * 0.4, this.pos.z + (Math.random() - 0.5) * 0.4, 0.12 + this.bleed * 0.05); }
-      if (this.hp <= 0) { this.die(W, { by: this.lastHitBy }); return; }
-    }
     if (this.scripted) { this.scripted(dt, W, this); }
     else this.think(dt, W);
     this.integrate(dt, W);
     this.pose(dt, W);
   }
-  bleedOut(dt, W) { if (this.deadT < 6 && Math.random() < dt * 0.8) W.fx.decal(this.pos.x + (Math.random() - 0.5) * this.d.L * 0.5, this.pos.z + (Math.random() - 0.5) * this.d.L * 0.5, 0.5 + this.deadT * 0.15); }
 
   think(dt, W) {
     const k = this.d.kind;
+    if (this.routed) return this.thinkRouted(dt, W);
+    if (this.mind && this.mind.think(dt, W)) return;
     if (this.companion) return this.thinkCompanion(dt, W);
     if (k === 'arboreal') return this.thinkLangur(dt, W);
     if (k === 'ambush') return this.thinkCroc(dt, W);
@@ -619,7 +650,7 @@ export class Animal {
         if (this.group) this.group.alert(this, pr.pos, W);
       }
       const bonded = this.bond > 0.6;
-      if (!bonded && this.awareness > 1 && this.state !== 'flee' && this.state !== 'alert' && pd < 45 && k !== 'village') {
+      if (!bonded && this.awareness > 1 && this.state !== 'flee' && this.state !== 'alert' && pd < (this.mind ? this.mind.flightDist(W) : 45) && k !== 'village') {
         this.threat = W.player.pos.clone();
         if (pd < 18 || W.player.sprinting || W.player.armedThreat) { this.alarm(W, 'human'); this.setState('alert', 0.4 + Math.random() * 0.5); }
         else { this.setState('alert', 1.5 + Math.random()); }
@@ -715,6 +746,16 @@ export class Animal {
       default: this.setState('idle', 2);
     }
   }
+  // beaten: away from whatever beat it, as fast as it can go, weaving round the water
+  thinkRouted(dt, W) {
+    const th = this.threat || W.player.pos;
+    let ax = this.pos.x - th.x, az = this.pos.z - th.z; const l = Math.hypot(ax, az) || 1; ax /= l; az /= l;
+    let gx = this.pos.x + ax * 22, gz = this.pos.z + az * 22;
+    if (this.wet(gx, gz)) for (const off of [0.9, -0.9, 1.7, -1.7]) { const c = Math.cos(off), sn = Math.sin(off), x = this.pos.x + (ax * c - az * sn) * 22, z = this.pos.z + (az * c + ax * sn) * 22; if (!this.wet(x, z)) { gx = x; gz = z; break; } }
+    if (this.tm || this.perch) { this.tm = null; this.perch = null; this.hop = null; }
+    this.steer(gx, gz, this.d.run * 0.95, dt, W);
+    this.anim.alertTail = 1;
+  }
   faceTowards(p, rate) { const want = Math.atan2(p.x - this.pos.x, p.z - this.pos.z); let diff = want - this.yaw; while (diff > Math.PI) diff -= 2 * Math.PI; while (diff < -Math.PI) diff += 2 * Math.PI; this.yaw += clamp(diff, -rate, rate); }
   // What this species is doing at this hour: 'active' (graze / forage / patrol), 'rest', 'drink' or 'roost'
   schedule(W) {
@@ -807,7 +848,7 @@ export class Animal {
     if (this.sp === 'gaur') { this.setState('warn', 2.0); return; }
     this.setState('idle', 2);
   }
-  targetPos() { if (this.target === 'player') return this._W.player.pos; if (this.target && this.target.pos && !this.target.dead) return this.target.pos; return null; }
+  targetPos() { if (this.target === 'player') return this._W.player.pos; if (this.target && this.target.pos && !this.target.dead && !this.target.routed) return this.target.pos; return null; }
   doStalk(dt, W) {
     this._W = W;
     const tp = this.targetPos(); if (!tp) return this.setState('idle', 2);
@@ -880,17 +921,18 @@ export class Animal {
     else if (this.target && this.target.takeDamage) {
       const hp = this.target.bodyPos(tmp2);
       this.target.takeDamage(dmg * (this.target.companion ? 0.5 : 1.2), hp, tmp1.subVectors(hp, this.pos).normalize(), W, { by: this.sp });
-      if (this.target.dead) { this.setState('feed', 40 + Math.random() * 60); this.hunger = 0; this.feedTarget = this.target; }
+      if (this.target.dead || this.target.routed) { this.target = null; this.hunger = 0; this.setState('rest', 40 + Math.random() * 60); }
     }
   }
   // --------------------------------------------------------------------------- companion (Kaali / Chingari)
   thinkCompanion(dt, W) {
     this._W = W;
     const P = W.player;
+    if (this.winded > 0) { this.winded -= dt; this.targetSpeed = 0; this.anim.lie = lerp(this.anim.lie, 1, dt * 3); this.hp = Math.min(this.maxHp, this.hp + this.maxHp * dt / 9); if (this.winded <= 0) this.anim.lie = 0; return; }
     const threat = W.threatToPlayer && W.threatToPlayer(this);
     if (threat && (this.hp > this.maxHp * 0.25)) { this.target = threat; }
     if (this.command && this.command.alive) this.target = this.command;
-    if (this.target && this.target !== 'player' && this.target.dead) { this.target = null; this.command = null; }
+    if (this.target && this.target !== 'player' && (this.target.dead || this.target.routed)) { this.target = null; this.command = null; }
     if (this.target && this.target !== 'player') {
       const tp = this.target.pos, d = Math.sqrt(this.dist2(tp));
       if (d > 60) { this.target = null; return; }
@@ -1145,7 +1187,7 @@ export class Animal {
     this.root.rotation.y = this.yaw;
     const carn = d.kind === 'pack' || d.voice === 'wolf' || d.voice === 'dog';
     this.hitT = Math.max(0, (this.hitT || 0) - dt);
-    let clip = 'Idle', ts = 1, fade = 0.3;
+    let clip = 'Idle', ts = 1, fade = 0.3, atEnd = false;
     const sp = this.speed / Math.max(0.3, this.scale);
     if (this.dead) { clip = 'Death'; fade = 0.15; }
     else if (A.bite > 0.15 || (this.state === 'attack' && this.attackCD > (carn ? 1.1 : 1.2))) { clip = carn ? 'Attack' : 'Attack_Headbutt'; fade = 0.12; }
@@ -1155,10 +1197,12 @@ export class Animal {
       if (sp < cfg.walk * 1.9) { clip = 'Walk'; ts = Math.min(2.2, Math.max(0.45, sp / cfg.walk)); }
       else { clip = 'Gallop'; ts = Math.min(1.7, Math.max(0.65, sp / cfg.run)); }
     } else if (A.graze > 0.35 || this.state === 'graze' || this.state === 'feed' || this.state === 'forage') clip = 'Eating';
+    // (a wolf or dog lying down: the last frame of its fall, come to through a slow blend, so it settles onto its side rather than dropping)
+    else if (carn && A.lie > 0.5 && r.actions.Death) { clip = 'Death'; fade = 0.7; atEnd = true; }
     else if (this.state === 'rest' || A.lie > 0.5) clip = r.actions.Idle_Headlow ? 'Idle_Headlow' : 'Idle_2_HeadLow';
     else if (this.state === 'alert' || this.state === 'warn') clip = 'Idle';
     else clip = (this.id % 3 === 0 && r.actions.Idle_2) ? 'Idle_2' : 'Idle';
-    playClip(r, clip, fade, ts);
+    playClip(r, clip, fade, ts, atEnd);
     r.mixer.update(dt);
     // look toward a threat / target on top of the clip
     const look = this.lookAt || (this.state === 'alert' ? this.threat : null) || ((this.state === 'stalk' || this.state === 'attack' || this.state === 'warn') && W ? (this.target === 'player' ? W.player.pos : this.target?.pos) : null);
@@ -1167,6 +1211,20 @@ export class Animal {
     this.neckY = lerp(this.neckY || 0, ny, Math.min(1, dt * 5));
     if (J.Neck1 && Math.abs(this.neckY) > 0.01) { J.Neck1.rotateY(this.neckY * 0.5); if (J.Head) J.Head.rotateY(this.neckY * 0.4); }
     if (this.state === 'alert' && J.Neck1 && !this.dead) J.Neck1.rotateX(-0.25);   // head up, ears forward
+    // gestures on top of the clip: what its mind has it doing with its head and tail
+    const M = this.mind;
+    if (M && !this.dead) {
+      if (M.sniff > 0.02 && J.Neck1) { J.Neck1.rotateX(0.5 * M.sniff); if (J.Head) J.Head.rotateX(0.2 * M.sniff + Math.sin(this.t * 9) * 0.06 * M.sniff); }
+      if (M.wag > 0.02 && J.Tail1) { const w = Math.sin(this.t * 13) * 0.45 * M.wag; J.Tail1.rotateZ(w); if (J.Tail3) J.Tail3.rotateZ(w * 0.9); if (J.Tail5) J.Tail5.rotateZ(w * 0.7); }
+      if (this.headLow && J.Neck1) J.Neck1.rotateX(0.3);
+      // a wolf or dog sitting: haunches folded under, chest up on straight forelegs (the models have no clip for it)
+      const sit = carn ? A.sit * (1 - Math.min(1, sp * 2)) : 0; this.sitS = sit;
+      if (sit > 0.02) for (const sd of ['L', 'R']) {
+        if (J['BackUpperLeg' + sd]) J['BackUpperLeg' + sd].rotateX(0.9 * sit);
+        if (J['BackLowerLeg' + sd]) J['BackLowerLeg' + sd].rotateX(-1.2 * sit);
+        if (J['FrontUpperLeg' + sd]) J['FrontUpperLeg' + sd].rotateX(0.5 * sit);
+      }
+    }
     // body follows the slope and leans into turns
     let slopeP = 0;
     if (!this.dead) {
@@ -1176,7 +1234,9 @@ export class Animal {
     }
     const yawRate = (this.yaw - (this.prevYaw ?? this.yaw)) / Math.max(dt, 1e-3); this.prevYaw = this.yaw;
     this.leanS = lerp(this.leanS || 0, this.dead ? 0 : clamp(-yawRate * this.speed * 0.03, -0.25, 0.25), Math.min(1, dt * 5));
-    r.inst.rotation.x = slopeP; r.inst.rotation.z = this.leanS;
+    const sitK = this.dead ? 0 : this.sitS || 0;
+    if (r.baseY === undefined) r.baseY = r.inst.position.y;
+    r.inst.rotation.x = slopeP - 0.5 * sitK; r.inst.rotation.z = this.leanS; r.inst.position.y = r.baseY - 0.12 * sitK * this.scale;
   }
   animate(dt, W) {
     if (this.rig) return this.animateRig(dt, W);
@@ -1371,7 +1431,7 @@ export class Ecosystem {
     const counts = {};
     for (const a of this.animals) {
       const d2 = a.dist2(P);
-      if (!a.persistent && (d2 > 460 * 460 || (a.dead && a.deadT > 240 && d2 > 60 * 60))) { this.remove(a); continue; }
+      if ((!a.persistent && d2 > 460 * 460) || (a.routed && !a.keep && (d2 > 130 * 130 || (a.stateT > 14 && !a.shown)))) { this.remove(a); continue; }
       counts[a.sp] = (counts[a.sp] || 0) + 1;
     }
     this.groups = this.groups.filter((g) => g.members.length);
@@ -1464,7 +1524,7 @@ export class Ecosystem {
   nearestPredator(an, range) {
     let best = null, bd = range * range;
     for (const a of this.animals) {
-      if (a.dead || a === an) continue;
+      if (a.dead || a.routed || a === an) continue;
       const k = a.d.kind;
       if (k !== 'predator' && k !== 'pack' && !(a.companion && an.sp !== 'langur' && a.bond < 1)) continue;
       if (a.companion && an.bond > 0.6) continue;
@@ -1476,7 +1536,7 @@ export class Ecosystem {
   nearestPrey(pred, range) {
     let best = null, bd = range * range;
     for (const a of this.animals) {
-      if (a.dead || a === pred || a.companion) continue;
+      if (a.dead || a.routed || a === pred || a.companion) continue;
       if (!['chital', 'sambar', 'boar', 'langur', 'cow', 'peafowl'].includes(a.sp)) continue;
       if (a.sp === 'langur' && a.perch) continue;
       const d2 = a.dist2(pred.pos); if (d2 < bd) { bd = d2; best = a; }

@@ -193,7 +193,7 @@ export class TouchControls {
       const keys = this.g.input.keys, P = this.g.player;   // (the game replaces the key table when the window loses focus)
       const m = Math.hypot(dx, dy), k = m > R ? R / m : 1, nx = dx * k / R, ny = dy * k / R;
       knob.style.transform = `translate(${dx * k}px, ${dy * k}px)`;
-      keys.KeyW = ny < -0.35; keys.KeyS = ny > 0.35; keys.KeyA = nx < -0.35; keys.KeyD = nx > 0.35;
+      keys.KeyW = ny < -0.35; keys.KeyS = ny > 0.35; { const side = P && (P.canopy.mode === 'hang' || P.canopy.mode === 'rope') ? 0.62 : 0.35; keys.KeyA = nx < -side; keys.KeyD = nx > side; }   // (on a rope a thumb a little off straight does not steer the swing)
       // pushed hard forward, he runs; in the trees that is the Climb button's job
       if (!this.climbing) keys.ShiftLeft = m > R * 1.15 && ny < -0.5 && !(P && P.canopy.mode);
     };

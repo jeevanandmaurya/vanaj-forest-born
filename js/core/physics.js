@@ -16,10 +16,16 @@ const CELL = 1, N = CHUNK / CELL;                     // 1 m height-field cells,
 const _q = new THREE.Quaternion(), _up = new THREE.Vector3(0, 1, 0), _d = new THREE.Vector3(), _m = new THREE.Vector3();
 const key2 = (x, z) => Math.round(x * 100) * 1e6 + Math.round(z * 100);
 
+const NOT_PLAYER = (0xFFFF << 16) | 0xFFFD, _step = { x: 0, y: 0, z: 0 };
 export class Physics {
   constructor(game) {
     this.g = game;
     const w = this.world = new RAPIER.World({ x: 0, y: -15, z: 0 });
+    // After every step this build of the library walks every body and collider in the world from JavaScript, looking for ones its
+    // soft-body code may have made by itself: a function call and a few objects for each of thousands of tree limbs and stones, thirty
+    // times a second. That was the largest single source of garbage in the game (some 8 MB a second on a phone). The game makes no soft
+    // bodies, and everything it does make or remove is entered in those lists as it happens, so there is nothing for the walk to find.
+    if (typeof w.mapNewSoftBodies === 'function') w.mapNewSoftBodies = () => {};
     this.limbOf = new Map(); this.ground = new Map(); this.groundQ = []; this.trees = new Map(); this.rocks = new Map(); this.actors = new Map();
     this.syncT = 0;
     // Vanaj: steps up 45 cm, holds to the ground over 40 cm drops, climbs slopes to 50°, slides off steeper than 58°
@@ -33,7 +39,11 @@ export class Physics {
     sc.setSlideEnabled(true); sc.setApplyImpulsesToDynamicBodies(true); sc.setCharacterMass(45);
     const ac = this.ac = w.createCharacterController(0.03);
     ac.enableAutostep(0.5, 0.2, false); ac.enableSnapToGround(0.5); ac.setMaxSlopeClimbAngle(55 * Math.PI / 180); ac.setSlideEnabled(true);
+    this.t = 0;
     this.player = this.capsuleBody(0.28, 0.48);   // Vanaj is ~1.52 m
+    // (in a group of his own: an animal's step leaves him out by group. It used to be left out by a function called back from the
+    // physics for every trunk and stone near the animal, which made megabytes of garbage a second.)
+    this.player.col.setCollisionGroups((0x0002 << 16) | 0xFFFF);
   }
   capsuleBody(radius, half) {
     const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased());
@@ -44,6 +54,9 @@ export class Physics {
   sync(focus, force = false) {
     this.syncT -= 1;
     const cx = Math.floor(focus.x / CHUNK), cz = Math.floor(focus.z / CHUNK);
+    // (nothing to work out while he is in the same chunk with nothing waiting: this ran, and allocated, every frame)
+    if (!force && cx === this.gcx && cz === this.gcz && !this.groundQ.length) { if (this.syncT <= 0) { this.syncT = 20; this.syncTrees(focus); this.syncRocks(); } return; }
+    this.gcx = cx; this.gcz = cz;
     // ground: the 3x3 chunks round the focus, built one per frame (all at once when forced)
     const want = new Map();
     for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) want.set(`${cx + dx},${cz + dz}`, [cx + dx, cz + dz]);
@@ -124,26 +137,28 @@ export class Physics {
   moveActor(a, x0, z0) {
     let c = this.actors.get(a);
     if (!c) { const r = Math.max(0.15, (a.radius || 0.3) * 0.7), h = Math.max(0.05, ((a.d ? a.d.H : 1.6) * (a.scale || 1)) * 0.5 - r); c = this.capsuleBody(r, h); this.actors.set(a, c); }
-    c.seen = true;
+    c.seenT = this.t;
     const p = a.pos, cy = p.y + c.half + c.radius + 0.03;
     if (x0 === undefined) { c.body.setTranslation({ x: p.x, y: cy, z: p.z }, true); return false; }
     const dx = p.x - x0, dz = p.z - z0;
     c.body.setTranslation({ x: x0, y: cy, z: z0 }, true);
     this.world.propagateModifiedBodyPositionsToColliders();
     // (animals and villagers step over loose stones and sticks rather than stopping at them)
-    this.ac.computeColliderMovement(c.col, { x: dx, y: 0, z: dz }, RAPIER.QueryFilterFlags.EXCLUDE_SENSORS | RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC, undefined, (other) => other !== this.player.col);
+    _step.x = dx; _step.z = dz;
+    this.ac.computeColliderMovement(c.col, _step, RAPIER.QueryFilterFlags.EXCLUDE_SENSORS | RAPIER.QueryFilterFlags.EXCLUDE_DYNAMIC, NOT_PLAYER);
     const m = this.ac.computedMovement();
     p.x = x0 + m.x; p.z = z0 + m.z;
     c.body.setTranslation({ x: p.x, y: cy, z: p.z }, true);
     return m.x * m.x + m.z * m.z < (dx * dx + dz * dz) * 0.5 && dx * dx + dz * dz > 1e-6;
   }
   // drop the capsules of actors that died, wandered off or perched in a tree
+  // (An actor not heard from for two seconds, not one missed step: animals further off think only a few times a second, the physics
+  // steps thirty, so their bodies were being thrown away and made again all the time, megabytes of garbage a second.)
   pruneActors() {
-    for (const [a, c] of this.actors) {
-      if (!c.seen || a.dead || a.perch) { this.world.removeRigidBody(c.body); this.actors.delete(a); }
-      else c.seen = false;
-    }
+    for (const [a, c] of this.actors) if (this.t - c.seenT > 2 || a.dead || a.perch || a.routed) { this.world.removeRigidBody(c.body); this.actors.delete(a); }
   }
+  // one standing still: it keeps its body where it is, and asks nothing
+  touch(a) { const c = this.actors.get(a); if (c) c.seenT = this.t; }
   // ------------------------------------------------------------------ queries
   // first hit of the static world along a ray (characters ignored): distance, or null
   rayStatic(from, dir, max) {
@@ -178,7 +193,7 @@ export class Physics {
   // is the ground collider under (x, z) built yet? (loose things wait for it before they get a body)
   hasGround(x, z) { return this.ground.has(`${Math.floor(x / CHUNK)},${Math.floor(z / CHUNK)}`); }
   step(dt) {
-    this.pruneActors();
+    this.t += dt || 1 / 60; this.pruneT = (this.pruneT || 0) + 1; if (this.pruneT >= 30) { this.pruneT = 0; this.pruneActors(); }
     this.world.timestep = Math.min(1 / 20, Math.max(1 / 240, dt || 1 / 60));
     this.world.step();
     if (this.debug) this.drawDebug();

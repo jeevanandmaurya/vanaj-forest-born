@@ -430,16 +430,13 @@ export class Player {
   survival(dt) {
     const g = this.g, gh = dt * g.time.rate / 3600; // game hours elapsed
     const hot = g.season === 'summer' && g.time.hour > 10 && g.time.hour < 17;
-    this.hunger = clamp(this.hunger - gh * 3.2, 0, 100);
-    this.thirst = clamp(this.thirst - gh * (hot ? 7.5 : 4.6) * (this.sick > 0 ? 1.6 : 1), 0, 100);
-    if (this.hunger <= 0) this.hurt(dt * 0.25, null, { kind: 'starve', silent: true });
-    if (this.thirst <= 0) this.hurt(dt * 0.4, null, { kind: 'thirst', silent: true });
-    if (this.bleed > 0) {
-      this.hp -= this.bleed * dt * 0.5; this.bleed = Math.max(0, this.bleed - dt * (this.speed < 1 ? 0.09 : 0.05));
-      this.bleedDrip = (this.bleedDrip || 0) + dt * (0.5 + this.speed * 0.3);
-      if (this.bleedDrip > 1.3) { this.bleedDrip = 0; g.fx.decal(this.pos.x + (Math.random() - 0.5) * 0.3, this.pos.z + (Math.random() - 0.5) * 0.3, 0.08 + this.bleed * 0.04); }
-      if (this.hp <= 0) this.die('bleed');
-    } else if (this.hunger > 40 && this.thirst > 40 && this.sick <= 0) this.hp = Math.min(this.maxHp, this.hp + dt * 0.35);
+    // gentle play: he gets hungry and thirsty half as fast, and it slows him down but never fells him
+    const ease = g.settings.gentle ? 0.5 : 1;
+    this.hunger = clamp(this.hunger - gh * 3.2 * ease, 0, 100);
+    this.thirst = clamp(this.thirst - gh * (hot ? 7.5 : 4.6) * (this.sick > 0 ? 1.6 : 1) * ease, 0, 100);
+    if (this.hunger <= 0 && !(g.settings.gentle && this.hp < 25)) this.hurt(dt * 0.25, null, { kind: 'starve', silent: true });
+    if (this.thirst <= 0 && !(g.settings.gentle && this.hp < 25)) this.hurt(dt * 0.4, null, { kind: 'thirst', silent: true });
+    if (this.hunger > 40 && this.thirst > 40 && this.sick <= 0) this.hp = Math.min(this.maxHp, this.hp + dt * 0.35);
     if (this.sick > 0) { this.sick -= gh; this.hp -= dt * 0.08; }
     this.drunk = Math.max(0, this.drunk - dt * 0.01);
     // heartbeat when hurt, breathing when tired
@@ -649,7 +646,6 @@ export class Player {
       if (a.t >= a.dur) { const done = a.onDone; this.action = null; done && done(); }
     }
     // F: finishing move
-    if (input.pressed('KeyF') && !this.action && !g.uiBlocking) this.tryFinish();
   }
   startAttack() {
     const w = this.weapon, W = WEAPONS[w];
@@ -705,7 +701,6 @@ export class Player {
     this.shake = Math.min(1, 0.25 + dmg / 60);
     g.hitstop(dmg > 25 ? 0.07 : 0.04);
     if (W.stun && target.stagger !== undefined) target.stagger = Math.max(target.stagger, W.stun);
-    if (sneak) g.ui.toast('Silent strike');
     g.ui.hitmarker(target.dead);
     g.emit('hit', { target, dmg: dealt, weapon: a.weapon });
   }
@@ -782,11 +777,9 @@ export class Player {
         hit.takeDamage(dmg, p.pos.clone(), dirN, g.W, { by: 'player', bleed: p.kind === 'arrow' ? 1.5 : 2, sneak: hit.awareness < 0.4 });
         g.audio.impact('flesh', p.pos, dmg / 20);
         g.ui.hitmarker(hit.dead);
-        // stick into the body
-        const body = hit.J.body; body.updateMatrixWorld(); const inv = new THREE.Matrix4().copy(body.matrixWorld).invert();
-        p.mesh.applyMatrix4(inv); body.add(p.mesh); p.done = true; p.stuckIn = hit;
-        if (p.kind === 'spear') { p.mesh.userData.pickup = 'spear'; this.stuck.push({ mesh: p.mesh, item: 'spear', animal: hit }); }
-        else this.stuck.push({ mesh: p.mesh, item: Math.random() < 0.5 ? 'arrow' : null, animal: hit });
+        // it glances off and drops in the grass, to be picked up again
+        p.done = true; p.pos.y = groundHeight(p.pos.x, p.pos.z) + 0.06; p.mesh.position.copy(p.pos); p.mesh.quaternion.setFromUnitVectors(_v1.set(0, 1, 0), _v3.set(dirN.x, 0.02, dirN.z).normalize());
+        this.stuck.push({ mesh: p.mesh, item: p.kind === 'spear' ? 'spear' : 'arrow', ground: p.pos.clone() });
         continue;
       }
       const gy = groundHeight(p.pos.x, p.pos.z);
@@ -817,7 +810,7 @@ export class Player {
     const g = this.g, v = new THREE.Vector3();
     for (const s of this.stuck) {
       s.mesh.getWorldPosition(v);
-      if (v.distanceTo(this.pos) < 2.4 && (!s.animal || s.animal.dead)) {
+      if (v.distanceTo(this.pos) < 2.4) {
         s.mesh.parent && s.mesh.parent.remove(s.mesh); this.stuck.splice(this.stuck.indexOf(s), 1);
         if (s.item) { g.inv.add(s.item, 1); g.ui.toast('+1 ' + (s.item === 'spear' ? 'Spear' : 'Arrow')); if (s.item === 'spear' && this.weapon === 'fists') this.equip('spear'); }
         return true;
@@ -841,12 +834,13 @@ export class Player {
       }
     }
     d *= 1 - (g.inv.armor || 0);
+    // gentle play: blows land softer, and an animal can never quite knock him out
+    if (g.settings.gentle && opts.kind !== 'fall') { d *= 0.5; if (opts.by && this.hp - d < 6) d = Math.max(0, this.hp - 6); }
     this.hp -= d;
     if (!opts.silent) {
       this.shake = Math.min(1.2, 0.4 + d / 30); this.hurtFlash = Math.min(1, this.hurtFlash + d / 30);
       g.audio.playerPain(d > 20);
       g.ui.damage(from ? Math.atan2(from.x - this.pos.x, from.z - this.pos.z) - this.yaw : null, d);
-      if (opts.bleed) this.bleed = Math.min(3, this.bleed + d * 0.03 * opts.bleed);
       g.fx.blood(_v3.set(this.pos.x, this.pos.y + 1.1, this.pos.z), from ? _v1.set(this.pos.x - from.x, 0.3, this.pos.z - from.z).normalize() : null, d / 20);
       if (opts.knock && from) { const k = _v1.set(this.pos.x - from.x, 0, this.pos.z - from.z).normalize(); this.vel.x += k.x * opts.knock; this.vel.z += k.z * opts.knock; }
       if (d > 8 && !this.action) this.action = { type: 'hit', anim: 'hit', t: 0, dur: 0.35 };

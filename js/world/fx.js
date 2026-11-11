@@ -96,31 +96,21 @@ export class FX {
     while (this.lights.length < want) { const l = new THREE.PointLight(0xff8a3a, 0, 22, 1.6); l.castShadow = false; this.scene.add(l); this.lights.push(l); }
   }
   // --- blood ---
+  // A hit, for all ages: a thump of pale dust with a few bits of leaf and fur flying off it, and a short ring of
+  // "stars" the colour of straw. Nothing red and nothing left on the ground. (Still called blood: every strike in the
+  // game comes through here.)
   blood(pos, dir, amount = 1, big = false) {
-    const n = Math.floor(10 + 26 * amount);
+    const n = Math.floor(4 + 7 * Math.min(2, amount));
     for (let i = 0; i < n; i++) {
-      const sp = 2 + Math.random() * 5 * (big ? 1.5 : 1);
-      const dx = (dir ? dir.x : 0) + (Math.random() - 0.5) * 1.4, dy = (dir ? dir.y : 0) + Math.random() * 1.1, dz = (dir ? dir.z : 0) + (Math.random() - 0.5) * 1.4;
-      const dark = 0.25 + Math.random() * 0.25;
-      this.alpha.spawn({ x: pos.x, y: pos.y, z: pos.z, vx: dx * sp, vy: dy * sp, vz: dz * sp, life: 1.6, s0: 0.025 + Math.random() * 0.05, s1: 0.03, r: dark, g: 0.01, b: 0.01, a: 1, grav: 9.8, drag: 0.6,
-        onGround: Math.random() < 0.18 ? (q) => this.decal(q.x, q.z, 0.18 + Math.random() * 0.3) : null });
+      const sp = 1.5 + Math.random() * 3 * (big ? 1.4 : 1);
+      const dx = (dir ? dir.x : 0) * 0.6 + (Math.random() - 0.5) * 1.6, dy = 0.5 + Math.random() * 1.2, dz = (dir ? dir.z : 0) * 0.6 + (Math.random() - 0.5) * 1.6;
+      const leaf = Math.random() < 0.5;
+      this.alpha.spawn({ x: pos.x, y: pos.y, z: pos.z, vx: dx * sp, vy: dy * sp, vz: dz * sp, life: 1.1, s0: 0.05 + Math.random() * 0.05, s1: 0.03, r: leaf ? 0.62 : 0.86, g: leaf ? 0.5 : 0.78, b: leaf ? 0.2 : 0.56, a: 0.95, grav: 6, drag: 1.4 });
     }
-    for (let i = 0; i < 4 * amount; i++) this.alpha.spawn({ x: pos.x, y: pos.y, z: pos.z, vx: (Math.random() - 0.5), vy: Math.random() * 0.6, vz: (Math.random() - 0.5), life: 0.8, s0: 0.15, s1: 0.6, r: 0.35, g: 0.02, b: 0.02, a: 0.55, drag: 2 });
+    for (let i = 0; i < 3 + 2 * Math.min(2, amount); i++) this.alpha.spawn({ x: pos.x, y: pos.y, z: pos.z, vx: (Math.random() - 0.5) * 1.4, vy: 0.3 + Math.random() * 0.6, vz: (Math.random() - 0.5) * 1.4, life: 0.9, s0: 0.2, s1: 0.9, r: 0.84, g: 0.76, b: 0.6, a: 0.4, drag: 2 });
   }
-  decal(x, z, size, fresh = true) {
-    const y = groundHeight(x, z);
-    if (waterAt(x, z) > y) return;
-    groundNormal(x, z, this.tmpN);
-    this.q.setFromUnitVectors(new THREE.Vector3(0, 1, 0), this.tmpN);
-    const rot = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.random() * 6.28);
-    this.q.multiply(rot);
-    this.m4.compose(new THREE.Vector3(x, y + 0.03, z), this.q, new THREE.Vector3(size, 1, size));
-    const i = this.decalIdx; this.decalIdx = (this.decalIdx + 1) % 220;
-    this.decals.setMatrixAt(i, this.m4);
-    this.decals.instanceColor.setXYZ(i, 1.4, 0.9, 0.9); this.decalAge[i] = 0;
-    this.decals.count = Math.max(this.decals.count, i + 1);
-    this.decals.instanceMatrix.needsUpdate = true; this.decals.instanceColor.needsUpdate = true;
-  }
+  // (marks on the ground were blood: there are none now)
+  decal() {}
   pool(x, z, size) { this.decal(x, z, size); }
   // --- dust / splash ---
   dust(pos, amt = 1, col = [0.55, 0.45, 0.32]) {

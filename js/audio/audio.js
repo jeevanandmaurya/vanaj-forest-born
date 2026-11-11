@@ -281,37 +281,13 @@ export class AudioEngine {
       const f = rand(250, 600), n = 2 + Math.floor(rand(0, 5));
       for (let i = 0; i < n; i++) this.formant(o, t + i * rand(0.12, 0.2), { f0: f, dur: 0.1, a: 0.01, forms: [[f * 2, 4, 1], [1400, 3, 0.4]], g: 0.3 });
     }
-    // birds & far calls
-    this.birdT -= dt * (1 - rain * 0.8);
-    if (this.birdT <= 0 && !busy) {
-      this.birdT = rand(1.5, 6) * (nightK > 0.5 ? 2.2 : 1);
-      const dawn = h > 5 && h < 8.5, dusk = h > 17 && h < 19.5, night = nightK > 0.5;
-      const opts = [];
-      const add = (fn, w) => opts.push([fn, w]);
-      if (!night) {
-        add('barbet', 2); add('drongo', 2); add('bulbul', 2); add('coucal', 1);
-        if (s === 'summer' || s === 'winter') add('hawkCuckoo', s === 'summer' ? 3 : 1.2);
-        if (s === 'summer' || s === 'monsoon') add('koel', s === 'summer' ? 3 : 1);
-        if (dawn || dusk) { add('peacock', 3); add('junglefowl', dawn ? 2.5 : 0.5); }
-        add('woodpecker', 0.8);
-        if (st.water > 0.2) { add('lapwing', 2); add('kingfisher', 1.5); }
-        add('babbler', 1.5);
-      } else {
-        add('nightjar', 3); add('owlet', 2); add('woodOwl', 1);
-        if (s === 'summer' || s === 'winter') add('hawkCuckoo', 1.5);
-        if (h > 18.5 && h < 22) add('jackals', 1.2);
-        add('farSambar', 0.4); add('farTiger', 0.15);
-        if (st.water > 0.2) add('fishOwl', 1);
-      }
-      if (st.village > 0.2) { add('dogBark', 2); add('cowBell', 2); add('rooster', dawn ? 3 : 0.2); }
-      let tw = 0; for (const o of opts) tw += o[1];
-      let r = Math.random() * tw;
-      for (const [fn, w] of opts) { r -= w; if (r <= 0) { this.bird(fn); break; } }
-    }
+    // (birdsong and the far calls are the forest's own business now: js/sim/forest.js decides who sings, where and when)
   }
-  bird(kind) {
+  // one call of a kind of bird: from `at` (a singer's perch), or from somewhere round the listener
+  bird(kind, at) {
+    if (!this.ready) return;
     const ctx = this.ctx, t = ctx.currentTime + 0.05;
-    const p = this.randomPos(kind.startsWith('far') || kind === 'jackals' ? 250 : 15, kind.startsWith('far') || kind === 'jackals' ? 900 : 120, 14);
+    const p = at || this.randomPos(kind.startsWith('far') || kind === 'jackals' ? 250 : 15, kind.startsWith('far') || kind === 'jackals' ? 900 : 120, 14);
     const o = this.spatial(p, 1, { verb: 0.5, bus: this.amb, ref: 10, absorb: 500 });
     switch (kind) {
       case 'hawkCuckoo': { // "brain-fe-ver" rising, frantic

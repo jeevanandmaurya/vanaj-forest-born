@@ -4,6 +4,7 @@ import { GodRaysShader } from './core/godrays.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { loadRigs } from './actors/rigged.js';
 import { loadHumanRig, prebuildBodies } from './actors/humanrig.js';
+import { loadSculptCache } from './actors/sculpt.js';
 import { GroundAO } from './world/groundao.js';
 import { PerfOverlay } from './core/perf.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -41,12 +42,16 @@ import { Inventory, Pickups, ITEMS, RECIPES } from './game/items.js';
 import { Story } from './game/story.js';
 import { UI } from './game/ui.js';
 import { TouchControls, isTouchDevice, canFullscreen, isFullscreen, goFullscreen } from './game/touch.js';
-import { Plates, PLATE_COUNT } from './game/sketch.js';
-import { IntroSound } from './audio/intro.js';
+import { Opening } from './game/opening.js';
 import { Lessons } from './game/lessons.js';
 import { Felling } from './world/felling.js';
+import { Director, Emotes } from './sim/director.js';
+import { Forest } from './sim/forest.js';
+import { Talk } from './game/dialogue.js';
+import { Barks } from './game/barks.js';
 
 const _grv = new THREE.Vector3(), _grd = new THREE.Vector3(), _grc = new THREE.Color();
+const DEF_NAMES = { chital: 'chital', sambar: 'sambar', gaur: 'gaur', boar: 'boar', langur: 'langur', peafowl: 'peacock', bear: 'bear', dhole: 'dhole', leopard: 'leopard', tiger: 'tiger', mugger: 'mugger', cow: 'cow', dog: 'dog', wolf: 'wolf' };
 // Low is the phone level at 60 FPS, and what it costs is mostly draw calls, each of which takes three.js some 15 microseconds on a
 // laptop and several times that on a phone, before its GPU does anything. What each extra setting does:
 // lean: the light forms of everything: trees, ground shader, near trees, small props casting no shadow, post-processing in one pass.
@@ -75,6 +80,11 @@ for (const k in QUALITY) QUALITY[k] = { ...LEVEL_DEFAULTS, ...QUALITY[k] };
 const PHONE_LEVEL = {
   medium: { lean: true, shadow: 1536, shadowDist: 32, softShadow: false, treeNear: 44, treeFar: 330, treeVariants: 1, farOneShape: true, treeThin: 0.85, grassR: 30, grassDensity: 0.55, grassCap: 4000, bloom: false, chunkR: 2, chunkSegs: [64, 32, 16], farSegs: 160, waterFine: 120, waterFar: 900, fireLights: 1, treeCap0: 800, treeCap1: 3600, rainDrops: 2000, animalDraw: 170, inkDraw: 35, animalShadow: 22, aiNear: 24, aiMid: 100, actorR: 24, animStep: 0.05, physStep: 1 / 30, poseStep: 1 / 30, ropeMax: 14, looseR: 18, nearMax: 1, nearR: 0, bodyDetail: 2, npcDetail: 2.6 },
 };
+// High and Ultra were the computer's own on a phone too: 4x smoothing, bloom, twice the pixels, six times the triangles. Measured on a
+// Mali-G57 that was 3 frames a second. On a phone they are the computer's Medium (High without bloom), which is the most a phone's GPU can
+// be asked for, at 30.
+PHONE_LEVEL.high = { ...QUALITY.medium, name: 'High', bloom: false, shadow: 1536, softShadow: false };
+PHONE_LEVEL.ultra = { ...QUALITY.medium, name: 'Ultra', softShadow: false };
 const levelOf = (name) => (QUALITY[name] && isTouchDevice() ? { ...QUALITY[name], ...PHONE_LEVEL[name] } : QUALITY[name]);
 // Low's shadow filter: four samples in a small rotated square in place of three.js's one (a hard, stepped edge) on the "basic"
 // shadow type. It costs about a quarter of the soft filter's seventeen, on every pixel of ground and bark.
@@ -186,10 +196,11 @@ class Game {
     this.time = { hour: 7, day: 0, rate: 60 };
     this.season = 'winter'; this.seasonCfg = SEASONS.winter;
     this.camps = []; this.flags = {}; this.npcs = [];
-    this.settings = Object.assign({ quality: 'medium', sens: 1, invert: false, fov: 72, view: 'tpp', master: 0.9, music: 0.7, density: 1, perf: 'off' }, store.get('vanaj-settings') || {});
+    this.settings = Object.assign({ quality: 'medium', sens: 1, invert: false, fov: 55, view: 'tpp', master: 0.9, music: 0.5, density: 1, perf: 'off', gentle: true }, store.get('vanaj-settings') || {});
     // (a phone held sideways is about twice as wide as it is high: 72 degrees up and down is 116 across, far more than the eye wants on a small screen and
     // far more to draw. 72 was the old default for everyone, so a saved 72 counts as not chosen.)
-    if (isTouchDevice() && this.settings.fov === 72) this.settings.fov = 58;
+    if (this.settings.fov === 72 || this.settings.fov === 58) this.settings.fov = 55;
+    if (this.settings.music === 0.7) this.settings.music = 0.5;   // (likewise the old music level)   // (the old defaults count as not chosen)
     const qp = new URLSearchParams(location.search);
     // phones and tablets start on Medium (unless a quality was chosen) and draw at CSS-pixel resolution
     const touch = isTouchDevice(), chosen = (store.get('vanaj-settings') || {}).qualityChosen;
@@ -222,6 +233,7 @@ class Game {
     const prog = (p, t) => { this.bootLog.push([t, Math.round(performance.now() - bootT0)]); $('load-bar').style.width = (p * 100).toFixed(0) + '%'; $('load-step').textContent = t; return new Promise((r) => { requestAnimationFrame(() => setTimeout(r, 0)); setTimeout(r, 120); }); };
     await prog(0.02, 'Waking the renderer');
     const physReady = initPhysics();   // Rapier's WASM compiles while the world builds
+    const bodiesKept = loadSculptCache();   // the bodies sculpted on an earlier visit, read back while the world builds
     const q = this.q;
     // (no depth buffer on the page's own canvas: the scene draws into the composer's target, and only full-screen passes reach this one)
     const renderer = this.renderer = new THREE.WebGLRenderer({ antialias: q.aa, powerPreference: 'high-performance', stencil: false, depth: false });
@@ -267,17 +279,21 @@ class Game {
     this.fx = new FX(this.scene, this.T, q);
     this.pickups = new Pickups(this.scene, this.T);
     await prog(0.66, 'Bringing in the chital, sambar, gaur and dholes');
-    await Promise.all([loadRigs(), loadHumanRig()]);
-    prebuildBodies(q.npcDetail);   // the villagers' bodies, once each (about 1.5 s)
+    await Promise.all([loadRigs(), loadHumanRig(), bodiesKept]); this.bootLog.push(['  (models read)', Math.round(performance.now() - bootT0)]);
+    prebuildBodies(q.npcDetail); this.bootLog.push(['  (villager bodies made)', Math.round(performance.now() - bootT0)]);   // the villagers' bodies, once each (about 1.5 s)
     this.eco = new Ecosystem(this.scene, q);
     this.birds = new Birds(this.scene, this);
     this.tracks = new Tracks(this.scene, this);
     this.places = new PlaceTracker(document.getElementById('place'));
     this.inv = new Inventory();
     this.player = new Player(this);
+    this.bootLog.push(['  (the boy made)', Math.round(performance.now() - bootT0)]);
     this.player.setView(this.settings.view);
     this.story = new Story(this);
     this.lessons = new Lessons(this);
+    this.director = new Director(this); this.forest = new Forest(this); this.talk = new Talk(this); this.barks = new Barks(this); this.emotes = new Emotes(this.scene); this.emotes.build();
+    // an animal coming into the world starts from what its kind thinks of him
+    { const add = this.eco.add.bind(this.eco); this.eco.add = (a) => { add(a); this.director.greet(a); return a; }; }
     this.W = this.makeWorldInterface();
     await prog(0.72, 'Drawing the map');
     this.mapImage = renderMapCanvas(384);
@@ -299,9 +315,6 @@ class Game {
     this.felling.ready();
     this.veg.warmed = true;   // (tree meshes with nothing to draw can now leave the scene: their shaders are compiled)
     this.titleShot(4); { const c = this.camera.position; this.terrain.update(c.x, c.z, 1e9, true); this.veg.update(c, true); this.grass.update(c, true); }
-    await prog(0.95, 'Grinding the colours');
-    // the opening's paintings, finished now so that Begin shows them at once (js/game/sketch.js)
-    if (!this.noRender) { this.plates = new Plates(); for (let i = 0; i < PLATE_COUNT; i++) { this.plates.paint(i); await new Promise((r) => setTimeout(r, 0)); } }
     await prog(0.97, 'Tuning the bansuri');
     this.inMenu = true; this.startAudio(); this.audio.setWorld(false, 0); if (this.music) this.music.titleStart();
     await prog(1, 'Ready');
@@ -366,6 +379,7 @@ class Game {
     for (const m of held) { m.position.set(P.x, P.y + 1, P.z); this.scene.add(m); }
     for (const m of vmHeld) Pl.vmScene.add(m);
     Pl.vm.root.visible = true;
+    const mark = this.emotes.pool[0].s; mark.position.set(P.x, P.y + 2, P.z); mark.visible = true;
     const fireParts = [new THREE.MeshStandardMaterial({ color: 0x6e665c, roughness: 0.95 }), new THREE.MeshStandardMaterial({ map: this.T.bark.teak, color: 0x7a5a3a }), new THREE.MeshStandardMaterial({ color: 0x1a0a04, emissive: 0xff4a10, emissiveIntensity: 1.2 })].map((mat) => { const m = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), mat); m.position.set(P.x, P.y, P.z); m.castShadow = m.receiveShadow = true; this.scene.add(m); return m; });
     r.setRenderTarget(this.composer.renderTarget1); const compiled = Promise.all([r.compileAsync(this.scene, cam), r.compileAsync(Pl.vmScene, Pl.vmCam)]); r.setRenderTarget(null);
     await Promise.race([compiled, new Promise((res) => setTimeout(res, 20000))]);
@@ -374,6 +388,7 @@ class Game {
     for (const m of [...held, ...fireParts]) this.scene.remove(m);
     for (const m of vmHeld) Pl.vmScene.remove(m);
     Pl.vm.root.visible = vmOn; Pl.equip(this.inv.equipped);
+    mark.visible = false;
     for (const a of extra) this.eco.remove(a);
     this.scene.remove(npc.root); for (const h of others) this.scene.remove(h.root);
   }
@@ -410,6 +425,11 @@ class Game {
   holdFrameRate(t, busy) {
     const A = this.auto || (this.auto = { n: 0, ms: 0, busy: 0, last: t, scale: 1, detail: 0, ok: 0, wait: 4, raised: false, settle: 0 }), gap = t - A.last; A.last = t;
     if (gap > 250) return;   // (a stall or a return from the background is not a slow frame)
+    // (Held upright the picture is twice as tall and far more is in view: slow, but not a sign of what the phone can do the right way
+    // up. It used to cut detail to the least there, and stay cut after the phone was turned. Upright is not judged, and turning it
+    // sideways starts afresh.)
+    if (window.innerHeight > window.innerWidth) { A.n = 0; A.ms = 0; A.busy = 0; A.upright = true; return; }
+    if (A.upright) { A.upright = false; A.bad = 0; A.ok = 0; A.wait = 4; if (A.scale < 1) this.setRenderScale(1); if (A.detail > 0) this.setDetail(0); }
     A.n++; A.ms += gap; A.busy += busy;
     if (A.ms < 1000) return;
     const avg = A.ms / A.n, job = A.busy / A.n, goal = 1000 / (this.fpsCap || 60); A.n = 0; A.ms = 0; A.busy = 0;
@@ -527,7 +547,11 @@ class Game {
     const g = this;
     return {
       get player() { return g.player; }, get phys() { return g.phys; }, get night() { return g.sky.night; }, get isDay() { return g.sky.day > 0.5; }, get season() { return g.season; },
-      get camera() { return g.camera; }, get actorR2() { return g.q.actorR * g.q.actorR; },
+      get camera() { return g.camera; }, get actorR2() { return g.q.actorR * g.q.actorR; }, get sim() { return g.world; },
+      // a blow costs him his standing with that kind; one driven off is news for the story and the passing remarks
+      onHit: (an, by) => { if (by === 'player' && !an.story && an.d.kind !== 'predator' && an.d.kind !== 'pack') g.director.trust(an.sp, -0.1); },
+      onRout: (an, by) => { g.emit('rout', { animal: an, by }); if (by === 'player' || by === 'companion') g.ui.toast(`The ${an.name || DEF_NAMES[an.sp] || an.sp} runs off`, 3); },
+      onGreet: (an) => g.emit('trusted', { sp: an.sp, animal: an }),
       fx: this.fx, audio: this.audio, veg: this.veg,
       nearestPredator: (a, r) => g.eco.nearestPredator(a, r), nearestPrey: (a, r) => g.eco.nearestPrey(a, r),
       damagePlayer: (d, from, o) => g.player.hurt(d, from, o),
@@ -540,7 +564,8 @@ class Game {
             const a = Math.atan2(an.pos.x - g.player.pos.x, -(an.pos.z - g.player.pos.z));
             const dir = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west'][((Math.round(a / (Math.PI / 4)) % 8) + 8) % 8];
             const me = threat === 'player';
-            const msg = me ? `${lbl} alarm, ${dir}. They have seen me.` : {
+            if (g.talk.busy) return;
+          const msg = me ? `${lbl} alarm, ${dir}. They have seen me.` : {
               sambar: `Sambar belling to the ${dir}. A sambar only bells for a tiger, a leopard or dhole.`,
               langur: `Langur barking from the trees, ${dir}. It can see a big cat on the ground.`,
               chital: `Chital calling, ${dir}. Something's moving over there. Listen for a second call.`,
@@ -549,14 +574,13 @@ class Game {
             g.ui.toast(msg, 5.5);
           } }
       },
-      onKill: (an, by) => { g.emit('kill', { animal: an, by }); if (an === g.companion) { g.companionBody = an; g.companion = null; g.ui.toast(an.name + ' is dead', 5); } },
+      onKill: (an, by) => { g.emit('kill', { animal: an, by }); if (an === g.companion) { g.companionBody = an; g.companion = null; } },
       get companion() { return g.companion; }, get companionPos() { return g.companion ? g.companion.pos : null; },
-      threatToPlayer: (c) => { let best = null, bd = 22 * 22; for (const a of g.eco.animals) { if (a.dead || a.companion) continue; if ((a.target === 'player' && (a.state === 'charge' || a.state === 'attack' || a.state === 'pounce' || a.state === 'stalk')) || a.target === c) { const d = a.dist2(g.player.pos); if (d < bd) { bd = d; best = a; } } } return best; },
+      threatToPlayer: (c) => { let best = null, bd = 22 * 22; for (const a of g.eco.animals) { if (a.dead || a.routed || a.companion) continue; if ((a.target === 'player' && (a.state === 'charge' || a.state === 'attack' || a.state === 'pounce' || a.state === 'stalk')) || a.target === c) { const d = a.dist2(g.player.pos); if (d < bd) { bd = d; best = a; } } } return best; },
       findForage: (p) => g.props.forageNear(p),
       get hour() { return g.time.hour; }, get animals() { return g.eco.animals; },
       nearestWater: (p) => nearestWaterPoint(p),
       nearestShade: (p, r) => g.veg.nearestTree(p.x, p.z, r || 30),
-      onDeath: (an) => g.birds && !an.companion && g.birds.addCarcass(an.pos),
     };
   }
   // -------------------------------------------------------------------------------- world state
@@ -655,7 +679,7 @@ class Game {
   // -------------------------------------------------------------------------------- menus & input
   setupMenus() {
     const g = this;
-    const save = store.get('vanaj-save-v1');
+    const save = store.get('vanaj-save-v2');
     $('btn-continue').style.display = save ? '' : 'none';
     // Browsers forbid sound before a gesture, so the menu's flute starts on the first click, touch or key anywhere. On a phone a finger coming
     // down does not count as one, only its lifting: listening once for pointerdown, the sound was asked for too soon, refused, and never
@@ -688,7 +712,6 @@ class Game {
     $('btn-quit').onclick = () => g.toTitle();
     $('btn-respawn').onclick = () => g.respawn();
     $('btn-restart-ch').onclick = () => { g.ui.hideDeath(); g.player.respawn(); g.story.start(g.story.chIndex); g.requestLock(); };
-    $('prologue-skip').onclick = () => g.skipPrologue && g.skipPrologue();
     document.addEventListener('pointerlockchange', () => {
       const locked = !!document.pointerLockElement;
       if (!locked && g.playing && !g.uiBlocking && !g.player.dead) g.pause();
@@ -706,6 +729,7 @@ class Game {
       box.onchange = () => { if (box.checked) goFullscreen(); else if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); };
       document.addEventListener('fullscreenchange', sync); document.addEventListener('fullscreenerror', sync); sync();
     } else $('set-full').closest('.row').style.display = 'none';
+    $('set-gentle').value = S.gentle ? '1' : '0'; $('set-gentle').onchange = (e) => { S.gentle = e.target.value === '1'; g.applySettings(); };
     $('set-invert').checked = S.invert; $('set-invert').onchange = (e) => { S.invert = e.target.checked; g.applySettings(); };
     // (it shows the level really running: a phone starts on Low, whatever was saved)
     $('set-quality').value = g.q.name.toLowerCase(); $('set-quality').onchange = (e) => { S.quality = e.target.value; S.qualityChosen = true; g.applySettings(); g.applyQuality(e.target.value); };
@@ -734,67 +758,12 @@ class Game {
     this.inv.load({ items: {}, locks: ['bow', 'axe'] });
     this.felling.reset();
     this.lessons.reset();
+    this.flags = {}; this.director.load(null); this.ui.journal = []; this.camps.length = 0;
     await this.prologue();
     this.startGame(0);
   }
-  // The opening: a set of paintings, one to each line (js/game/sketch.js). They were finished while the game loaded, so they
-  // are on screen at once and nothing is drawn while they show: each fades in over the last and drifts slowly, which the
-  // browser does by itself. The 3D world neither updates nor renders behind them. It ends on black.
-  prologue() {
-    return new Promise((resolve) => {
-      const P = $('prologue'), L = $('prologue-line'), Tt = $('prologue-title'), Fr = $('pro-frame');
-      const lines = [
-        'I was three the year the Pench flooded.',
-        'My father was driving us home from the market. My mother had me on her lap, with my little steel lota.',
-        'The water came while we were crossing.',
-        'She tied me to a log with her sari. The lota too.',
-        'She hummed to me. Then the river took her.',
-        'I don\'t remember any of it. People told me later.',
-        'A wolf found me on a sandbank. She had lost her pups in the same flood.',
-        'She carried me home. I called her Kaali.',
-      ], durs = [5.5, 7, 5.5, 6, 7.5, 6, 7, 7];
-      // each plate's drift: scale and shift (percent) at its start and end
-      const cams = [[1.03, 0, 1, 1.12, -2, 2], [1.1, 3, 0, 1.1, -3, 0], [1.03, 2, 1, 1.14, 3, 0], [1.04, 0, 0, 1.13, 0, -2], [1.13, -1, -2, 1.03, 0, 0], [1.14, 2, -1, 1.02, 0, 0], [1.03, 0, 1, 1.12, -2, -2], [1.04, 2, 0, 1.12, -2, -1]];
-      const book = this.plates || (this.plates = new Plates());
-      Fr.textContent = '';
-      for (let k = 0; k < PLATE_COUNT; k++) { const c = book.paint(k); c.style.opacity = 0; c.style.transition = 'none'; Fr.appendChild(c); }
-      Fr.classList.remove('out'); Tt.classList.remove('show'); L.classList.remove('show'); L.textContent = '';
-      P.classList.add('on'); void P.offsetWidth; P.classList.add('show');
-      setTimeout(() => { $('title').classList.remove('show'); this.holdFrames = true; }, 380);
-      // its own score, plate by plate (js/audio/intro.js). The forest's sound stays off: no rain and river beds at full level
-      // under everything, no random thunder and frogs.
-      this.audio.setWorld(false, 0.25);
-      const score = this.audio.ready ? new IntroSound(this.audio, this.music) : null;
-      let i = -1, done = false, timer = 0;
-      const next = () => { if (done) return; if (i + 1 >= PLATE_COUNT) finish(); else show(i + 1); };
-      const show = (n) => {
-        clearTimeout(timer);
-        const c = book.c[n], [s0, x0, y0, s1, x1, y1] = cams[n], prev = i >= 0 ? book.c[i] : null;
-        c.style.zIndex = n + 1; c.style.transition = 'none'; c.style.transform = `translate(${x0}%,${y0}%) scale(${s0})`; c.style.opacity = prev ? 0 : 1;
-        void c.offsetWidth;
-        c.style.transition = `transform ${durs[n] + 1.6}s linear, opacity 0.9s ease`; c.style.transform = `translate(${x1}%,${y1}%) scale(${s1})`; c.style.opacity = 1;
-        i = n;
-        L.classList.remove('show');
-        setTimeout(() => { if (done || i !== n) return; L.textContent = lines[n]; L.classList.add('show'); }, prev ? 320 : 60);
-        if (score) score.plate(n);
-        timer = setTimeout(next, durs[n] * 1000);
-      };
-      const end = () => {
-        clearTimeout(timer); window.removeEventListener('keydown', onKey); P.onclick = null;
-        $('fade').style.transition = 'none'; $('fade').style.opacity = 1;
-        Tt.classList.remove('show'); L.classList.remove('show'); if (score) score.stop(0.8);
-        P.classList.remove('show');
-        setTimeout(() => { P.classList.remove('on'); book.free(); this.plates = null; resolve(); }, 620);
-      };
-      const finish = () => { if (done) return; done = true; if (score) score.title(); L.classList.remove('show'); Fr.classList.add('out'); Tt.classList.add('show'); setTimeout(end, 3000); };
-      const skip = this.skipPrologue = () => { if (!done) { done = true; end(); } };
-      // a click or Space turns the page; Skip leaves the book
-      const onKey = (e) => { if (e.code === 'Escape') skip(); else if ((e.code === 'Space' || e.code === 'Enter') && !done && i >= 0) next(); };
-      window.addEventListener('keydown', onKey);
-      P.onclick = (e) => { if (e.target.id !== 'prologue-skip' && !done && i >= 0) next(); };
-      show(0);
-    });
-  }
+  // The opening is played in the world itself (js/game/opening.js). It ends on black.
+  prologue() { return (this.opening || (this.opening = new Opening(this))).play(); }
   // The click is answered at once with a fade to black; the teleport and streaming happen behind it (js enterScene)
   async startGame(ch, opts = {}) {
     this.leaveMenu();
@@ -808,18 +777,19 @@ class Game {
     } });
   }
   giveChapterKit(ch) {
-    // sensible starting kit when jumping straight into a later chapter
-    const inv = this.inv; inv.load({ items: {}, locks: ['bow', 'axe'] }); if (ch >= 5) inv.locks.delete('axe');
+    // what he would have by then, when jumping straight into a later chapter (ch: index into the story's chapters)
+    const inv = this.inv; inv.load({ items: {}, locks: ['bow', 'axe'] }); this.flags = {};
     if (ch >= 1) { inv.add('knife'); inv.add('stick', 4); inv.add('stone', 3); }
-    if (ch >= 2) { inv.add('wire'); inv.add('club'); inv.add('leaves', 3); inv.add('fiber', 3); }
-    if (ch >= 3) { inv.add('torch'); inv.add('honey', 1); inv.add('meat_cooked', 2); }
-    if (ch >= 4) { inv.add('bowl'); inv.add('spear'); inv.add('bamboo', 2); }
-    if (ch >= 6) { inv.locks.delete('bow'); inv.add('bow'); inv.add('arrow', 12); inv.add('bandage', 2); }
-    if (ch >= 8) { this.flags.chingari = true; }
-    if (ch >= 10) { inv.add('matches'); }
-    if (ch >= 11) { inv.add('flute'); }
-    if (ch >= 12) { inv.add('lota'); }
-    this.player.equip(ch >= 4 ? 'spear' : ch >= 1 ? 'knife' : 'fists');
+    if (ch >= 3) { inv.add('wire'); inv.add('club'); inv.add('leaves', 3); inv.add('fiber', 3); inv.add('torch'); }
+    if (ch >= 4) { inv.add('honey', 1); inv.add('meat_cooked', 2); }
+    if (ch >= 5) { inv.add('bowl'); inv.add('spear'); inv.add('bamboo', 2); }
+    if (ch >= 6) inv.locks.delete('axe');
+    if (ch >= 7) { inv.locks.delete('bow'); inv.add('bow'); inv.add('arrow', 12); inv.add('bandage', 2); }
+    if (ch >= 9) this.flags.chingari = true;
+    if (ch >= 11) inv.add('matches');
+    if (ch >= 12) inv.add('flute');
+    if (ch >= 13) inv.add('lota');
+    this.player.equip(ch >= 5 ? 'spear' : ch >= 1 ? 'knife' : 'fists');
   }
   async freeRoam() {
     this.leaveMenu();
@@ -828,7 +798,7 @@ class Game {
       this.player.revive();
       $('title').classList.remove('show');
       this.playing = true;
-      this.giveChapterKit(12); this.flags.chingari = true;
+      this.giveChapterKit(13); this.flags.chingari = true; this.world.village = 'home';
       this.story.chIndex = -1; this.story.done = true; this.inv.locks.delete('axe');
       this.setSeason(this.freeSeason || 'post', null); this.setTime(7.5);
       await this.teleportScene(new THREE.Vector3(SITES.den.x, 0, SITES.den.z + 10));
@@ -847,7 +817,7 @@ class Game {
     if (document.pointerLockElement) document.exitPointerLock();
     this.ui.close(); this.ui.setObjective('', ''); this.ui.setPrompt(''); this.ui.setPin(null);
     if (this.music) this.music.setCombat(0);
-    $('btn-continue').style.display = store.get('vanaj-save-v1') ? '' : 'none';
+    $('btn-continue').style.display = store.get('vanaj-save-v2') ? '' : 'none';
     this.inMenu = true; this.audio.setWorld(false); if (this.music) this.music.titleStart();
     this.titleCam = 4;   // past the reach's opening dip to black
     $('title').classList.add('show');
@@ -860,7 +830,7 @@ class Game {
     this.ui.hideDeath();
     const camp = this.camps[this.camps.length - 1];
     this.player.respawn(camp ? camp.pos.clone().add(new THREE.Vector3(1.5, 0, 1.5)) : null);
-    this.ui.narrate("I woke up by the ashes. Everything hurt.");
+    this.talk.say([['vanaj', 'Ow. Everything hurts. But the fire is still warm.']]);
     // restart the chapter so scripted encounters are coherent
     const keep = this.story.chIndex;
     if (keep >= 0) this.story.start(keep, { keepState: !!camp });
@@ -900,38 +870,36 @@ class Game {
     for (const it of story.storyItems) if (!it.taken && d2(it.pos) < 2.5 * 2.5) return { prompt: it.prompt, act: () => { it.taken = true; this.scene.remove(it.mesh); this.inv.add(it.id, 1); this.audio.pickup(); this.ui.toast('+ ' + ITEMS[it.id].name); this.emit('pickup', { item: it.id }); } };
     // an objective can offer its own interaction (share with Kaali, sit with her, ...)
     const oi = story.obj && story.obj.interact;
-    if (oi && !oi._used) { const p = oi.at(this, story); if (p && d2(p) < (oi.r || 3) ** 2) return { prompt: oi.prompt, act: () => { oi._used = true; setTimeout(() => (oi._used = false), 20000); oi.act(this, story); } }; }
-    if (story.chapter && story.chapter.id === 'ep' && story.objIndex === 2 && story.aaji && d2(story.aaji.pos) < 4 * 4) return { prompt: 'Set the lota on the ground', act: () => story.interact('aaji') };
-    if (this.companionBody && story.chapter && story.chapter.id === 'c2' && story.objIndex === 3 && d2(this.companionBody.pos) < 3.2 * 3.2) {
-      const n = this.inv.count('leaves');
-      return { prompt: n >= 3 ? 'Cover Kaali with leaves' : `Cover Kaali (need 3 leaves, have ${n})`, act: () => { if (this.inv.take('leaves', 3)) { this.player.action = { type: 'gather', anim: 'gather', t: 0, dur: 2.5 }; this.audio.footstep('leaf', 1); setTimeout(() => { this.coverBody(this.companionBody); story.flags.coveredKaali = true; story.checkNow(); }, 2200); } else this.ui.toast("You need more leaves"); } };
-    }
+    if (oi && !oi._used) { const p = oi.at(this, story); if (p && d2(p) < (oi.r || 3) ** 2) return { prompt: oi.prompt, act: () => { oi._used = true; oi.act(this, story); } }; }
     // props
-    for (const it of this.props.inter) {
+    // while the story wants a fish, the water's edge comes before the bushes and sticks beside it
+    if (story.obj && story.obj.id === 'fish' && !P.swimming && this.clock > (this.fishCD || 0)) {
+      const ax = pos.x + fwd.x * 1.4, az = pos.z + fwd.z * 1.4, wl = Math.max(waterAt(ax, az), waterAt(pos.x, pos.z));
+      if (wl > groundHeight(ax, az) - 0.05 && wl > pos.y - 1.6) return { prompt: P.weapon === 'spear' ? 'Spear a fish' : 'Feel under the bank for a fish', act: () => this.fish() };
+    }
+    // (something not yet looked at comes before anything else in reach: on the tower the box, not the ladder beside it)
+    const fresh = (it) => it.kind === 'clue' && !story.flags['clue_' + it.id];
+    for (const it of [...this.props.inter.filter(fresh), ...this.props.inter.filter((it) => !fresh(it))]) {
       if (it.kind === 'trigger') continue;
       const dd = Math.hypot(it.pos.x - pos.x, it.pos.z - pos.z), dy = Math.abs(it.pos.y - (pos.y + 1));
       if (dd > it.r || dy > 3.5) continue;
-      if (it.kind === 'clue') return { prompt: it.prompt, act: () => { this.player.action = { type: 'gather', anim: 'gather', t: 0, dur: 1.4 }; this.audio.pickup(); this.emit('clue', { id: it.id }); if (it.id === 'denMarks') { this.ui.narrate(['Hundreds of scratches, in rows. One for every night.', 'I did not know why I made them.']); this.ui.addJournal('Marks on the den wall', 'I scratch a mark each night. There are hundreds. Older me knows what this is: counting. I did not.', 'clue'); } } };
+      if (it.kind === 'clue') return { prompt: it.prompt, act: () => { this.player.action = { type: 'gather', anim: 'gather', t: 0, dur: 1.4 }; this.audio.pickup(); this.emit('clue', { id: it.id }); if (it.id === 'denMarks') { this.talk.say([['vanaj', 'Hundreds of scratches, in rows. One for every night.'], ['vanaj', "I don't know why I make them. It feels wrong not to."]]); this.ui.addJournal('Marks on the den wall', 'I scratch a mark each night. There are hundreds. Older me knows what this is: counting. I did not.', 'clue'); } } };
       if (it.kind === 'rest') return { prompt: it.prompt, act: () => this.sleep(it) };
-      if (it.kind === 'hive') return { prompt: P.weapon === 'torch' ? 'Smoke the hive for honey' : 'Take honey (no smoke…)', act: () => this.hiveAction() };
+      if (it.kind === 'hive') { if (this.onCooldown('hive')) continue; return { prompt: P.weapon === 'torch' ? 'Smoke the hive for honey' : 'Take honey (no smoke…)', act: () => this.hiveAction() }; }
       if (it.kind === 'climb') { const top = P.pos.y > SITES.tower.y + 6; return { prompt: top ? 'Climb down' : 'Climb the ladder (W)', act: () => this.climbLadder(top) }; }
       if (it.kind === 'water') return { prompt: it.prompt, act: () => this.drink() };
-      if (it.kind === 'story') { if (story.chapter && story.chapter.id === 'c8' && story.objIndex === 1) return { prompt: it.prompt, act: () => story.interact(it.id) }; }
+      if (it.kind === 'story') { const u = story.obj && story.obj.use; if (u && u.id === it.id && !u._used) return { prompt: u.prompt || it.prompt, act: () => { u._used = true; u.act(this, story); } }; }
     }
     // tower ladder top (from platform)
     // campfire
     for (const c of this.camps) if (d2(c.pos) < 2.6 * 2.6) {
-      if (this.inv.has('meat_raw')) return { prompt: 'Cook meat over the fire', act: () => this.cook(c) };
+      if (this.inv.has('meat_raw')) return { prompt: 'Roast the fish over the fire', act: () => this.cook(c) };
       return { prompt: 'Sleep by the fire (until morning)', act: () => this.sleep(c) };
     }
     // a tree he has felled
     { const F = this.felling.fallenNear(pos); if (F && this.inv.has('axe')) return { prompt: 'Cut it up for wood', act: () => this.felling.cutUp(F) }; }
-    // carcass
-    for (const a of this.eco.animals) if (a.dead && !a.harvested && !a.companion && a !== this.companionBody && a.dist2(pos) < (a.d.L * 0.6 + 1.6) ** 2) {
-      return { prompt: this.inv.has('knife') ? `Skin the ${a.name || a.sp}` : 'You need a knife to skin it', act: () => this.harvest(a) };
-    }
     // recover projectiles
-    for (const s of P.stuck) { const v = new THREE.Vector3(); s.mesh.getWorldPosition(v); if (v.distanceTo(pos) < 2.4 && (!s.animal || s.animal.dead) && s.item) return { prompt: 'Recover ' + (s.item === 'spear' ? 'spear' : 'arrow'), act: () => P.recoverNear() }; }
+    for (const s of P.stuck) { const v = new THREE.Vector3(); s.mesh.getWorldPosition(v); if (v.distanceTo(pos) < 2.4 && s.item) return { prompt: 'Recover ' + (s.item === 'spear' ? 'spear' : 'arrow'), act: () => P.recoverNear() }; }
     // pickups
     const pk = this.pickups.nearest(pos, fwd), lo = this.loose ? this.loose.nearest(pos, fwd) : null;
     const dOf = (x, z) => Math.hypot(x - pos.x, z - pos.z);
@@ -949,7 +917,12 @@ class Game {
     // water
     const ahead = new THREE.Vector3(pos.x + fwd.x * 1.4, 0, pos.z + fwd.z * 1.4);
     const wl = Math.max(waterAt(ahead.x, ahead.z), waterAt(pos.x, pos.z));
-    if (wl > groundHeight(ahead.x, ahead.z) - 0.05 && wl > pos.y - 1.6 && !P.swimming) return { prompt: 'Drink', act: () => this.drink() };
+    if (wl > groundHeight(ahead.x, ahead.z) - 0.05 && wl > pos.y - 1.6 && !P.swimming) {
+      // thirsty: drink. Otherwise the fish, with a spear or by feeling under the bank for one.
+      const ready = this.clock > (this.fishCD || 0), wanted = story.obj && story.obj.id === 'fish';
+      if (ready && (P.weapon === 'spear' || wanted || P.thirst > 80)) return { prompt: P.weapon === 'spear' ? 'Spear a fish' : 'Feel under the bank for a fish', act: () => this.fish() };
+      return { prompt: 'Drink', act: () => this.drink() };
+    }
     return null;
   }
   nearLantana(pos) {
@@ -995,9 +968,10 @@ class Game {
     if (P.weapon === 'torch') {
       P.action = { type: 'gather', anim: 'swing', t: 0, dur: 3 };
       this.fx.bees(h.pos, 30); this.audio.bees(h.pos, 1);
-      setTimeout(() => { this.inv.add('honey', 2); this.inv.add('fiber', 1); this.ui.toast('+2 Honey'); this.ui.narrate("The smoke slowed them down. I grabbed the comb and ran."); this.emit('pickup', { item: 'honey' }); }, 2800);
+      this.setCooldown('hive');
+      setTimeout(() => { this.inv.add('honey', 2); this.inv.add('fiber', 1); this.ui.toast('+2 Honey'); this.talk.say([['vanaj', 'The smoke makes them slow. Grab the comb and go!']]); this.emit('pickup', { item: 'honey' }); }, 2800);
     } else {
-      this.ui.narrate('The bees came down like smoke.');
+      this.talk.say([['vanaj', 'Ow! OW! No smoke, no honey. I know that. I KNOW that!']]);
       for (let i = 0; i < 8; i++) setTimeout(() => { this.fx.bees(P.pos.clone().add(new THREE.Vector3(0, 1.4, 0)), 14); this.audio.bees(P.pos, 1); P.hurt(4, null, { kind: 'sting' }); }, i * 450);
     }
   }
@@ -1012,6 +986,22 @@ class Game {
     P.action = { type: 'drink', anim: 'drink', t: 0, dur: 2.0 };
     this.audio.drink();
     setTimeout(() => { P.thirst = Math.min(100, P.thirst + 40); this.emit('drink'); if (this.season === 'summer' && Math.random() < 0.08) { P.sick = 2; this.ui.toast("That water was bad"); } }, 1600);
+  }
+  // Fish lie in the shallows at first and last light, and go deep in the heat of the day. A spear helps; hands will do.
+  fish() {
+    const P = this.player, spear = P.weapon === 'spear', ph = this.world.phase;
+    P.action = { type: 'gather', anim: spear ? 'stab' : 'gather', t: 0, dur: 2.4 }; P.crouch = !spear;
+    this.audio.splash(P.pos, 0.5); this.fishCD = this.clock + 3;
+    const odds = (spear ? 0.92 : 0.62) * (ph === 'dawn' || ph === 'dusk' || ph === 'morning' ? 1 : ph === 'night' ? 0.55 : 0.7);
+    setTimeout(() => {
+      if (P.dead) return;
+      const first = !this.flags.fished;
+      if (first || Math.random() < odds) {
+        this.flags.fished = true; this.inv.add('meat_raw', 1); this.audio.splash(P.pos, 0.8); this.audio.pickup(); this.fishCD = this.clock + 18;
+        this.fx.splash(P.pos.clone().add(new THREE.Vector3(-Math.sin(P.yaw) * 0.9, 0.2, -Math.cos(P.yaw) * 0.9)), 1.2);
+        this.ui.toast('+1 River fish'); this.emit('fish'); this.emit('pickup', { item: 'meat_raw' });
+      } else this.ui.toast(ph === 'midday' || ph === 'afternoon' ? 'It slipped away. They lie deep in the heat of the day' : 'It slipped through your fingers. Try again', 3.5);
+    }, 2100);
   }
   harvest(a) {
     if (!this.inv.has('knife')) { this.ui.toast('You need a stone knife'); return; }
@@ -1035,13 +1025,13 @@ class Game {
     const n = Math.min(6, this.inv.count('meat_raw'));
     P.action = { type: 'gather', anim: 'gather', t: 0, dur: 3 };
     this.audio.fireLevel = 1;
-    setTimeout(() => { this.inv.take('meat_raw', n); this.inv.add('meat_cooked', n); this.ui.toast(`Cooked ${n} meat`); this.emit('cook', { n }); }, 2800);
+    setTimeout(() => { this.inv.take('meat_raw', n); this.inv.add('meat_cooked', n); this.ui.toast(`Roasted ${n} fish`); this.emit('cook', { n }); }, 2800);
   }
   async sleep(c) {
     const P = this.player;
     if (P.dead) return;
-    const threats = this.eco.animals.filter((a) => !a.dead && a.target === 'player' && a.dist2(P.pos) < 60 * 60);
-    if (threats.length) { this.ui.toast("You can't sleep with a predator this close"); return; }
+    const threats = this.eco.animals.filter((a) => !a.dead && !a.routed && a.target === 'player' && a.dist2(P.pos) < 60 * 60);
+    if (threats.length || this.world.tension > 0.6) { this.ui.toast("You can't sleep with something hunting this close"); return; }
     this.uiBlocking = true;
     await this.ui.fade(true, 1500);
     const h = this.time.hour;
@@ -1090,16 +1080,16 @@ class Game {
     this.audio.eat(); this.emit('eat', { item: k });
   }
   eatBest() { for (const k of ['meat_cooked', 'honey', 'tendu', 'ber', 'mahua', 'termites', 'mushroom', 'meat_raw']) if (this.inv.has(k)) { this.eat(k); this.ui.toast('Ate ' + ITEMS[k].name); return; } this.ui.toast('Nothing to eat'); }
-  useBandage() { if (!this.inv.take('bandage', 1)) { this.ui.toast('No bandage (craft from leaves + fibre)'); return; } this.player.bleed = 0; this.player.hp = Math.min(100, this.player.hp + 5); this.player.action = { type: 'gather', anim: 'gather', t: 0, dur: 1.5 }; this.ui.toast('Wound bound'); this.emit('bandaged'); }
+  useBandage() { if (!this.inv.take('bandage', 1)) { this.ui.toast('No bandage (make one from leaves and fibre)'); return; } this.player.bleed = 0; this.player.hp = Math.min(100, this.player.hp + 22); this.player.action = { type: 'gather', anim: 'gather', t: 0, dur: 1.5 }; this.ui.toast('Bound up'); this.emit('bandaged'); }
   // -------------------------------------------------------------------------------- save/load
   save() {
     if (this.story.chIndex < 0 && !this.story.done) return;
     const P = this.player;
-    store.set('vanaj-save-v1', { pin: this.ui.pin || null, ch: this.story.chIndex, done: this.story.done, inv: this.inv.toJSON(), hour: this.time.hour, day: this.time.day, season: this.season, flags: this.flags, hp: P.hp, hunger: P.hunger, thirst: P.thirst, journal: this.ui.journal, skills: [...this.lessons.done], lore: [...this.ui.loreSeen], explored: Array.from(this.ui.explored), discovered: [...this.ui.discovered], felled: this.felling.toJSON() });
+    store.set('vanaj-save-v2', { pin: this.ui.pin || null, ch: this.story.chIndex, done: this.story.done, inv: this.inv.toJSON(), hour: this.time.hour, day: this.time.day, season: this.season, flags: this.flags, hp: P.hp, hunger: P.hunger, thirst: P.thirst, journal: this.ui.journal, skills: [...this.lessons.done], lore: [...this.ui.loreSeen], explored: Array.from(this.ui.explored), discovered: [...this.ui.discovered], felled: this.felling.toJSON(), world: this.director.toJSON() });
   }
   loadSave() {
-    const s = store.get('vanaj-save-v1'); if (!s) return this.beginNew();
-    this.inv.load(s.inv || {}); this.flags = s.flags || {}; this.time.day = s.day || 0;
+    const s = store.get('vanaj-save-v2'); if (!s) return this.beginNew();
+    this.inv.load(s.inv || {}); this.flags = s.flags || {}; this.time.day = s.day || 0; this.director.load(s.world);
     this.felling.load(s.felled);
     this.lessons.reset(); for (const k of s.skills || []) this.lessons.done.add(k);
     this.ui.journal = s.journal || []; this.ui.loreSeen = new Set(s.lore || []); this.ui.discovered = new Set(s.discovered || []);
@@ -1148,7 +1138,8 @@ class Game {
     // kept everything moving under the pause menu.)
     G.uTime.value += dt * 2;
     // title screen camera: slow drift over the forest
-    if (!this.playing) {
+    if (!this.playing && this.cine) this.cine(rdt);   // the opening has the camera
+    else if (!this.playing) {
       this.titleCam += rdt;
       this.titleShot(this.titleCam);
       this.time.hour = 7.35 + Math.sin(this.titleCam * 0.012) * 0.15;
@@ -1160,10 +1151,11 @@ class Game {
       // interaction prompt: nothing it depends on changes faster than a few times a second, and each look allocates a good deal
       this._lookT = (this._lookT || 0) - dt;
       if (this.uiBlocking) { this.currentInteraction = null; this._finishP = ''; this._lookT = 0; }
-      else if (this._lookT <= 0) { this._lookT = 0.12; this.currentInteraction = this.findInteraction(); this._finishP = this.currentInteraction ? '' : this.finishPromptFor() || this.felling.promptFor(); }
+      else if (this._lookT <= 0) { this._lookT = 0.12; this.currentInteraction = this.findInteraction(); this._finishP = this.currentInteraction ? '' : this.felling.promptFor(); }
       this.ui.setPrompt(P.canopy.prompt && !this.uiBlocking ? `<kbd>E</kbd> ${P.canopy.prompt}` : this.currentInteraction ? `<kbd>E</kbd> ${this.currentInteraction.prompt}` : this._finishP);
       this.story.update(dt);
       this.lessons.update(dt);
+      this.director.update(dt); this.forest.update(dt); this.barks.update(dt);
     }
     const pf = this.perf; pf.mark('player');
     const focus = this.playing ? P.pos : this.camera.position;
@@ -1226,25 +1218,18 @@ class Game {
       if (this.music && !this.playing) this.music.titleUpdate(rdt);
       if (this.music && this.playing) {
         let threat = 0;
-        for (const a of this.eco.animals) if (!a.dead && !a.companion && a.target === 'player' && a.dist2(P.pos) < 60 * 60) { if (['charge', 'attack', 'pounce'].includes(a.state)) threat = Math.max(threat, a.d.kind === 'predator' ? 1 : 0.6); else if (a.state === 'stalk') threat = Math.max(threat, 0.3); }
+        for (const a of this.eco.animals) if (!a.dead && !a.routed && !a.companion && a.target === 'player' && a.dist2(P.pos) < 60 * 60) { if (['charge', 'attack', 'pounce'].includes(a.state)) threat = Math.max(threat, a.d.kind === 'predator' ? 1 : 0.6); else if (a.state === 'stalk') threat = Math.max(threat, 0.3); }
         this.combatLevel = lerp(this.combatLevel || 0, threat, Math.min(1, rdt * (threat > (this.combatLevel || 0) ? 3 : 0.25)));
         if (!this.story.scriptMusic) this.music.setCombat(Math.max(this.combatLevel > 0.15 ? this.combatLevel : 0, this.music.combat > 0.9 && threat === 0 && this.combatLevel > 0.1 ? 0.2 : 0));
-        this.music.update(rdt, this.time.hour, this.season, { suppress: this.paused });
+        this.music.update(rdt, this.time.hour, this.season, { suppress: this.paused, forest: this.world.forest, talking: this.talk.busy });
       }
     }
     pf.mark('audio');
+    if (!this.paused) { this.talk.update(rdt); if (this.playing) this.emotes.update(rdt, this); }
     this.ui.update(rdt);
     pf.mark('ui');
   }
-  finishPromptFor() {
-    const P = this.player;
-    for (const a of this.eco.animals) {
-      if (a.dist2(P.pos) > 2.6 * 2.6 || a.companion) continue;
-      if (a.downed) return '<kbd>F</kbd> Finish him';
-      if (!a.dead && a.hp < a.maxHp * 0.22 && (a.stagger > 0 || a.limp > 0.5 || a.state === 'retreat')) return '<kbd>F</kbd> Finish it';
-    }
-    return null;
-  }
+  finishPromptFor() { return null; }
   render(rdt) {
     const P = this.player, gr = this.grade.uniforms;
     // where he is on screen, for the leaves between him and the camera (js/world/flora.js)

@@ -23,8 +23,7 @@ export function iconFor(k) {
     case 'fiber': for (let i = 0; i < 6; i++) line('#b49a64', 2, [[18 + i * 3, 54], [28 + i * 2, 30], [22 + i * 4, 10]]); break;
     case 'bamboo': x.fillStyle = '#a8a848'; x.fillRect(26, 6, 12, 52); line('#6a6a24', 2, [[26, 22], [38, 22]]); line('#6a6a24', 2, [[26, 40], [38, 40]]); break;
     case 'leaves': for (let i = 0; i < 3; i++) { x.save(); x.translate(32, 36); x.rotate(-0.8 + i * 0.8); x.fillStyle = ['#5a7a32', '#6a8a3a', '#4e6e2a'][i]; x.beginPath(); x.ellipse(0, -12, 7, 15, 0, 0, 6.28); x.fill(); x.restore(); } break;
-    case 'meat_raw': blob('#9a2a24'); blob('#e0c8b0', 40, 30, 5); break;
-    case 'meat_cooked': blob('#6a3a1e'); blob('#9a5a2a', 28, 30, 7); break;
+    case 'meat_raw': case 'meat_cooked': { const raw = k === 'meat_raw'; x.fillStyle = raw ? '#8fa6ac' : '#b06a2c'; x.beginPath(); x.ellipse(29, 33, 19, 10, -0.25, 0, 6.28); x.fill(); x.beginPath(); x.moveTo(44, 28); x.lineTo(58, 16); x.lineTo(57, 38); x.closePath(); x.fill(); x.fillStyle = raw ? '#dfe9ea' : '#e0a050'; x.beginPath(); x.ellipse(27, 37, 13, 4, -0.25, 0, 6.28); x.fill(); x.fillStyle = '#1c1612'; x.beginPath(); x.arc(17, 32, 2.2, 0, 6.28); x.fill(); break; }
     case 'hide': x.fillStyle = '#9a6a3a'; x.beginPath(); x.moveTo(12, 20); x.quadraticCurveTo(32, 8, 52, 20); x.lineTo(48, 50); x.quadraticCurveTo(32, 58, 16, 50); x.closePath(); x.fill(); break;
     case 'bone': line('#e0d6c0', 6, [[16, 48], [48, 16]]); blob('#e0d6c0', 14, 50, 6); blob('#e0d6c0', 50, 14, 6); break;
     case 'sinew': for (let i = 0; i < 3; i++) line('#d8c8a8', 2, [[14, 20 + i * 8], [32, 30 + i * 6], [50, 22 + i * 8]]); break;
@@ -131,8 +130,8 @@ export class UI {
     // vignette / blood
     P.hurtFlash = Math.max(0, P.hurtFlash - dt * 0.8);
     const low = P.hp < 35 ? (35 - P.hp) / 35 : 0;
-    this.put(this.vignette, 'o', Math.min(1, P.hurtFlash * 0.9 + low * 0.7 + (P.bleed > 0 ? 0.15 : 0)).toFixed(2));
-    this.put(this.bloodOv, 'o', Math.min(0.85, P.hurtFlash * 0.8 + low * 0.5).toFixed(2));
+    this.put(this.vignette, 'o', Math.min(1, P.hurtFlash * 0.9 + low * 0.7).toFixed(2));
+    this.put(this.bloodOv, 'o', '0');
     // compass (only the marks in view, and only when he has turned)
     const yawDeg = ((-P.yaw * 180 / Math.PI) % 360 + 360) % 360; // 0 = north
     if (!this.compassW) { this.compassW = this.compass.parentElement.clientWidth; this._yaw = 1e9; }
@@ -149,9 +148,6 @@ export class UI {
     }
     this.updateMarkers(yawDeg, W, dt);
     this.updatePointer(dt);
-    // subtitles
-    if (this.subT > 0) { this.subT -= dt; if (this.subT <= 0) { this.sub.classList.remove('show'); } }
-    if (this.subT <= 0 && this.subQ.length) { const s = this.subQ.shift(); this.sub.innerHTML = s.text; this.sub.classList.add('show'); this.subT = s.dur; }
     // toasts
     if (this.toasts.length) {
       for (const t of this.toasts) { t.ttl -= dt; if (t.ttl <= 0 && !t.gone) { t.gone = true; t.el.classList.add('out'); setTimeout(() => t.el.remove(), 500); } }
@@ -172,7 +168,6 @@ export class UI {
     const dim = P.stamina > 98; if (dim !== this._dim) { $('bar-st-wrap').classList.toggle('dim', dim); this._dim = dim; }
     let st = '';
     const chip = (cls, ic, what) => `<span class="st ${cls}" title="${what}" aria-label="${what}">${icon(ic)}</span>`;
-    if (P.bleed > 0.2) st += chip('bleed', 'bleed', 'Bleeding');
     if (P.sick > 0) st += chip('sick', 'sick', 'Sick');
     if (P.drunk > 0.3) st += chip('drunk', 'drunk', 'Mahua-drunk');
     if (P.hunger < 20) st += chip('warn', 'food', 'Starving');
@@ -301,12 +296,11 @@ export class UI {
     this.compassMarks.push({ x, z, label, cls: 'alarm', ttl: 14 });
   }
   // ------------------------------------------------------------------ text
-  narrate(lines, opts = {}) {
-    for (const l of [].concat(lines)) { const words = l.replace(/<[^>]+>/g, '').split(/\s+/).length; this.subQ.push({ text: `<em>${l}</em>`, dur: Math.max(3, words * 0.38 + 1.2) }); }
-  }
-  say(text, dur = 4) { this.subQ.push({ text, dur }); }
+  // the older Vanaj, remembering: it goes through the one queue for everything said (js/game/dialogue.js)
+  narrate(lines) { return this.g.talk.say([].concat(lines)); }
+  say(text) { return this.g.talk.say([text]); }
   // drop any lines still waiting (a new chapter, or back to the title)
-  clearNarration() { this.subQ.length = 0; this.subT = 0; this.sub.classList.remove('show'); }
+  clearNarration() { this.g.talk.clear(); }
   // objective and hint text names keys; on a phone it names the buttons
   forThumbs(text) {
     if (!this.g.touch || typeof text !== 'string') return text;
@@ -334,10 +328,10 @@ export class UI {
   buildWheel() {
     const w = $('wheel'); w.innerHTML = '<div class="wcenter">Call</div>';
     this.wheelOpts = [
-      { id: 'hum', name: 'Calm hum', desc: 'Crouch, lower your weapon. Builds trust.' },
-      { id: 'langur', name: 'Langur cough', desc: 'Fake alarm. Scatters prey.' },
-      { id: 'roar', name: 'Roar & chest-beat', desc: 'Drives off boar, dholes, leopards. Tigers fear only fire.' },
-      { id: 'whistle', name: 'Dhole whistle', desc: 'Call your companion, or send it at what you look at.' },
+      { id: 'hum', name: 'Calm hum', desc: 'Crouch with empty hands. Animals learn to trust you.' },
+      { id: 'langur', name: 'Langur cough', desc: 'A false alarm. Sends deer and birds running.' },
+      { id: 'roar', name: 'Roar', desc: 'Drives off boar, dholes and leopards. A tiger only gives way if you hold fire.' },
+      { id: 'whistle', name: 'Whistle', desc: 'Call your companion, or send them to chase off what you look at.' },
       { id: 'flute', name: 'Four notes', desc: 'Play the four notes on the bamboo flute.' },
     ];
     this.wheelOpts.forEach((o, i) => {
@@ -376,43 +370,90 @@ export class UI {
     $(this.open).classList.remove('show'); this.open = null; this.g.uiBlocking = false;
     if (!silent) this.g.requestLock();
   }
+  // The bag: everything carried as tiles (tap one to see what it is and what can be done with it), sorted under a few plain
+  // headings, and beside it what can be made, the things he can make right now first.
   renderInv() {
-    const inv = this.g.inv;
+    const g = this.g, inv = g.inv;
+    const kind = (k) => { const d = ITEMS[k] || {}; return d.story ? 'keep' : d.food ? 'food' : d.weapon || ['arrow', 'bandage', 'hidewrap', 'flute'].includes(k) ? 'tool' : 'stuff'; };
+    const TABS = [['all', 'All'], ['food', 'Food'], ['tool', 'Tools'], ['stuff', 'Materials'], ['keep', 'Keepsakes']];
+    const all = Object.keys(inv.items), tab = this.invTab && all.some((k) => kind(k) === this.invTab) ? this.invTab : 'all'; this.invTab = tab;
+    const tabs = $('inv-tabs'); tabs.innerHTML = '';
+    for (const [id, name] of TABS) {
+      const n = id === 'all' ? all.length : all.filter((k) => kind(k) === id).length; if (id !== 'all' && !n) continue;
+      const t = el('button', 'tab' + (id === tab ? ' on' : ''), `${name}<i>${n}</i>`); t.onclick = () => { this.invTab = id; this.renderInv(); }; tabs.appendChild(t);
+    }
+    const order = { tool: 0, food: 1, stuff: 2, keep: 3 }, keys = all.filter((k) => tab === 'all' || kind(k) === tab).sort((x, y) => order[kind(x)] - order[kind(y)]);
     const list = $('inv-items'); list.innerHTML = '';
-    const keys = Object.keys(inv.items).sort((a, b) => (ITEMS[a]?.story ? 1 : 0) - (ITEMS[b]?.story ? 1 : 0));
     if (!keys.length) list.innerHTML = '<p class="empty">Nothing yet. Pick up sticks and stones off the ground.</p>';
+    if (!keys.includes(this.invSel)) this.invSel = keys[0];
     for (const k of keys) {
-      const d = ITEMS[k] || { name: k };
-      const e = el('div', 'item' + (d.story ? ' story' : ''), `<img src="${iconFor(k)}"><b>${d.name}</b><i>${inv.count(k)}</i><span>${d.desc || ''}</span>`);
-      if (d.food) { const b = el('button', 'use', 'Eat'); b.onclick = () => { this.g.eat(k); this.renderInv(); }; e.appendChild(b); }
-      if (k === 'bandage') { const b = el('button', 'use', 'Bind'); b.onclick = () => { this.g.useBandage(); this.renderInv(); }; e.appendChild(b); }
-      if (d.weapon) { const b = el('button', 'use', inv.equipped === k ? 'Held' : 'Hold'); b.onclick = () => { this.g.player.equip(k); this.renderInv(); }; e.appendChild(b); }
-      list.appendChild(e);
+      const d = ITEMS[k] || { name: k }, held = inv.equipped === k;
+      const t = el('button', 'tile' + (k === this.invSel ? ' sel' : '') + (held ? ' held' : '') + (d.story ? ' story' : ''), `<img src="${iconFor(k)}" alt=""><i>${inv.count(k)}</i><span>${d.name}</span>`);
+      t.onclick = () => { this.invSel = k; this.renderInv(); }; list.appendChild(t);
     }
+    // the one picked: what it is, and the one or two things to do with it
+    const D = $('inv-detail'); D.innerHTML = '';
+    const k = this.invSel, d = k && ITEMS[k];
+    if (d) {
+      D.appendChild(el('div', 'dhead', `<img src="${iconFor(k)}" alt=""><div><b>${d.name}</b><span>${d.desc || ''}</span></div>`));
+      const acts = el('div', 'dacts'), btn = (label, fn, main) => { const x = el('button', main ? 'main' : '', label); x.onclick = () => { fn(); this.renderInv(); }; acts.appendChild(x); };
+      if (d.food) { const f = d.food, bits = []; if (f.hunger) bits.push(`hunger +${f.hunger}`); if (f.hp) bits.push(`health +${f.hp}`); if (f.thirst) bits.push(`thirst +${f.thirst}`); if (f.sick) bits.push('may upset your stomach'); D.appendChild(el('p', 'dnote', bits.join(' · '))); btn('Eat', () => g.eat(k), true); }
+      if (k === 'bandage') btn('Bind up a hurt', () => g.useBandage(), true);
+      if (d.weapon) { if (inv.equipped === k) btn('Put away', () => g.player.equip('fists')); else btn('Hold', () => g.player.equip(k), true); }
+      if (acts.children.length) D.appendChild(acts);
+    }
+    $('inv-armor').textContent = inv.armor ? 'Wearing a bark-cloth wrap (blows land softer)' : '';
     const rl = $('inv-recipes'); rl.innerHTML = '';
-    for (const r of RECIPES) {
-      if (r.lock && inv.locks.has(r.lock)) continue;
-      const can = inv.canCraft(r);
-      const req = Object.entries(r.needs).map(([k, n]) => `<span class="${inv.count(k) >= n ? 'ok' : 'no'}">${n} ${ITEMS[k].name}</span>`).join('');
-      const alt = r.alt ? ' <em>or</em> ' + Object.entries(r.alt).map(([k, n]) => `<span class="${inv.count(k) >= n ? 'ok' : 'no'}">${n} ${ITEMS[k].name}</span>`).join('') : '';
-      const tool = r.tool ? `<span class="${inv.has(r.tool) ? 'ok' : 'no'}">needs ${ITEMS[r.tool].name}</span>` : '';
-      const e = el('div', 'recipe' + (can ? ' can' : ''), `<img src="${iconFor(r.id)}"><div><b>${ITEMS[r.id].name}${r.makes ? ' ×' + r.makes : ''}</b><p>${req}${alt} ${tool}</p>${r.desc ? `<small>${r.desc}</small>` : ''}</div>`);
-      const b = el('button', 'craft', 'Craft'); b.disabled = !can; b.onclick = () => { this.g.craft(r); this.renderInv(); };
-      e.appendChild(b); rl.appendChild(e);
+    const rs = RECIPES.filter((r) => !(r.lock && inv.locks.has(r.lock))).map((r) => ({ r, can: inv.canCraft(r) })).sort((x, y) => (y.can ? 1 : 0) - (x.can ? 1 : 0));
+    for (const { r, can } of rs) {
+      const chip = ([key, n]) => `<span class="need ${inv.count(key) >= n ? 'ok' : 'no'}"><img src="${iconFor(key)}" alt="">${Math.min(inv.count(key), n)}/${n} ${ITEMS[key].name}</span>`;
+      const ok = (req) => Object.entries(req).every(([key, n]) => inv.count(key) >= n), use = r.alt && !ok(r.needs) && ok(r.alt) ? r.alt : r.needs;
+      const req = Object.entries(use).map(chip).join('') + (r.alt && use === r.needs ? `<em>or</em>${Object.entries(r.alt).map(chip).join('')}` : '') + (r.tool ? `<span class="need tool ${inv.has(r.tool) ? 'ok' : 'no'}"><img src="${iconFor(r.tool)}" alt="">needs ${ITEMS[r.tool].name}</span>` : '');
+      const e = el('div', 'recipe' + (can ? ' can' : ''), `<img src="${iconFor(r.id)}" alt=""><div><b>${ITEMS[r.id].name}${r.makes ? ' ×' + r.makes : ''}</b><p>${req}</p>${r.desc ? `<small>${r.desc}</small>` : ''}</div>`);
+      const bt = el('button', 'craft', 'Make'); bt.disabled = !can; bt.onclick = () => { g.craft(r); this.renderInv(); };
+      e.appendChild(bt); rl.appendChild(e);
     }
-    $('inv-armor').textContent = inv.armor ? 'Wearing hide wrap (−20% damage)' : '';
   }
   addJournal(title, text, kind = 'story') { this.journal.push({ title, text, kind }); this.toast(`Journal: ${title}`, 4); }
   seeLore(k) { if (LORE[k] && !this.loreSeen.has(k)) { this.loreSeen.add(k); this.toast(`Forest lore: ${LORE[k].name}`, 3.5); } }
+  // The journal, a page at a time: the story so far, the forest's animals and plants, how each kind of animal takes him,
+  // and what he has learned to do.
   renderJournal() {
-    $('j-skills').innerHTML = this.g.lessons.list();
-    const s = $('j-story'); s.innerHTML = '';
-    if (!this.journal.length) s.innerHTML = '<p class="empty">Nothing written yet.</p>';
-    for (const j of [...this.journal].reverse()) s.appendChild(el('div', 'jentry ' + j.kind, `<h3>${j.title}</h3><p>${j.text}</p>`));
-    const l = $('j-lore'); l.innerHTML = '';
-    for (const k of Object.keys(LORE)) {
-      const L = LORE[k], seen = this.loreSeen.has(k);
-      l.appendChild(el('div', 'lentry' + (seen ? '' : ' locked'), seen ? `<h3>${L.name} <i>${L.sci || ''}</i></h3><p>${L.text}</p>` : `<h3>Unknown</h3><p>Not yet encountered.</p>`));
+    const g = this.g, PAGES = [['story', 'Story'], ['lore', 'Forest'], ['friends', 'Animals and you'], ['skills', 'Skills']];
+    const page = this.jPage || 'story', tabs = $('j-tabs'); tabs.innerHTML = '';
+    for (const [id, name] of PAGES) { const t = el('button', 'tab' + (id === page ? ' on' : ''), name); t.onclick = () => { this.jPage = id; this.renderJournal(); }; tabs.appendChild(t); $('j-' + id).style.display = id === page ? '' : 'none'; }
+    if (page === 'skills') { $('j-skills').innerHTML = g.lessons.list(); return; }
+    if (page === 'story') {
+      const st = $('j-story'); st.innerHTML = '';
+      const S = g.story, c = S.chapter;
+      if (c) st.appendChild(el('div', 'jnow', `<i>${c.act}</i><b>${c.title}</b><span>${this.forThumbs(S.objText()) || ''}</span>`));
+      if (!this.journal.length) st.appendChild(el('p', 'empty', 'Nothing written yet. What you find will be kept here.'));
+      for (const j of [...this.journal].reverse()) st.appendChild(el('div', 'jentry ' + j.kind, `<em>${j.kind === 'clue' ? 'Found' : 'Remembered'}</em><h3>${j.title}</h3><p>${j.text}</p>`));
+      return;
+    }
+    if (page === 'lore') {
+      const l = $('j-lore'); l.innerHTML = '';
+      const keys = Object.keys(LORE), seen = keys.filter((k) => this.loreSeen.has(k));
+      l.appendChild(el('p', 'jcount', `${seen.length} of ${keys.length} found`));
+      const grid = el('div', 'lgrid'); l.appendChild(grid);
+      for (const k of [...seen, ...keys.filter((x) => !this.loreSeen.has(x))]) {
+        const L = LORE[k], ok = this.loreSeen.has(k);
+        grid.appendChild(el('div', 'lentry' + (ok ? '' : ' locked'), ok ? `<h3>${L.name}</h3>${L.sci ? `<i>${L.sci}</i>` : ''}<p>${L.text}</p>` : '<h3>?</h3><p>Not met yet</p>'));
+      }
+      return;
+    }
+    // how each kind he has met takes him: from his standing with them (js/sim/director.js)
+    const f = $('j-friends'); f.innerHTML = '';
+    const W = g.world, NAMES = { chital: 'Chital', sambar: 'Sambar', gaur: 'Gaur', boar: 'Wild boar', langur: 'Langurs', peafowl: 'Peafowl', bear: 'Sloth bear', dhole: 'Dholes', leopard: 'Leopard', tiger: 'Tiger', mugger: 'Mugger', cow: 'Cattle', dog: 'Village dogs', wolf: 'Wolf' };
+    const STEPS = ['Runs from you', 'Wary', 'Watchful', 'Curious', 'Easy with you', 'Trusts you'];
+    const met = Object.keys(W.seen || {});
+    f.appendChild(el('p', 'jcount', 'Animals remember how you treat their kind. Crouch, put your weapon away and hum, and they let you closer. Chase or strike them and they keep their distance.'));
+    if (!met.length) f.appendChild(el('p', 'empty', 'You have not been close to anything yet.'));
+    for (const sp of met) {
+      const r = (W.rep && W.rep[sp]) || 0, hunter = ['tiger', 'leopard', 'dhole', 'mugger'].includes(sp);
+      const i = hunter ? -1 : r < -0.3 ? 0 : r < -0.05 ? 1 : r < 0.15 ? 2 : r < 0.45 ? 3 : r < 0.75 ? 4 : 5;
+      const dots = hunter ? '' : STEPS.map((_, n) => `<i class="${n <= i ? 'on' : ''}"></i>`).join('');
+      f.appendChild(el('div', 'friend', `<b>${NAMES[sp] || sp}</b><div class="meter">${dots}</div><span>${hunter ? 'A hunter. Fire and a steady voice, not friendship.' : STEPS[i]}</span>`));
     }
   }
   // the explored land is drawn clear; the rest lies under a parchment wash that still shows its shape, with
@@ -454,7 +495,7 @@ export class UI {
     L.forEach(([col, name], i) => { const yy = S - 18 - (L.length - 1 - i) * 18; x.fillStyle = col; x.fillRect(14, yy - 10, 14, 12); x.strokeStyle = 'rgba(58,42,28,0.5)'; x.lineWidth = 1; x.strokeRect(14, yy - 10, 14, 12); x.fillStyle = ink; x.fillText(name, 34, yy); });
   }
   showDeath(cause) {
-    const msgs = { bleed: "You bled out.", drown: "You drowned.", starve: "You starved.", thirst: "You died of thirst.", fall: "That was too far to fall.", wounds: "The forest got you." };
+    const msgs = { drown: 'The river was stronger than you.', starve: 'You were too hungry to go on.', thirst: 'You were too thirsty to go on.', fall: 'That was too far to fall.', wounds: 'It was too much for you. This time.' };
     $('death-msg').textContent = msgs[cause] || msgs.wounds;
     $('death').classList.add('show'); this.g.uiBlocking = true; document.exitPointerLock && document.exitPointerLock();
   }

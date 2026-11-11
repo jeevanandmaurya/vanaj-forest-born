@@ -32,6 +32,9 @@ class Rope {
   }
 }
 
+// Catmull-Rom through four values: the point at t, and the slope there
+const crP = (a, b, c, d, t, t2, t3) => 0.5 * (2 * b + (c - a) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (3 * b - a - 3 * c + d) * t3);
+const crT = (a, b, c, d, t, t2) => (c - a) + 2 * (2 * a - 5 * b + 4 * c - d) * t + 3 * (3 * b - a - 3 * c + d) * t2;
 export class Ropes {
   constructor(game) {
     this.g = game; this.active = new Map(); this.t = 0;
@@ -145,12 +148,12 @@ export class Ropes {
         // Catmull-Rom between the nodes
         const i0 = Math.max(0, i - 1) * 3, i1 = i * 3, i2 = (i + 1) * 3, i3 = Math.min(n - 1, i + 2) * 3, t2 = t * t, t3 = t2 * t;
         let px, py, pz, tx, ty, tz;
-        { const c = (k) => 0.5 * (2 * x[i1 + k] + (x[i2 + k] - x[i0 + k]) * t + (2 * x[i0 + k] - 5 * x[i1 + k] + 4 * x[i2 + k] - x[i3 + k]) * t2 + (3 * x[i1 + k] - x[i0 + k] - 3 * x[i2 + k] + x[i3 + k]) * t3);
-          const d = (k) => (x[i2 + k] - x[i0 + k]) + 2 * (2 * x[i0 + k] - 5 * x[i1 + k] + 4 * x[i2 + k] - x[i3 + k]) * t + 3 * (3 * x[i1 + k] - x[i0 + k] - 3 * x[i2 + k] + x[i3 + k]) * t2;
-          px = c(0); py = c(1); pz = c(2); tx = d(0); ty = d(1); tz = d(2); }
-        const tl = Math.hypot(tx, ty, tz) || 1; tx /= tl; ty /= tl; tz /= tl;
+        // (plain functions: two closures a ring, for every ring of every rope, every frame, were over a megabyte of garbage a second)
+        px = crP(x[i0], x[i1], x[i2], x[i3], t, t2, t3); py = crP(x[i0 + 1], x[i1 + 1], x[i2 + 1], x[i3 + 1], t, t2, t3); pz = crP(x[i0 + 2], x[i1 + 2], x[i2 + 2], x[i3 + 2], t, t2, t3);
+        tx = crT(x[i0], x[i1], x[i2], x[i3], t, t2); ty = crT(x[i0 + 1], x[i1 + 1], x[i2 + 1], x[i3 + 1], t, t2); tz = crT(x[i0 + 2], x[i1 + 2], x[i2 + 2], x[i3 + 2], t, t2);
+        const tl = Math.sqrt(tx * tx + ty * ty + tz * tz) || 1; tx /= tl; ty /= tl; tz /= tl;
         // carry a normal down the rope
-        const dot = nx * tx + ny * ty + nz * tz; nx -= tx * dot; ny -= ty * dot; nz -= tz * dot; const nl = Math.hypot(nx, ny, nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+        const dot = nx * tx + ny * ty + nz * tz; nx -= tx * dot; ny -= ty * dot; nz -= tz * dot; const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1; nx /= nl; ny /= nl; nz /= nl;
         const bx = ty * nz - tz * ny, by = tz * nx - tx * nz, bz = tx * ny - ty * nx;
         const k = r / (rows - 1), rad = R.r0 + (R.r1 - R.r0) * (R.fixed ? k * k : k * 0.2) + (R.fixed ? 0.012 * Math.sin(r * 1.9 + R.ph) : 0);
         const tone = 0.86 + 0.18 * Math.sin(r * 2.3 + R.ph);

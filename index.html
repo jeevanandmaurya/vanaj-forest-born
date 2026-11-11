@@ -23,7 +23,7 @@ button { font-family:var(--sans); cursor:pointer; }
 /* loading */
 #loading { position:fixed; inset:0; background:radial-gradient(ellipse at 50% 60%, #1d1a13 0%, #070705 70%); display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:60; transition:opacity 1.2s; }
 #loading.hide { opacity:0; pointer-events:none; display:flex !important; }
-#loading h1 { font-family:var(--serif); font-weight:500; font-size:84px; letter-spacing:.32em; padding-left:.32em; color:var(--bone); }
+#loading h1 { font-family:var(--serif); font-weight:500; font-size:84px; letter-spacing:.32em; padding-left:.32em; color:var(--bone); margin-bottom:44px; }
 #loading p.q { font-family:var(--serif); font-style:italic; font-size:21px; color:var(--bone2); margin:18px 0 46px; max-width:620px; text-align:center; line-height:1.5; }
 .lbar { width:320px; height:2px; background:rgba(255,255,255,.1); overflow:hidden; } #load-bar { height:100%; width:0; background:var(--ochre); transition:width .3s; }
 #load-step { margin-top:14px; font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:rgba(235,227,208,.5); }
@@ -109,8 +109,16 @@ button { font-family:var(--sans); cursor:pointer; }
 .cross.hit::after { content:''; position:absolute; left:-10px; top:-10px; width:20px; height:20px; border:2px solid #fff; transform:rotate(45deg) scale(.7); opacity:.9; }
 .cross.kill::after { border-color:#ff4a3a; }
 #prompt { position:absolute; left:50%; top:calc(50% + 46px); transform:translateX(-50%); font-size:14px; letter-spacing:.03em; text-shadow:0 1px 8px #000; opacity:0; transition:opacity .2s; white-space:nowrap; }
-#subtitle { position:absolute; left:50%; bottom:max(13vh, 150px); transform:translateX(-50%); width:min(820px, 60vw); text-align:center; font-family:var(--serif); font-size:27px; line-height:1.35; text-shadow:0 2px 14px rgba(0,0,0,.95), 0 0 2px #000; opacity:0; transition:opacity .8s; }
+#subtitle { position:absolute; left:50%; bottom:max(13vh, 150px); transform:translateX(-50%); width:min(640px, 54vw); text-align:center; font-family:var(--serif); font-size:23px; line-height:1.35; text-shadow:0 2px 14px rgba(0,0,0,.95), 0 0 2px #000; opacity:0; transition:opacity .8s; }
 #subtitle.show { opacity:1; } #subtitle em { font-style:italic; }
+/* someone speaking: a strip of paper with their face, their name, the call it was, and the words */
+#talk { position:absolute; left:50%; bottom:max(14.5vh, 132px); transform:translate(-50%, 10px); width:max-content; max-width:min(600px, 58vw); display:flex; gap:10px; align-items:center; padding:5px 14px 6px 6px; background:radial-gradient(ellipse at 20% 10%, #f9f0da 0%, #f0e2be 100%); border:2px solid rgba(90,64,38,.82); border-radius:16px; box-shadow:0 8px 26px rgba(0,0,0,.38), inset 0 0 0 3px rgba(249,240,218,.9); color:#3b2a1a; opacity:0; pointer-events:none; transition:opacity .22s, transform .22s; z-index:6; }
+#talk.show { opacity:1; transform:translate(-50%, 0); pointer-events:auto; cursor:pointer; }
+#talk img { width:44px; height:44px; border-radius:50%; background:#fff8e6; border:2px solid rgba(90,64,38,.82); flex:none; }
+#talk b { display:inline-block; color:#fff8ea; font:600 11.5px/1.5 var(--sans); letter-spacing:.09em; text-transform:uppercase; padding:1px 10px; border-radius:10px; text-shadow:0 1px 1px rgba(0,0,0,.3); }
+#talk i { font:italic 500 15px var(--serif); color:rgba(59,42,26,.7); margin-left:9px; }
+#talk p { font:500 19px/1.25 var(--serif); margin-top:1px; }
+@media (max-height:540px), (max-width:760px) { #talk { bottom:max(21vh, 92px); max-width:min(440px, 50vw); padding:3px 10px 4px 4px; gap:7px; border-radius:12px; } #talk img { width:30px; height:30px; } #talk p { font-size:14.5px; } #talk i { font-size:12.5px; } #talk b { font-size:10px; } }
 #place { position:absolute; left:0; right:0; top:22%; text-align:center; pointer-events:none; opacity:0; color:#efe6d2; text-shadow:0 2px 14px rgba(0,0,0,.75); }
 #place.show { animation: placeIn 6s ease forwards; }
 #place .pn { font: 400 44px/1.1 'Cormorant Garamond', Georgia, serif; letter-spacing:.12em; }
@@ -148,7 +156,31 @@ button { font-family:var(--sans); cursor:pointer; }
 .recipe button:disabled { opacity:.3; cursor:default; }
 .empty { color:var(--bone2); font-size:13px; font-style:italic; }
 /* journal */
-.journal { grid-template-columns:minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.1fr); }
+.journal { grid-template-columns:minmax(0, 1fr); }
+/* bag and journal: tabs, tiles, and one thing at a time */
+.tabs { display:flex; flex-wrap:wrap; gap:6px; margin:0 44px 12px 0; }
+.tab { background:rgba(90,64,38,.08); border:1.5px solid rgba(90,64,38,.35); border-radius:18px; color:var(--inkb); font:600 13px var(--sans); padding:7px 14px; min-height:36px; }
+.tab i { font-style:normal; opacity:.6; margin-left:6px; } .tab.on { background:#5a4026; border-color:#5a4026; color:#f7eed6; }
+.bagL { display:flex; flex-direction:column; } .bagL .tabs { margin-right:0; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(78px, 1fr)); gap:8px; align-content:start; }
+.tile { position:relative; display:flex; flex-direction:column; align-items:center; gap:2px; padding:8px 4px 6px; background:rgba(255,250,235,.55); border:1.5px solid rgba(90,64,38,.3); border-radius:12px; color:var(--inkb); min-height:84px; }
+.tile img { width:42px; height:42px; } .tile span { font:600 11.5px/1.15 var(--sans); text-align:center; } .tile i { position:absolute; right:5px; top:4px; font:700 12px var(--sans); font-style:normal; color:#fff8ea; background:#a0562a; border-radius:9px; min-width:19px; padding:1px 5px; text-align:center; }
+.tile.sel { border-color:#a0562a; background:#fff6dc; box-shadow:0 0 0 2px rgba(160,86,42,.35); } .tile.held::after { content:'in hand'; position:absolute; left:5px; top:5px; font:700 9px var(--sans); letter-spacing:.04em; color:#3d6a2c; } .tile.story { border-style:dashed; }
+#inv-detail { margin-top:12px; padding:10px 12px; background:rgba(255,250,235,.6); border:1.5px solid rgba(90,64,38,.3); border-radius:12px; min-height:74px; } #inv-detail:empty { display:none; }
+.dhead { display:flex; gap:10px; align-items:center; } .dhead img { width:46px; height:46px; flex:none; } .dhead b { display:block; font:600 20px var(--serif); } .dhead span { font-size:13px; color:rgba(59,42,26,.8); }
+.dnote { font-size:12.5px; color:#3d6a2c; margin:6px 0 0 56px; } .dacts { display:flex; gap:8px; margin-top:9px; justify-content:flex-end; }
+.dacts button, .recipe button.craft { background:rgba(90,64,38,.08); border:1.5px solid rgba(90,64,38,.5); border-radius:10px; color:var(--inkb); font:600 14px var(--sans); padding:8px 18px; min-height:38px; }
+.recipe > img { grid-column:1; grid-row:1; } .recipe > div { grid-column:2; grid-row:1; } .recipe > button { grid-column:3; grid-row:1; }
+.dacts button.main, .recipe.can button.craft { background:#a0562a; border-color:#a0562a; color:#fff8ea; }
+.need { display:inline-flex; align-items:center; gap:3px; font:600 12px var(--sans); padding:2px 8px 2px 3px; border-radius:10px; margin:2px 5px 2px 0; background:rgba(90,64,38,.08); } .need img { width:18px; height:18px; }
+.recipe p .need.ok { color:#3d6a2c; background:rgba(61,106,44,.13); } .recipe p .need.no { color:#a0402a; } .recipe p em { font-size:12px; margin-right:5px; }
+.jnow { padding:12px 14px; margin-bottom:6px; background:rgba(255,250,235,.6); border:1.5px solid rgba(90,64,38,.3); border-radius:12px; } .jnow i { display:block; font:600 11px var(--sans); letter-spacing:.14em; text-transform:uppercase; font-style:normal; color:#a0562a; } .jnow b { display:block; font:600 24px var(--serif); } .jnow span { font:500 17px var(--serif); }
+.jentry em { font:600 10.5px var(--sans); letter-spacing:.14em; text-transform:uppercase; font-style:normal; color:#a0562a; }
+.jcount { font-size:13px; color:rgba(59,42,26,.8); margin-bottom:10px; max-width:70ch; }
+.lgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(250px, 1fr)); gap:10px; } .lgrid .lentry { padding:10px 12px; background:rgba(255,250,235,.55); border:1.5px solid rgba(90,64,38,.25); border-radius:12px; border-bottom-width:1.5px; } .lgrid .lentry i { font-size:13px; display:block; margin-bottom:3px; } .lgrid .lentry.locked { opacity:.45; padding:10px 12px; } .lgrid .lentry.locked p { display:block; font-size:14px; }
+.friend { display:grid; grid-template-columns:minmax(110px, 180px) auto minmax(0, 1fr); gap:14px; align-items:center; padding:10px 0; border-bottom:1px solid var(--inkl); } .friend b { font:600 19px var(--serif); } .friend span { font-size:13.5px; color:rgba(59,42,26,.85); }
+.meter { display:flex; gap:4px; } .meter i { width:16px; height:16px; border-radius:50%; border:1.5px solid rgba(90,64,38,.5); } .meter i.on { background:#a0562a; border-color:#a0562a; }
+@media (max-width:760px), (max-height:520px) { .tiles { grid-template-columns:repeat(auto-fill, minmax(64px, 1fr)); } .tile { min-height:70px; } .tile img { width:32px; height:32px; } .friend { grid-template-columns:1fr auto; } .friend span { grid-column:1 / span 2; } }
 #skillcard { display:none; margin-top:9px; padding-top:8px; border-top:1px solid rgba(90,64,38,.35); }
 #skillcard.on { display:block; }
 #skillcard h5 { font-family:var(--sans); font-size:11px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:#a0562a; margin:0 0 5px; }
@@ -162,19 +194,19 @@ button { font-family:var(--sans); cursor:pointer; }
 .lentry { padding:10px 0; border-bottom:1px solid var(--line); } .lentry h3 i { font-size:14px; color:var(--bone2); font-weight:400; } .lentry.locked { opacity:.35; padding:5px 0; } .lentry.locked p { display:none; }
 #mapcv { width:min(calc(100vh - 122px), calc(100vw - 68px), 760px); height:auto; aspect-ratio:1; display:block; border:2px solid #6a5034; border-radius:4px; box-shadow:0 6px 30px rgba(0,0,0,.45); }
 #map .box { padding:14px 16px 16px; min-width:0; overflow:hidden; background:rgba(40,30,20,.88); } #map h2 { margin:0 0 8px; font-size:26px; }
-/* prologue */
-#prologue { position:fixed; inset:0; z-index:45; display:none; flex-direction:column; align-items:center; justify-content:center; gap:clamp(4px, 1.6vh, 14px); padding:clamp(8px, 2.4vh, 24px) 16px 0; opacity:0; transition:opacity .35s; background:#cdbb94 radial-gradient(ellipse at center, #dccdaa 40%, #b7a27a 100%); color:#2a2118; }
-#prologue.on { display:flex; } #prologue.show { opacity:1; }
-/* a painting on its page: ruled in ink with a band of red ochre, as album leaves are */
-#pro-frame { position:relative; flex:none; width:min(calc(100vw - 40px), calc((100vh - clamp(92px, 17vh, 150px)) * 16 / 9)); aspect-ratio:16 / 9; overflow:hidden; background:#d8c8a4; outline:1px solid #2a2118; box-shadow:0 0 0 4px #cdbb94, 0 0 0 9px #8c5140, 0 0 0 10px #2a2118; transition:opacity .8s; } #pro-frame.out { opacity:0; }
-.pro-plate { position:absolute; inset:0; width:100%; height:100%; will-change:transform, opacity; backface-visibility:hidden; }
-#prologue-line { flex:none; width:min(1000px, 90vw); min-height:clamp(52px, 11vh, 96px); padding:clamp(6px, 1.6vh, 14px) 76px 0; display:flex; align-items:center; justify-content:center; text-align:center; font-family:var(--serif); font-style:italic; font-weight:500; font-size:clamp(17px, 3.1vh, 29px); line-height:1.25; opacity:0; transition:opacity .45s; color:#2a2118; }
-#prologue-line.show { opacity:1; }
-#prologue-title { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; font-family:var(--serif); font-weight:500; font-size:clamp(70px, 16vh, 150px); letter-spacing:.24em; padding-left:.24em; color:#2a2118; opacity:0; transition:opacity 1.2s; pointer-events:none; }
-#prologue-title small { font-size:.2em; font-style:italic; letter-spacing:.14em; }
-#prologue-title.show { opacity:1; }
-#prologue-skip { position:absolute; right:18px; bottom:14px; background:none; border:1px solid rgba(42,33,24,.5); border-radius:3px; color:#2a2118; padding:5px 12px; font-family:var(--serif); font-size:15px; }
-#prologue-skip:hover { background:rgba(42,32,24,.16); }
+/* the opening: the world itself, between two dark bands, with one line of the story at a time */
+#cine { position:fixed; inset:0; z-index:45; display:none; opacity:0; transition:opacity .45s; pointer-events:auto; }
+#cine.on { display:block; } #cine.show { opacity:1; }
+#cine::before, #cine::after { content:''; position:absolute; left:0; right:0; height:11vh; background:#07060a; }
+#cine::before { top:0; } #cine::after { bottom:0; }
+#cine-line { position:absolute; left:50%; bottom:13.5vh; transform:translateX(-50%); width:min(900px, 86vw); text-align:center; font-family:var(--serif); font-style:italic; font-weight:500; font-size:clamp(18px, 3.4vh, 30px); line-height:1.35; color:#f4ead2; text-shadow:0 2px 14px rgba(0,0,0,.95), 0 0 3px #000; opacity:0; transition:opacity .5s; z-index:2; }
+#cine-line.show { opacity:1; }
+#cine-title { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; font-family:var(--serif); font-weight:500; font-size:clamp(64px, 15vh, 140px); letter-spacing:.26em; padding-left:.26em; color:#f4ead2; text-shadow:0 4px 40px rgba(0,0,0,.7); opacity:0; transition:opacity 1.4s; z-index:2; }
+#cine-title small { font-size:.2em; font-style:italic; letter-spacing:.14em; color:rgba(244,234,210,.8); margin-top:.5em; }
+#cine-title.show { opacity:1; }
+#cine-skip { position:absolute; right:20px; bottom:calc(5.5vh - 16px); z-index:3; background:none; border:1px solid rgba(244,234,210,.45); border-radius:16px; color:#f4ead2; padding:5px 16px; font-family:var(--serif); font-size:15px; }
+#cine-skip:hover { background:rgba(244,234,210,.14); }
+#cine-hint { position:absolute; left:20px; bottom:calc(5.5vh - 9px); z-index:3; font-family:var(--serif); font-style:italic; font-size:14px; color:rgba(244,234,210,.55); }
 /* choice, death, ending */
 #choice .box, #death .box { text-align:center; } #choice button, #death button, #pause button.big { display:block; width:100%; margin:9px 0; background:rgba(255,255,255,.04); border:1px solid var(--line); color:var(--bone); font-family:var(--serif); font-size:22px; padding:11px; } #choice button:hover, #death button:hover, #pause button.big:hover { border-color:var(--ochre); color:var(--ochre); }
 #death .box { background:rgba(20,4,3,.85); } #death h2 { color:#e8b0a0; } #death-msg { font-family:var(--serif); font-style:italic; font-size:24px; color:var(--bone2); margin-bottom:26px; }
@@ -289,7 +321,6 @@ button { font-family:var(--sans); cursor:pointer; }
 <div id="app">
   <div id="loading">
     <h1>VANAJ</h1>
-    <p class="q">“Before I had words, I had sounds. The langur’s cough meant a cat. The sambar’s bell meant a big cat. Silence meant the biggest cat of all.”</p>
     <div class="lbar"><div id="load-bar"></div></div>
     <div id="load-step">Starting</div>
     <div id="load-go"><button id="go-full">Play full screen</button><button id="go-stay">Stay in the browser</button></div>
@@ -326,6 +357,7 @@ button { font-family:var(--sans); cursor:pointer; }
     <div id="dmgind"></div>
     <div id="prompt"></div>
     <div id="subtitle"></div>
+    <div id="talk"><img alt=""><div><b></b><i></i><p></p></div></div>
     <div id="stats">
       <div class="bar"><label>Health</label><div id="bar-hp" style="width:100%"></div></div>
       <div class="bar" id="bar-st-wrap"><div id="bar-st" style="width:100%"></div></div>
@@ -338,7 +370,7 @@ button { font-family:var(--sans); cursor:pointer; }
   <div id="card"><h1></h1><h2></h2></div>
   <div id="fade"></div>
 
-  <div id="prologue"><div id="pro-frame"></div><div id="prologue-line"></div><div id="prologue-title">VANAJ<small>Forest-Born</small></div><button id="prologue-skip">Skip</button></div>
+  <div id="cine"><div id="cine-line"></div><div id="cine-title">VANAJ<small>Forest-Born</small></div><span id="cine-hint">Tap or press Space for the next line</span><button id="cine-skip">Skip</button></div>
 
   <div id="ending">
     <p>They asked me which I was. Forest or village.</p>
@@ -357,13 +389,14 @@ button { font-family:var(--sans); cursor:pointer; }
   </div></div>
 
   <div class="panel" id="inv"><div class="box"><button class="close">×</button>
-    <h2>Pouch</h2>
-    <div class="inv"><div><h3>Carried</h3><div id="inv-items"></div><p class="note" id="inv-armor"></p></div><div><h3>Make</h3><div id="inv-recipes"></div></div></div>
+    <h2>Bag</h2>
+    <div class="inv"><div class="bagL"><div class="tabs" id="inv-tabs"></div><div id="inv-items" class="tiles"></div><div id="inv-detail"></div><p class="note" id="inv-armor"></p></div><div class="bagR"><h3>Make</h3><div id="inv-recipes"></div></div></div>
   </div></div>
 
   <div class="panel" id="journal"><div class="box"><button class="close">×</button>
     <h2>Journal</h2>
-    <div class="journal"><div><h3 style="font-family:var(--sans);font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:var(--ochre)">What I found</h3><div id="j-story"></div></div><div><h3 style="font-family:var(--sans);font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:var(--ochre)">Forest lore</h3><div id="j-lore"></div></div><div><h3 style="font-family:var(--sans);font-size:13px;letter-spacing:.2em;text-transform:uppercase;color:var(--ochre)">What I can do</h3><div id="j-skills"></div></div></div>
+    <div class="tabs" id="j-tabs"></div>
+    <div class="journal"><div id="j-story"></div><div id="j-lore"></div><div id="j-friends"></div><div id="j-skills"></div></div>
   </div></div>
 
   <div class="panel" id="map"><div class="box"><button class="close">×</button><h2>Pench <small>Tap to mark. Tap the mark to remove.</small></h2><canvas id="mapcv" width="768" height="768"></canvas></div></div>
@@ -376,6 +409,7 @@ button { font-family:var(--sans); cursor:pointer; }
     <p class="note" id="set-quality-note"></p>
     <div class="row"><label>Frame limit</label><select id="set-fps"><option value="auto">Automatic</option><option value="30">30 FPS (cooler)</option><option value="60">60 FPS</option><option value="0">None</option></select></div>
     <div class="row"><label>Full screen</label><input type="checkbox" id="set-full"></div>
+    <div class="row"><label>Play style</label><select id="set-gentle"><option value="1">Gentle: blows land soft, and you can always get up</option><option value="0">Adventure: the forest hits back</option></select></div>
     <div class="row"><label>Camera</label><select id="set-view"><option value="tpp">Third person</option><option value="fpp">First person</option></select></div>
     <div class="row"><label>Mouse sensitivity</label><input type="range" id="set-sens" min="0.2" max="3" step="0.05"><span id="set-sens-v"></span></div>
     <div class="row"><label>Field of view</label><input type="range" id="set-fov" min="55" max="100" step="1"><span id="set-fov-v"></span></div>
@@ -389,13 +423,13 @@ button { font-family:var(--sans); cursor:pointer; }
     <h2>Controls</h2>
     <div class="controls">
       <kbd>W A S D</kbd><span>Move</span><kbd>Shift</kbd><span>Run</span>
-      <kbd>Space</kbd><span>Jump · with block: dodge</span><kbd>C</kbd><span>Crouch (stealth)</span>
-      <kbd>Mouse L</kbd><span>Attack · hold to draw bow</span><kbd>Mouse R</kbd><span>Block · aim spear throw</span>
-      <kbd>E</kbd><span>Interact, gather, drink, skin</span><kbd>F</kbd><span>Finish a wounded animal</span>
+      <kbd>Space</kbd><span>Jump · with block: dodge</span><kbd>C</kbd><span>Crouch: animals mind you less</span>
+      <kbd>Mouse L</kbd><span>Swing · hold to draw the bow</span><kbd>Mouse R</kbd><span>Block · aim spear throw</span>
+      <kbd>E</kbd><span>Use, pick up, drink, fish</span><kbd>Enter</kbd><span>Hurry a line of talk along</span>
       <kbd>Q (hold)</kbd><span>Call wheel: hum, langur cough, roar, whistle, flute</span><kbd>V</kbd><span>First / third person</span>
       <kbd>1–6</kbd><span>Fists, knife, club, spear, bow, torch</span><kbd>T</kbd><span>Torch on/off</span>
       <kbd>Tab</kbd><span>Pouch &amp; crafting</span><kbd>J</kbd><span>Journal &amp; lore</span>
-      <kbd>M</kbd><span>Map</span><kbd>H / B</kbd><span>Bind wound · eat</span>
+      <kbd>M</kbd><span>Map</span><kbd>H / B</kbd><span>Bind up a hurt · eat</span>
       <kbd>F3</kbd><span>Performance overlay</span><kbd>Esc</kbd><span>Pause</span>
     </div>
     <h3 style="margin-top:18px">In the trees</h3>
@@ -417,7 +451,7 @@ button { font-family:var(--sans); cursor:pointer; }
   </div></div>
 
   <div class="panel" id="choice"><div class="box" style="min-width:min(460px, 100%)"><h2></h2><button id="choice-a"></button><button id="choice-b"></button></div></div>
-  <div class="panel" id="death"><div class="box" style="min-width:min(440px, 100%)"><h2>Dead</h2><p id="death-msg"></p><button id="btn-respawn">Wake at the last fire</button><button id="btn-restart-ch">Restart chapter</button></div></div>
+  <div class="panel" id="death"><div class="box" style="min-width:min(440px, 100%)"><h2>Everything went dark</h2><p id="death-msg"></p><button id="btn-respawn">Wake by the last fire</button><button id="btn-restart-ch">Restart chapter</button></div></div>
 </div>
 <div id="perf" class="perf-off"></div>
 <script type="module" src="./js/main.js"></script>

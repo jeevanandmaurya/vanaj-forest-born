@@ -36,8 +36,8 @@ URL options: `?q=low|medium|high|ultra` sets quality, `&pr=1` caps the pixel rat
 | Space | Jump; with block held, dodge |
 | Left mouse | Attack; hold to draw the bow |
 | Right mouse | Block; aim a spear throw |
-| E | Interact, gather, drink, skin |
-| F | Finish a wounded animal |
+| E | Use, pick up, drink, fish |
+| Enter | Hurry a line of talk along |
 | Q (hold) | Call wheel: hum, langur cough, roar, whistle, flute |
 | V | Switch first / third person |
 | 1–6 | Fists, knife, club, spear, bow, torch |
@@ -51,15 +51,21 @@ URL options: `?q=low|medium|high|ultra` sets quality, `&pr=1` caps the pixel rat
 
 ## The story
 
-13 chapters in four acts, one per season:
+Written for everyone from children to adults: there is danger and one quiet loss, but nothing bleeds and the player kills nothing. An animal that loses a fight runs off.
 
-- **Act I · Winter** — Fog on the Teak · The Wire · Alone
-- **Act II · Summer** — The Burning Months · Cut Wood · The Shadow on the Rocks
-- **Act III · Monsoon** — First Rain · Chingari · The Old Flood
-- **Act IV · After the Rains** — The Tower · The Flute · Torn-Ear
-- **Epilogue** — The Name in the Steel
+13 chapters in four acts, one per season, and an epilogue:
 
-The fight with Torn-Ear, the old tiger, ends with a choice to kill him or spare him. The choice doesn't change the ending; it only shows who the player is.
+- **Act I · Winter**: Fog on the Teak · The Langurs' Road · The Wire
+- **Act II · Summer**: East · The Burning Months · Cut Wood · The Shadow on the Rocks
+- **Act III · Monsoon**: First Rain · Chingari · The Old Flood
+- **Act IV · After the Rains**: The Tower · The Flute · Torn-Ear
+- **Epilogue**: The Name in the Steel
+
+Vanaj understands animals, so they speak: each line shows who said it, the real call it was (a langur's cough-bark, a sambar's bell) and what it means to him. The opening plays in the world itself: the Pench in flood, then the sandbank at dawn.
+
+At the end Torn-Ear, the old tiger, lies beaten with a snare wire in his leg. The player can work the wire loose or roar him out of the valley. The choice doesn't change the ending; it only shows who the player is.
+
+Settings has two play styles: **Gentle** (blows land soft, hunger is slow, an animal can't knock you out) and **Adventure**.
 
 ## What's in it
 
@@ -74,7 +80,7 @@ The fight with Torn-Ear, the old tiger, ends with a choice to kill him or spare 
 - **Real places**: the map uses real Pench names, shown as you walk in: Alikatta meadow, Junewani Talao (dead trees standing in the water), Piyorthadi rocks, Kalapahad, Sitaghat and Raiyakassa on the river, Jamun Nala, Chhindimatta, Karmajhiri, Turia and the Totladoh reservoir.
 - **Tracking**: animals leave pugmarks, paw prints and hoof slots that fade over hours and wash out in rain. Crouch still over them to read who made them, how old they are and which way they went. Alarm calls are read out too, with the direction and what that caller only calls for.
 - **Movement**: feet plant on uneven ground (two-bone leg IK with pelvis drop), the walk vaults over the stance leg while the run compresses into it, and the third-person camera won't pass through trunks or walls.
-- **Survival and combat**: hunger, thirst, bleeding, sickness and fire. You craft a knife, club, spear, bow, arrows, torch and flute. Fighting includes blocking, parrying, dodging and finishing moves; arrows and spears stay stuck in whatever they hit; there are blood decals, limping animals and skinning.
+- **Survival and standing your ground**: hunger, thirst, sickness and fire. You craft a knife, club, spear, bow, arrows, torch and flute, catch fish at the water's edge and roast them. Fights are about nerve: block, dodge, roar, hold fire, and the animal backs down and runs. Animals remember how you treat their kind: hum to them crouched and unarmed and they let you closer; hit them and they bolt sooner.
 - **Sound**: Web Audio with spatial (HRTF) panning and reverb. Birds, animal calls, footsteps for each surface, impacts and thunder are all synthesised.
 - **Music**: models of real instruments, with no synth pads: bansuri flute, tanpura with its buzzing *jawari* bridge, the Pardhan *bana* fiddle, and the Baiga *mandar* drum, plus timki and manjira. Exploration music follows the raga cycle of the day (Bhairav at dawn through Malkauns past midnight, Megh in the monsoon). Fights switch to a Keherwa drum cycle.
 
@@ -103,7 +109,8 @@ js/world/             terrain, flora, ground cover, birds, tracks, places, sky, 
 js/actors/            animals (AI, procedural and rigged bodies), rigged humans, player
 assets/models/        rigged GLB models (CC0)
 js/audio/             sound engine, music engine
-js/game/              story chapters, items and crafting, UI logic, lore
+js/game/              story engine (story.js), the chapters (chapters.js), dialogue, passing remarks, the opening, items, UI, lore
+js/sim/               the director (world state, cast, standing with each species) and the animal mind (directives, shelter, trust)
 ```
 
 ## Credits

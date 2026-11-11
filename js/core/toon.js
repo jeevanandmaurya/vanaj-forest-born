@@ -78,7 +78,7 @@ export function toonify(root, o = {}) {
   const meshes = []; root.traverse((m) => { if (m.isMesh && !m.userData.ink) meshes.push(m); });
   const swap = (src) => {
     if (!src || !(src.isMeshStandardMaterial || src.isMeshLambertMaterial || src.isMeshPhongMaterial)) return src;
-    if (!conv.has(src)) {
+    if (!conv.has(src)) {   // (see below: one material for skinned meshes and another for the rest)
       const sm = soft && src.map && !src.alphaTest;   // alpha-cut shapes keep their full-detail edges
       const t = toon({ color: src.color, map: src.map, vertexColors: src.vertexColors, side: src.side, alphaTest: src.alphaTest, rim: o.rim ?? 0.6, key: sm ? 'char-s' + soft : 'char', patch: sm ? (s) => softMap(s, soft) : null });
       t.transparent = src.transparent; t.opacity = src.opacity; t.depthWrite = src.depthWrite; t.flatShading = src.flatShading;
@@ -95,7 +95,9 @@ export function toonify(root, o = {}) {
     const g = mesh.geometry; if (!g.boundingSphere) g.computeBoundingSphere();
     const ws = mesh.getWorldScale(_ws).x || 1;
     if (g.boundingSphere.radius * ws < 0.04) continue;   // eyes, teeth, beads: too small to ink
-    const k = (width / ws).toFixed(5);
+    // (A material drawn on a skinned mesh and then on a rigid one has its shader looked up afresh at every switch, every frame: the
+    // boy's body and the things he carries shared one outline. Each kind has its own.)
+    const k = (width / ws).toFixed(5) + (mesh.isSkinnedMesh ? 's' : '');
     if (!inks.has(k)) inks.set(k, inkMaterial(width / ws));
     const hull = mesh.isSkinnedMesh ? new THREE.SkinnedMesh(hullGeometry(g), inks.get(k)) : new THREE.Mesh(hullGeometry(g), inks.get(k));
     if (mesh.isSkinnedMesh) { hull.bind(mesh.skeleton, mesh.bindMatrix); hull.bindMode = mesh.bindMode; }

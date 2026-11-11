@@ -133,11 +133,16 @@ export class Weather {
     const mist = Math.max(this.env.mist, cfg.morningMist * morning * (this.state === 'clear' || this.state === 'mist' ? 0.85 : 0.5));
     const night = sky.night;
     // fog
-    let dens = 0.00055 * this.env.fog * (1 + this.env.haze * 0.6);
-    dens += mist * 0.012;
+    let dens = 0.0008 * this.env.fog * (1 + this.env.haze * 0.6);
+    dens += mist * 0.0085;
     G.uFogDensity.value = dens * (1 + night * 0.3);
-    G.uFogHeight.value = lerp(0.012, 0.09, mist);
-    G.uFogBase.value = lerp(30, 26, mist);
+    G.uFogHeight.value = lerp(0.012, 0.075, mist);
+    // (The fog thins with height above a base. That base was the river's level, so the den, thirty metres up the slope, never had a
+    // misty morning at all. It follows the ground he stands on now, easing as he climbs or comes down.)
+    const gy = groundHeight(cam.x, cam.z), base = Math.max(26, Math.min(gy - 1.5, cam.y - 2.5));
+    if (Number.isFinite(base)) this.fogBase = Number.isFinite(this.fogBase) ? lerp(this.fogBase, base, Math.min(1, dt * 0.5)) : base;
+    if (!Number.isFinite(this.fogBase)) this.fogBase = 30;
+    G.uFogBase.value = lerp(Math.min(30, this.fogBase), this.fogBase, Math.max(mist, 0.35));
     // wind
     this.windAngle += dt * 0.01 * (this.rng() - 0.3);
     G.uWind.value.set(Math.cos(this.windAngle), Math.sin(this.windAngle));
